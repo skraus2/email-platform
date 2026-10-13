@@ -17,6 +17,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/skraus2/email-platform/internal/database"
 )
 
 // EnvVar names the admin connection URL (any database on the test server; the
@@ -89,4 +91,19 @@ func redact(err error) error {
 		return err
 	}
 	return errors.New("invalid TEST_DATABASE_URL or connection failure")
+}
+
+// NewMigrated creates a throwaway database with all migrations applied.
+func NewMigrated(t testing.TB) *pgxpool.Pool {
+	t.Helper()
+	pool := New(t)
+	m, err := database.NewMigrator(pool)
+	if err != nil {
+		t.Fatalf("testdb: migrator: %v", err)
+	}
+	defer func() { _ = m.Close() }()
+	if _, err := m.Up(context.Background()); err != nil {
+		t.Fatalf("testdb: migrate: %v", err)
+	}
+	return pool
 }

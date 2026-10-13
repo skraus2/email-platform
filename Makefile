@@ -37,6 +37,10 @@ migrate: ## Apply database migrations
 migrate-status: ## Show migration status
 	go run ./cmd/migrate status
 
+.PHONY: admin
+admin: ## Admin CLI, e.g. make admin ARGS="project create -name my-app"
+	go run ./cmd/admin $(ARGS)
+
 .PHONY: run-api
 run-api: ## Run the API on the host (needs `make up migrate`)
 	go run ./cmd/api
@@ -62,7 +66,15 @@ fmt-check: ## Fail if any file is not formatted
 	$(PNPM) run format:check
 
 .PHONY: lint
-lint: lint-go lint-web lint-ci ## Run all linters
+lint: lint-go lint-web lint-ci sqlc-check ## Run all linters
+
+.PHONY: sqlc
+sqlc: ## Regenerate internal/store from db/queries + db/migrations
+	go tool -modfile=tools/sqlc/go.mod sqlc generate
+
+.PHONY: sqlc-check
+sqlc-check: ## Fail if internal/store is out of date
+	go tool -modfile=tools/sqlc/go.mod sqlc diff
 
 .PHONY: lint-ci
 lint-ci: ## Lint GitHub Actions workflows (pinned actionlint)

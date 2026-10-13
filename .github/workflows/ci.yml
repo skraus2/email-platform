@@ -50,6 +50,8 @@ jobs:
         uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
           version: v2.14.0 # keep in sync with tools/go.mod
+      - name: sqlc generated code is up to date
+        run: go tool -modfile=tools/sqlc/go.mod sqlc diff
       - name: actionlint
         run: go tool -modfile=tools/actionlint/go.mod actionlint
       - name: Unit tests
