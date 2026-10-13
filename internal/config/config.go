@@ -10,6 +10,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/skraus2/email-platform/internal/delivery"
 )
 
 // Environment names. Production enables stricter validation.
@@ -27,6 +29,13 @@ type Config struct {
 	LogLevel        slog.Level
 	LogFormat       string // "json" or "text"
 	ShutdownTimeout time.Duration
+
+	// Mail dispatch (worker). Only the local Mailpit sink exists: no setting
+	// can point dispatch at a real mail server or SES.
+	MailProvider    string
+	SMTPAddr        string
+	ProviderTimeout time.Duration
+	BodyMaxAge      time.Duration
 }
 
 // LookupFunc matches os.LookupEnv so tests can inject an environment.
@@ -78,10 +87,35 @@ func Load(lookup LookupFunc) (Config, error) {
 		errs = append(errs, err)
 	}
 
+	cfg.MailProvider = get("MAIL_PROVIDER", "mailpit")
+	if cfg.MailProvider != "mailpit" {
+		errs = append(errs, fmt.Errorf("MAIL_PROVIDER must be mailpit (the only provider available); got %q", cfg.MailProvider))
+	}
+	cfg.SMTPAddr = get("SMTP_ADDR", "127.0.0.1:1025")
+	if err := delivery.ValidateMailpitAddr(cfg.SMTPAddr); err != nil {
+		errs = append(errs, fmt.Errorf("SMTP_ADDR: %w", err))
+	}
+	cfg.ProviderTimeout, errs = positiveDuration(get, "PROVIDER_TIMEOUT", "10s", errs)
+	if cfg.ProviderTimeout > cfg.ShutdownTimeout && cfg.ShutdownTimeout > 0 {
+		errs = append(errs, errors.New("PROVIDER_TIMEOUT must not exceed SHUTDOWN_TIMEOUT (a send must finish within shutdown)"))
+	}
+	cfg.BodyMaxAge, errs = positiveDuration(get, "BODY_MAX_AGE", "168h", errs)
+
 	if err := errors.Join(errs...); err != nil {
 		return Config{}, fmt.Errorf("invalid configuration: %w", err)
 	}
 	return cfg, nil
+}
+
+func positiveDuration(get func(string, string) string, key, def string, errs []error) (time.Duration, []error) {
+	d, err := time.ParseDuration(get(key, def))
+	switch {
+	case err != nil:
+		return 0, append(errs, fmt.Errorf("%s invalid: %w", key, err))
+	case d <= 0:
+		return 0, append(errs, fmt.Errorf("%s must be positive", key))
+	}
+	return d, errs
 }
 
 func validateDatabaseURL(raw, env string) error {

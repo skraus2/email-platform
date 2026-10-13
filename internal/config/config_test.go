@@ -43,6 +43,7 @@ func TestLoadOverrides(t *testing.T) {
 		"LOG_LEVEL":        "debug",
 		"LOG_FORMAT":       "text",
 		"SHUTDOWN_TIMEOUT": "3s",
+		"PROVIDER_TIMEOUT": "2s",
 	}))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
@@ -125,5 +126,47 @@ func TestRedactedDatabaseURL(t *testing.T) {
 	}
 	if !strings.Contains(got, "localhost:54320/ep") {
 		t.Errorf("RedactedDatabaseURL lost host/db: %q", got)
+	}
+}
+
+func TestLoadMailDefaults(t *testing.T) {
+	cfg, err := Load(env(map[string]string{"DATABASE_URL": devURL}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MailProvider != "mailpit" || cfg.SMTPAddr != "127.0.0.1:1025" ||
+		cfg.ProviderTimeout != 10*time.Second || cfg.BodyMaxAge != 168*time.Hour {
+		t.Fatalf("mail defaults = %q %q %v %v", cfg.MailProvider, cfg.SMTPAddr, cfg.ProviderTimeout, cfg.BodyMaxAge)
+	}
+}
+
+func TestLoadRejectsUnsafeMailConfig(t *testing.T) {
+	tests := map[string]map[string]string{
+		"ses provider":         {"MAIL_PROVIDER": "ses"},
+		"unknown provider":     {"MAIL_PROVIDER": "smtp"},
+		"remote smtp host":     {"SMTP_ADDR": "smtp.gmail.com:587"},
+		"aws smtp host":        {"SMTP_ADDR": "email-smtp.eu-central-1.amazonaws.com:587"},
+		"private ip":           {"SMTP_ADDR": "10.0.0.5:25"},
+		"no port":              {"SMTP_ADDR": "127.0.0.1"},
+		"timeout > shutdown":   {"PROVIDER_TIMEOUT": "20s", "SHUTDOWN_TIMEOUT": "15s"},
+		"bad provider timeout": {"PROVIDER_TIMEOUT": "fast"},
+		"zero body max age":    {"BODY_MAX_AGE": "0s"},
+	}
+	for name, extra := range tests {
+		t.Run(name, func(t *testing.T) {
+			m := map[string]string{"DATABASE_URL": devURL}
+			for k, v := range extra {
+				m[k] = v
+			}
+			if _, err := Load(env(m)); err == nil {
+				t.Fatalf("Load accepted %v", extra)
+			}
+		})
+	}
+}
+
+func TestLoadAcceptsComposeMailpitHost(t *testing.T) {
+	if _, err := Load(env(map[string]string{"DATABASE_URL": devURL, "SMTP_ADDR": "mailpit:1025"})); err != nil {
+		t.Fatal(err)
 	}
 }

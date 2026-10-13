@@ -32,6 +32,11 @@ jobs:
         options: >-
           --health-cmd "pg_isready -U email_platform -d email_platform"
           --health-interval 2s --health-timeout 3s --health-retries 30
+      mailpit:
+        image: axllent/mailpit:v1.31.5
+        ports:
+          - 1025:1025
+          - 8025:8025
     env:
       TEST_DATABASE_URL: postgres://email_platform:email_platform@localhost:5432/postgres?sslmode=disable
       DATABASE_URL: postgres://email_platform:email_platform@localhost:5432/email_platform?sslmode=disable
