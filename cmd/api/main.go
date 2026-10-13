@@ -59,7 +59,7 @@ func run() error {
 	}
 	api := httpapi.New(httpapi.Deps{
 		Logger: logger,
-		Emails: emails.NewService(pool, enqueuer, logger),
+		Emails: emails.NewService(pool, enqueuer, logger, cfg.APIRateLimitPerMinute),
 		Authenticate: func(ctx context.Context, token string) (auth.Principal, error) {
 			return auth.Authenticate(ctx, queries.GetActiveKeyByPrefix, token)
 		},

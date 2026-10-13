@@ -69,7 +69,7 @@ func (s emailState) code() string {
 // queued creates an email through the real service (job enqueue stubbed).
 func queued(t *testing.T, pool *pgxpool.Pool, projectID uuid.UUID) emails.Email {
 	t.Helper()
-	svc := emails.NewService(pool, noopEnqueuer{}, slog.New(slog.DiscardHandler))
+	svc := emails.NewService(pool, noopEnqueuer{}, slog.New(slog.DiscardHandler), unlimited)
 	e, err := svc.Create(context.Background(), projectID, input)
 	if err != nil {
 		t.Fatal(err)

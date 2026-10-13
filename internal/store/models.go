@@ -60,3 +60,9 @@ type Project struct {
 	Status    string
 	CreatedAt time.Time
 }
+
+type RateLimitWindow struct {
+	ProjectID   uuid.UUID
+	WindowStart time.Time
+	Count       int32
+}

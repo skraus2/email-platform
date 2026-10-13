@@ -31,7 +31,7 @@ func newService(t *testing.T, pool *pgxpool.Pool, logs *bytes.Buffer) *emails.Se
 	if logs != nil {
 		logger = slog.New(slog.NewJSONHandler(logs, nil))
 	}
-	return emails.NewService(pool, enq, logger)
+	return emails.NewService(pool, enq, logger, unlimited)
 }
 
 func keyed(key string) emails.CreateInput {

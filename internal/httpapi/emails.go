@@ -9,6 +9,8 @@ import (
 	"log/slog"
 	"mime"
 	"net/http"
+	"strconv"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -71,12 +73,18 @@ func (s *Server) handleCreateEmail(w http.ResponseWriter, r *http.Request) {
 		IdempotencyKey: idemKey,
 	})
 	var ve *emails.ValidationError
+	var rl *emails.RateLimitError
 	switch {
 	case errors.As(err, &ve):
 		writeError(w, http.StatusUnprocessableEntity, "validation_failed", ve.Error())
 		return
 	case errors.Is(err, emails.ErrInvalidIdempotencyKey):
 		writeInvalidIdempotencyKey(w)
+		return
+	case errors.As(err, &rl):
+		w.Header().Set("Retry-After", strconv.Itoa(int(rl.RetryAfter/time.Second)))
+		writeError(w, http.StatusTooManyRequests, "rate_limited",
+			"the project's send rate limit is exhausted; retry after the time in Retry-After")
 		return
 	case errors.Is(err, emails.ErrIdempotencyKeyReused):
 		writeError(w, http.StatusConflict, "idempotency_key_reused",

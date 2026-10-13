@@ -10,6 +10,7 @@ sql:
       - db/migrations/00004_emails.sql
       - db/migrations/00005_idempotency_keys.sql
       - db/migrations/00006_email_error_codes.sql
+      - db/migrations/00007_rate_limit_windows.sql
     queries: db/queries
     gen:
       go:

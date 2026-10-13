@@ -53,15 +53,24 @@ func fromRow(r store.Email) Email {
 
 // Service accepts and reads emails.
 type Service struct {
-	pool   *pgxpool.Pool
-	enq    Enqueuer
-	logger *slog.Logger
+	pool      *pgxpool.Pool
+	enq       Enqueuer
+	logger    *slog.Logger
+	perMinute int
 }
 
-// NewService builds a Service.
-func NewService(pool *pgxpool.Pool, enq Enqueuer, logger *slog.Logger) *Service {
-	return &Service{pool: pool, enq: enq, logger: logger}
+// NewService builds a Service that accepts at most perMinute sends per
+// project and minute (values below 1 are treated as 1).
+func NewService(pool *pgxpool.Pool, enq Enqueuer, logger *slog.Logger, perMinute int) *Service {
+	return &Service{pool: pool, enq: enq, logger: logger, perMinute: max(perMinute, 1)}
 }
+
+// RateLimitError means the project used up its sends for the current minute.
+type RateLimitError struct {
+	RetryAfter time.Duration // until the current window ends, 1s–60s
+}
+
+func (e *RateLimitError) Error() string { return "send rate limit exceeded" }
 
 // Create validates the request and commits the email, its content and its
 // dispatch job atomically. Only a nil error means the email is persisted.
@@ -124,6 +133,16 @@ func (s *Service) Create(ctx context.Context, projectID uuid.UUID, in CreateInpu
 			if n == 0 {
 				return errKeyTaken
 			}
+		}
+		// Counted last: a request is only refused after its idempotency key
+		// is claimed, so a duplicate replays instead of being limited, and
+		// the window row is locked only briefly.
+		c, err := q.CountSend(ctx, projectID)
+		if err != nil {
+			return fmt.Errorf("count send: %w", err)
+		}
+		if int(c.Count) > s.perMinute {
+			return &RateLimitError{RetryAfter: time.Duration(min(max(c.RetryAfterSeconds, 1), 60)) * time.Second}
 		}
 		return nil
 	})

@@ -74,6 +74,8 @@ func TestLoadRejectsInvalid(t *testing.T) {
 		{"base delay below 1s", map[string]string{"DATABASE_URL": devURL, "RETRY_BASE_DELAY": "500ms"}, "RETRY_BASE_DELAY"},
 		{"max delay below base", map[string]string{"DATABASE_URL": devURL, "RETRY_BASE_DELAY": "1m", "RETRY_MAX_DELAY": "30s"}, "RETRY_MAX_DELAY"},
 		{"bad max delay", map[string]string{"DATABASE_URL": devURL, "RETRY_MAX_DELAY": "later"}, "RETRY_MAX_DELAY"},
+		{"rate limit zero", map[string]string{"DATABASE_URL": devURL, "API_RATE_LIMIT_PER_MINUTE": "0"}, "API_RATE_LIMIT_PER_MINUTE"},
+		{"rate limit too high", map[string]string{"DATABASE_URL": devURL, "API_RATE_LIMIT_PER_MINUTE": "1000001"}, "API_RATE_LIMIT_PER_MINUTE"},
 		{"retries outlive content", map[string]string{"DATABASE_URL": devURL, "SEND_MAX_ATTEMPTS": "25", "RETRY_BASE_DELAY": "1h", "RETRY_MAX_DELAY": "24h", "BODY_MAX_AGE": "48h"}, "BODY_MAX_AGE"},
 	}
 	for _, tt := range tests {
@@ -151,6 +153,9 @@ func TestLoadRetryDefaults(t *testing.T) {
 	cfg, err := Load(env(map[string]string{"DATABASE_URL": devURL}))
 	if err != nil {
 		t.Fatal(err)
+	}
+	if cfg.APIRateLimitPerMinute != 600 {
+		t.Errorf("APIRateLimitPerMinute = %d, want 600", cfg.APIRateLimitPerMinute)
 	}
 	if cfg.SendMaxAttempts != 8 || cfg.RetryBaseDelay != 30*time.Second || cfg.RetryMaxDelay != time.Hour {
 		t.Fatalf("retry defaults = %d %v %v", cfg.SendMaxAttempts, cfg.RetryBaseDelay, cfg.RetryMaxDelay)

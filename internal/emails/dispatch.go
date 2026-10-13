@@ -210,9 +210,13 @@ func (d *Dispatcher) Cleanup(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("cleanup idempotency keys: %w", err)
 	}
-	if expired > 0 || deleted > 0 || keys > 0 {
+	windows, err := store.New(d.pool).DeleteRateLimitWindowsBefore(ctx)
+	if err != nil {
+		return fmt.Errorf("cleanup rate limit windows: %w", err)
+	}
+	if expired > 0 || deleted > 0 || keys > 0 || windows > 0 {
 		d.logger.InfoContext(ctx, "email cleanup", slog.Int64("expired", expired),
-			slog.Int64("contents_deleted", deleted), slog.Int64("idempotency_keys_deleted", keys))
+			slog.Int64("contents_deleted", deleted), slog.Int64("idempotency_keys_deleted", keys), slog.Int64("rate_limit_windows_deleted", windows))
 	}
 	return nil
 }

@@ -44,6 +44,9 @@ type Config struct {
 	SendMaxAttempts int
 	RetryBaseDelay  time.Duration
 	RetryMaxDelay   time.Duration
+
+	// APIRateLimitPerMinute caps accepted sends per project and minute.
+	APIRateLimitPerMinute int
 }
 
 // LookupFunc matches os.LookupEnv so tests can inject an environment.
@@ -112,6 +115,7 @@ func Load(lookup LookupFunc) (Config, error) {
 		errs = append(errs, errors.New("BODY_MAX_AGE must be at most 720h (message content is deleted by then at the latest)"))
 	}
 
+	cfg.APIRateLimitPerMinute, errs = intInRange(get, "API_RATE_LIMIT_PER_MINUTE", "600", 1, 1_000_000, errs)
 	cfg.SendMaxAttempts, errs = intInRange(get, "SEND_MAX_ATTEMPTS", "8", 1, maxSendAttempts, errs)
 	cfg.RetryBaseDelay, errs = positiveDuration(get, "RETRY_BASE_DELAY", "30s", errs)
 	if cfg.RetryBaseDelay > 0 && cfg.RetryBaseDelay < time.Second {

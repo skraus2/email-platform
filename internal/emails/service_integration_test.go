@@ -23,6 +23,9 @@ import (
 
 const testMaxAttempts = 5
 
+// unlimited is a rate limit tests never reach.
+const unlimited = 1_000_000
+
 type failingEnqueuer struct{}
 
 func (failingEnqueuer) EnqueueSendEmail(context.Context, pgx.Tx, jobs.SendEmailArgs) error {
@@ -61,7 +64,7 @@ func TestCreatePersistsEmailContentAndJobTogether(t *testing.T) {
 		t.Fatal(err)
 	}
 	var logs bytes.Buffer
-	svc := emails.NewService(pool, enq, slog.New(slog.NewJSONHandler(&logs, nil)))
+	svc := emails.NewService(pool, enq, slog.New(slog.NewJSONHandler(&logs, nil)), unlimited)
 
 	e, err := svc.Create(ctx, projectID, input)
 	if err != nil {
@@ -94,7 +97,7 @@ func TestCreateIsAtomicWhenEnqueueFails(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	pool, projectID := setup(t)
-	svc := emails.NewService(pool, failingEnqueuer{}, slog.New(slog.DiscardHandler))
+	svc := emails.NewService(pool, failingEnqueuer{}, slog.New(slog.DiscardHandler), unlimited)
 
 	if _, err := svc.Create(ctx, projectID, input); err == nil {
 		t.Fatal("Create succeeded although the job could not be enqueued")
@@ -110,7 +113,7 @@ func TestCreateIsAtomicWhenEnqueueFails(t *testing.T) {
 func TestCreateRejectsInvalidInputWithoutWriting(t *testing.T) {
 	t.Parallel()
 	pool, projectID := setup(t)
-	svc := emails.NewService(pool, failingEnqueuer{}, slog.New(slog.DiscardHandler))
+	svc := emails.NewService(pool, failingEnqueuer{}, slog.New(slog.DiscardHandler), unlimited)
 	bad := input
 	bad.Subject = "Hi\r\nBcc: x@example.test"
 	var ve *emails.ValidationError

@@ -10,8 +10,10 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -33,6 +35,12 @@ type stack struct {
 
 func newStack(t *testing.T) *stack {
 	t.Helper()
+	return newLimitedStack(t, 1_000_000)
+}
+
+// newLimitedStack is newStack with a send rate limit per project and minute.
+func newLimitedStack(t *testing.T, perMinute int) *stack {
+	t.Helper()
 	pool := testdb.NewMigrated(t)
 	q := store.New(pool)
 	logger := slog.New(slog.DiscardHandler)
@@ -42,7 +50,7 @@ func newStack(t *testing.T) *stack {
 	}
 	api := httpapi.New(httpapi.Deps{
 		Logger: logger,
-		Emails: emails.NewService(pool, enq, logger),
+		Emails: emails.NewService(pool, enq, logger, perMinute),
 		Authenticate: func(ctx context.Context, token string) (auth.Principal, error) {
 			return auth.Authenticate(ctx, q.GetActiveKeyByPrefix, token)
 		},
@@ -215,5 +223,45 @@ func TestGetEmailShowsAttemptsAndErrorCode(t *testing.T) {
 	}
 	if strings.Contains(fmt.Sprint(failed), "smtp 550") {
 		t.Fatal("internal detail exposed")
+	}
+}
+
+func TestPostEmailRateLimitedOverHTTP(t *testing.T) {
+	t.Parallel()
+	if sec := time.Now().Second(); sec > 56 {
+		time.Sleep(time.Duration(61-sec) * time.Second) // stay inside one window
+	}
+	s := newLimitedStack(t, 2)
+	_, token := s.project(t)
+	_, otherToken := s.project(t)
+	for i := range 2 {
+		if code, _ := s.do(t, http.MethodPost, "/v1/emails", token, sendBody); code != http.StatusAccepted {
+			t.Fatalf("send %d = %d", i+1, code)
+		}
+	}
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, s.srv.URL+"/v1/emails", strings.NewReader(sendBody))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	retryAfter, err := strconv.Atoi(resp.Header.Get("Retry-After"))
+	if resp.StatusCode != http.StatusTooManyRequests || err != nil || retryAfter < 1 || retryAfter > 60 {
+		t.Fatalf("3rd send = %d, Retry-After %q", resp.StatusCode, resp.Header.Get("Retry-After"))
+	}
+	var body map[string]map[string]string
+	_ = json.NewDecoder(resp.Body).Decode(&body)
+	if body["error"]["code"] != "rate_limited" {
+		t.Fatalf("body = %v", body)
+	}
+	if code, _ := s.do(t, http.MethodPost, "/v1/emails", otherToken, sendBody); code != http.StatusAccepted {
+		t.Fatalf("other project = %d, want 202", code)
+	}
+	var n int
+	_ = s.pool.QueryRow(context.Background(), "SELECT count(*) FROM emails").Scan(&n)
+	if n != 3 {
+		t.Fatalf("emails = %d, want 3", n)
 	}
 }

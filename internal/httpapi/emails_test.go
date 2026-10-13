@@ -247,3 +247,12 @@ func TestCreateEmailRejectsEmptyOrRepeatedIdempotencyKey(t *testing.T) {
 		})
 	}
 }
+
+func TestCreateEmailRateLimited(t *testing.T) {
+	s, _ := emailServer(t, &fakeEmails{err: &emails.RateLimitError{RetryAfter: 17 * time.Second}}, principal)
+	rec := post(t, s, okBody, nil)
+	if rec.Code != http.StatusTooManyRequests || rec.Header().Get("Retry-After") != "17" {
+		t.Fatalf("code = %d, Retry-After = %q; want 429 and 17", rec.Code, rec.Header().Get("Retry-After"))
+	}
+	assertErrorCode(t, rec, "rate_limited")
+}

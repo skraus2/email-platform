@@ -28,7 +28,7 @@ func TestQueueStoresOnlySanitizedErrors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e, err := emails.NewService(pool, enq, logger).Create(ctx, projectID, input)
+	e, err := emails.NewService(pool, enq, logger, unlimited).Create(ctx, projectID, input)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,7 +88,7 @@ func TestInterruptedDispatchIsRescuedAndFlagged(t *testing.T) {
 	pool, projectID := setup(t)
 	quiet := slog.New(slog.DiscardHandler)
 	enq, _ := jobs.NewEnqueuer(pool, quiet, testMaxAttempts)
-	e, err := emails.NewService(pool, enq, quiet).Create(ctx, projectID, input)
+	e, err := emails.NewService(pool, enq, quiet, unlimited).Create(ctx, projectID, input)
 	if err != nil {
 		t.Fatal(err)
 	}
