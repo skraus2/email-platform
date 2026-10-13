@@ -39,12 +39,15 @@ grep -q '"worker ready"' "$TMP/worker.log" || fail "worker did not become ready"
 echo "worker -> ready"
 
 # One email end to end through the real processes.
-project=$("$TMP/admin" project create -name "smoke-$(date +%s)" | cut -f1)
-key=$("$TMP/admin" key create -project "$project" 2>/dev/null)
+project=$("$TMP/admin" project create -name "smoke-$(date +%s)-$RANDOM" | cut -f1) || fail "admin project create"
+key=$("$TMP/admin" key create -project "$project" 2>"$TMP/admin.err") || fail "admin key create: $(cat "$TMP/admin.err")"
 [[ "$key" == ep_* ]] || fail "admin did not issue a key"
-subject="smoke $(date +%s%N)"
+# Pass the key via a file, not the command line (visible in ps).
+umask 077
+printf 'Authorization: Bearer %s\n' "$key" >"$TMP/auth.header"
+subject="smoke $(date +%s)-$RANDOM"
 code=$(curl -sS -o "$TMP/post.json" -w '%{http_code}' -X POST "http://$ADDR/v1/emails" \
-  -H "Authorization: Bearer $key" -H 'Content-Type: application/json' \
+  -H @"$TMP/auth.header" -H 'Content-Type: application/json' \
   -d "{\"from\":\"smoke@example.test\",\"to\":\"smoke-recipient@example.test\",\"subject\":\"$subject\",\"text\":\"smoke body\"}")
 [[ "$code" == 202 ]] || fail "POST /v1/emails: $code $(cat "$TMP/post.json")"
 id=$(sed -nE 's/.*"id":"([0-9a-f-]{36})".*/\1/p' "$TMP/post.json")
@@ -52,12 +55,17 @@ id=$(sed -nE 's/.*"id":"([0-9a-f-]{36})".*/\1/p' "$TMP/post.json")
 echo "POST /v1/emails -> 202 queued ($id)"
 status=""
 for _ in $(seq 1 100); do
-  status=$(curl -sS "http://$ADDR/v1/emails/$id" -H "Authorization: Bearer $key" | sed -E 's/.*"status":"([^"]+)".*/\1/')
+  status=$(curl -sS "http://$ADDR/v1/emails/$id" -H @"$TMP/auth.header" | sed -E 's/.*"status":"([^"]+)".*/\1/')
   [[ "$status" == captured || "$status" == failed ]] && break
   sleep 0.1
 done
 [[ "$status" == captured ]] || fail "email status $status, want captured"
-count=$(curl -sS "$MAILPIT_URL/api/v1/search?query=message-id:%22$id@email-platform.local%22" | sed -E 's/.*"messages_count":([0-9]+).*/\1/')
+count=0
+for _ in $(seq 1 30); do
+  count=$(curl -sS "$MAILPIT_URL/api/v1/search?query=message-id:%22$id@email-platform.local%22" | sed -E 's/.*"messages_count":([0-9]+).*/\1/')
+  [[ "$count" -ge 1 ]] && break
+  sleep 0.1
+done
 [[ "$count" == 1 ]] || fail "Mailpit holds $count copies, want 1"
 echo "worker -> Mailpit captured exactly 1 message"
 for leak in "$key" "smoke-recipient@example.test" "smoke body"; do

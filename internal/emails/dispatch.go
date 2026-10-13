@@ -94,6 +94,9 @@ func (d *Dispatcher) SendEmail(ctx context.Context, args jobs.SendEmailArgs, at 
 	reason := sanitize(sendErr)
 	var de *delivery.Error
 	permanent := errors.As(sendErr, &de) && !de.Temporary()
+	if de != nil && de.Class == delivery.ClassUnsafeTarget {
+		log.ErrorContext(ctx, "SMTP target is not Mailpit; refusing to send (check SMTP_ADDR)")
+	}
 	if permanent || at.Final() {
 		return d.fail(ctx, log, key, reason)
 	}

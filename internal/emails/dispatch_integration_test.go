@@ -390,7 +390,15 @@ func TestStateUpdatesNeverLeaveTerminalStates(t *testing.T) {
 	if n, _ := q.MarkSending(ctx, store.MarkSendingParams{ID: key.id, ProjectID: key.project}); n != 0 {
 		t.Fatal("MarkSending changed a captured email")
 	}
-	if s := state(t, pool, e.ID); s.status != "captured" {
-		t.Fatalf("status = %q", s.status)
+	// A slow rescued attempt reporting an error after another attempt captured
+	// the email must not reopen it.
+	if err := q.RequeueAfterError(ctx, store.RequeueAfterErrorParams{ID: key.id, ProjectID: key.project, LastError: &reason}); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.RecordAttemptError(ctx, store.RecordAttemptErrorParams{ID: key.id, ProjectID: key.project, LastError: &reason}); err != nil {
+		t.Fatal(err)
+	}
+	if s := state(t, pool, e.ID); s.status != "captured" || s.lastError != nil {
+		t.Fatalf("terminal email changed: %+v", s)
 	}
 }

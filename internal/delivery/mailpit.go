@@ -119,7 +119,8 @@ func (m *Mailpit) converse(conn net.Conn, msg Message, raw []byte) error {
 	if err := w.Close(); err != nil {
 		return err
 	}
-	if _, _, err := tp.ReadResponse(250); err != nil {
+	// Any 2xx means the message was accepted.
+	if _, _, err := tp.ReadResponse(2); err != nil {
 		return err
 	}
 	// The server has accepted the message. A QUIT failure now must not be
