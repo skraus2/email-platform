@@ -23,17 +23,25 @@ type Check struct {
 	Fn   func(ctx context.Context) error
 }
 
+// Deps are the collaborators of the HTTP layer.
+type Deps struct {
+	Logger       *slog.Logger
+	Checks       []Check
+	Authenticate Authenticator
+}
+
 // Server holds the HTTP handler and readiness state.
 type Server struct {
-	logger   *slog.Logger
-	checks   []Check
-	draining atomic.Bool
-	handler  http.Handler
+	logger       *slog.Logger
+	checks       []Check
+	authenticate Authenticator
+	draining     atomic.Bool
+	handler      http.Handler
 }
 
 // New builds the API handler.
-func New(logger *slog.Logger, checks []Check) *Server {
-	s := &Server{logger: logger, checks: checks}
+func New(d Deps) *Server {
+	s := &Server{logger: d.Logger, checks: d.Checks, authenticate: d.Authenticate}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
@@ -44,7 +52,7 @@ func New(logger *slog.Logger, checks []Check) *Server {
 	mux.HandleFunc("/readyz", methodNotAllowed(http.MethodGet))
 	mux.HandleFunc("/", handleNotFound)
 
-	s.handler = requestLogger(logger, mux)
+	s.handler = requestLogger(s.logger, mux)
 	return s
 }
 

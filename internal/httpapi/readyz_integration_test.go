@@ -27,10 +27,13 @@ func TestReadyzAgainstRealDatabase(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = m.Close() })
 
-	api := httpapi.New(slog.New(slog.NewTextHandler(io.Discard, nil)), []httpapi.Check{{
-		Name: "database",
-		Fn:   func(ctx context.Context) error { return database.Ready(ctx, pool, m) },
-	}})
+	api := httpapi.New(httpapi.Deps{
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Checks: []httpapi.Check{{
+			Name: "database",
+			Fn:   func(ctx context.Context) error { return database.Ready(ctx, pool, m) },
+		}},
+	})
 	srv := httptest.NewServer(api.Handler())
 	t.Cleanup(srv.Close)
 

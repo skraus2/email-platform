@@ -16,7 +16,7 @@ func newTestServer(t *testing.T, checks ...Check) (*Server, *bytes.Buffer) {
 	t.Helper()
 	var logs bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&logs, nil))
-	return New(logger, checks), &logs
+	return New(Deps{Logger: logger, Checks: checks}), &logs
 }
 
 func do(t *testing.T, s *Server, method, target string, hdr http.Header) *httptest.ResponseRecorder {

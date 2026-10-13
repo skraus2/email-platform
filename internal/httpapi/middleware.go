@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"log/slog"
@@ -21,17 +22,35 @@ func requestLogger(logger *slog.Logger, next http.Handler) http.Handler {
 		}
 		w.Header().Set(requestIDHeader, id)
 
+		info := &logInfo{}
+		ctx := context.WithValue(r.Context(), logInfoKey{}, info)
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
-		next.ServeHTTP(rec, r)
+		next.ServeHTTP(rec, r.WithContext(ctx))
 
-		logger.LogAttrs(r.Context(), slog.LevelInfo, "http request",
+		attrs := []slog.Attr{
 			slog.String("request_id", id),
 			slog.String("method", r.Method),
 			slog.String("path", r.URL.Path),
 			slog.Int("status", rec.status),
 			slog.Duration("duration", time.Since(start)),
-		)
+		}
+		if info.projectID != "" {
+			attrs = append(attrs, slog.String("project_id", info.projectID))
+		}
+		logger.LogAttrs(r.Context(), slog.LevelInfo, "http request", attrs...)
 	})
+}
+
+// logInfo collects request attributes that are only known deep inside the
+// handler chain (the authenticated project) for the single request log line.
+type logInfo struct{ projectID string }
+
+type logInfoKey struct{}
+
+func setLogProject(ctx context.Context, projectID string) {
+	if info, ok := ctx.Value(logInfoKey{}).(*logInfo); ok {
+		info.projectID = projectID
+	}
 }
 
 // validRequestID accepts caller-supplied IDs only if short and plain, so they

@@ -13,10 +13,12 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/skraus2/email-platform/internal/auth"
 	"github.com/skraus2/email-platform/internal/config"
 	"github.com/skraus2/email-platform/internal/database"
 	"github.com/skraus2/email-platform/internal/httpapi"
 	"github.com/skraus2/email-platform/internal/logging"
+	"github.com/skraus2/email-platform/internal/store"
 )
 
 func main() {
@@ -48,10 +50,17 @@ func run() error {
 	}
 	defer func() { _ = migrator.Close() }()
 
-	api := httpapi.New(logger, []httpapi.Check{{
-		Name: "database",
-		Fn:   func(ctx context.Context) error { return database.Ready(ctx, pool, migrator) },
-	}})
+	queries := store.New(pool)
+	api := httpapi.New(httpapi.Deps{
+		Logger: logger,
+		Authenticate: func(ctx context.Context, token string) (auth.Principal, error) {
+			return auth.Authenticate(ctx, queries.GetActiveKeyByPrefix, token)
+		},
+		Checks: []httpapi.Check{{
+			Name: "database",
+			Fn:   func(ctx context.Context) error { return database.Ready(ctx, pool, migrator) },
+		}},
+	})
 
 	httpServer := &http.Server{
 		Handler:           api.Handler(),
