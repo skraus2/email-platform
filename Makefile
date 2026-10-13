@@ -1,5 +1,4 @@
-# Developer entry points. Run `make help` for the list; README.md documents
-# which commands were verified.
+# Developer entry points. Run `make help` for the list.
 
 SHELL := /bin/bash
 .DEFAULT_GOAL := help
