@@ -73,8 +73,10 @@ sqlc: ## Regenerate internal/store from db/queries + db/migrations
 	go tool -modfile=tools/sqlc/go.mod sqlc generate
 
 .PHONY: sqlc-check
-sqlc-check: ## Fail if internal/store is out of date
+sqlc-check: ## Fail if internal/store is out of date (incl. orphaned files)
 	go tool -modfile=tools/sqlc/go.mod sqlc diff
+	@orphans=$$(git ls-files --others --exclude-standard internal/store); if [ -n "$$orphans" ]; then echo "untracked files in internal/store: $$orphans"; exit 1; fi
+	@for f in internal/store/*.sql.go; do q=db/queries/$$(basename $$f .go); [ -f "$$q" ] || { echo "orphaned $$f (no $$q)"; exit 1; }; done
 
 .PHONY: lint-ci
 lint-ci: ## Lint GitHub Actions workflows (pinned actionlint)

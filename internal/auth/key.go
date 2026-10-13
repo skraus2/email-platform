@@ -16,7 +16,6 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"slices"
 	"strings"
 )
 
@@ -130,9 +129,4 @@ func ValidateScopes(scopes []string) error {
 		seen[s] = true
 	}
 	return nil
-}
-
-// HasScope reports whether scopes contains want.
-func HasScope(scopes []string, want string) bool {
-	return slices.Contains(scopes, want)
 }

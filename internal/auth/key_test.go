@@ -130,7 +130,4 @@ func TestScopes(t *testing.T) {
 			t.Errorf("ValidateScopes(%v) = nil, want error", bad)
 		}
 	}
-	if !HasScope([]string{ScopeEmailsRead}, ScopeEmailsRead) || HasScope([]string{ScopeEmailsRead}, ScopeEmailsSend) {
-		t.Fatal("HasScope wrong")
-	}
 }

@@ -84,6 +84,25 @@ func TestRequireScopeRejectsMissingOrMalformedHeader(t *testing.T) {
 	}
 }
 
+func TestUnauthorizedResponsesAreIdentical(t *testing.T) {
+	s, logs := authServer(t, func(context.Context, string) (auth.Principal, error) {
+		return auth.Principal{}, auth.ErrUnauthorized
+	})
+	var bodies []string
+	for _, h := range []string{"", "Basic x", "Bearer " + testToken} {
+		rec, _ := callProtected(t, s, auth.ScopeEmailsSend, h)
+		bodies = append(bodies, rec.Body.String())
+	}
+	for _, b := range bodies[1:] {
+		if b != bodies[0] {
+			t.Fatalf("401 bodies differ: %q vs %q", bodies[0], b)
+		}
+	}
+	if strings.Contains(logs.String(), testToken) {
+		t.Errorf("token logged on 401 path: %s", logs)
+	}
+}
+
 func TestRequireScopeSchemeIsCaseInsensitive(t *testing.T) {
 	s, _ := authServer(t, func(context.Context, string) (auth.Principal, error) {
 		return auth.Principal{Scopes: []string{auth.ScopeEmailsSend}}, nil
@@ -127,6 +146,9 @@ func TestRequireScopeLookupOutageIs503(t *testing.T) {
 	}
 	if !strings.Contains(logs.String(), "authentication backend failed") {
 		t.Error("outage not logged")
+	}
+	if strings.Contains(logs.String(), testToken) {
+		t.Error("token logged on 503 path")
 	}
 }
 

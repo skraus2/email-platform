@@ -67,6 +67,8 @@ paths:
           $ref: "#/components/responses/UnsupportedMediaType"
         "422":
           $ref: "#/components/responses/UnprocessableEntity"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
   /v1/emails/{id}:
     get:
       operationId: getEmail
@@ -94,6 +96,8 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
 components:
   securitySchemes:
     projectKey:
@@ -224,6 +228,12 @@ components:
             $ref: "#/components/schemas/Error"
     UnprocessableEntity:
       description: "`validation_failed` (message names the field) or `templates_not_supported`."
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    ServiceUnavailable:
+      description: "`service_unavailable`: a dependency (e.g. the database) is temporarily unavailable; retry later."
       content:
         application/json:
           schema:
