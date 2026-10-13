@@ -148,3 +148,19 @@ func TestDispatchRefusesRecipientSuppressedAfterQueueing(t *testing.T) {
 		t.Fatalf("other project: calls=%d state=%+v, want captured", p.calls, s)
 	}
 }
+
+// The claim of a send attempt itself refuses a suppressed recipient, so a
+// suppression added after the email was loaded is still honoured.
+func TestMarkSendingRefusesSuppressedRecipient(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	pool, projectID := setup(t)
+	q := store.New(pool)
+	e := queued(t, pool, projectID)
+	if _, err := emails.AddSuppression(ctx, q, projectID, input.To, "manual"); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := q.MarkSending(ctx, store.MarkSendingParams{ID: e.ID, ProjectID: projectID}); err != nil || n != 0 {
+		t.Fatalf("MarkSending = %d, %v; want 0 rows for a suppressed recipient", n, err)
+	}
+}

@@ -47,6 +47,9 @@ type Config struct {
 
 	// APIRateLimitPerMinute caps accepted sends per project and minute.
 	APIRateLimitPerMinute int
+	// ProviderRatePerSecond caps messages per second the worker process
+	// hands to the provider.
+	ProviderRatePerSecond float64
 }
 
 // LookupFunc matches os.LookupEnv so tests can inject an environment.
@@ -115,6 +118,7 @@ func Load(lookup LookupFunc) (Config, error) {
 		errs = append(errs, errors.New("BODY_MAX_AGE must be at most 720h (message content is deleted by then at the latest)"))
 	}
 
+	cfg.ProviderRatePerSecond, errs = rateInRange(get, "PROVIDER_RATE_PER_SECOND", "10", errs)
 	cfg.APIRateLimitPerMinute, errs = intInRange(get, "API_RATE_LIMIT_PER_MINUTE", "600", 1, 1_000_000, errs)
 	cfg.SendMaxAttempts, errs = intInRange(get, "SEND_MAX_ATTEMPTS", "8", 1, maxSendAttempts, errs)
 	cfg.RetryBaseDelay, errs = positiveDuration(get, "RETRY_BASE_DELAY", "30s", errs)
@@ -158,6 +162,14 @@ func intInRange(get func(string, string) string, key, def string, lo, hi int, er
 		return 0, append(errs, fmt.Errorf("%s must be an integer between %d and %d", key, lo, hi))
 	}
 	return n, errs
+}
+
+func rateInRange(get func(string, string) string, key, def string, errs []error) (float64, []error) {
+	r, err := strconv.ParseFloat(get(key, def), 64)
+	if err != nil || !(r >= 0.01 && r <= 10_000) { // also rejects NaN
+		return 0, append(errs, fmt.Errorf("%s must be a number between 0.01 and 10000", key))
+	}
+	return r, errs
 }
 
 // maxBodyMaxAge caps the content safety net so it cannot be disabled by

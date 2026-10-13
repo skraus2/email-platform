@@ -32,6 +32,14 @@ type cleanupArgs struct{}
 
 func (cleanupArgs) Kind() string { return "cleanup_emails" }
 
+// Snooze, returned by a handler, runs the job again after d without using up
+// an attempt (backpressure, not failure).
+func Snooze(d time.Duration) error { return &snoozeError{d: d} }
+
+type snoozeError struct{ d time.Duration }
+
+func (e *snoozeError) Error() string { return "snoozed for " + e.d.String() }
+
 // Attempt describes the current execution of a job.
 type Attempt struct {
 	JobID       int64
@@ -165,7 +173,12 @@ func (w *sendEmailWorker) NextRetry(job *river.Job[SendEmailArgs]) time.Time {
 }
 
 func (w *sendEmailWorker) Work(ctx context.Context, job *river.Job[SendEmailArgs]) error {
-	return w.fn(ctx, job.Args, Attempt{JobID: job.ID, Number: job.Attempt, MaxAttempts: job.MaxAttempts})
+	err := w.fn(ctx, job.Args, Attempt{JobID: job.ID, Number: job.Attempt, MaxAttempts: job.MaxAttempts})
+	var snooze *snoozeError
+	if errors.As(err, &snooze) {
+		return river.JobSnooze(max(snooze.d, 0))
+	}
+	return err
 }
 
 type cleanupWorker struct {

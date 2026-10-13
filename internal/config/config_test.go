@@ -74,6 +74,9 @@ func TestLoadRejectsInvalid(t *testing.T) {
 		{"base delay below 1s", map[string]string{"DATABASE_URL": devURL, "RETRY_BASE_DELAY": "500ms"}, "RETRY_BASE_DELAY"},
 		{"max delay below base", map[string]string{"DATABASE_URL": devURL, "RETRY_BASE_DELAY": "1m", "RETRY_MAX_DELAY": "30s"}, "RETRY_MAX_DELAY"},
 		{"bad max delay", map[string]string{"DATABASE_URL": devURL, "RETRY_MAX_DELAY": "later"}, "RETRY_MAX_DELAY"},
+		{"provider rate zero", map[string]string{"DATABASE_URL": devURL, "PROVIDER_RATE_PER_SECOND": "0"}, "PROVIDER_RATE_PER_SECOND"},
+		{"provider rate NaN", map[string]string{"DATABASE_URL": devURL, "PROVIDER_RATE_PER_SECOND": "NaN"}, "PROVIDER_RATE_PER_SECOND"},
+		{"provider rate too high", map[string]string{"DATABASE_URL": devURL, "PROVIDER_RATE_PER_SECOND": "20000"}, "PROVIDER_RATE_PER_SECOND"},
 		{"rate limit zero", map[string]string{"DATABASE_URL": devURL, "API_RATE_LIMIT_PER_MINUTE": "0"}, "API_RATE_LIMIT_PER_MINUTE"},
 		{"rate limit too high", map[string]string{"DATABASE_URL": devURL, "API_RATE_LIMIT_PER_MINUTE": "1000001"}, "API_RATE_LIMIT_PER_MINUTE"},
 		{"max delay above a day", map[string]string{"DATABASE_URL": devURL, "RETRY_MAX_DELAY": "25h"}, "RETRY_MAX_DELAY"},
@@ -154,6 +157,9 @@ func TestLoadRetryDefaults(t *testing.T) {
 	cfg, err := Load(env(map[string]string{"DATABASE_URL": devURL}))
 	if err != nil {
 		t.Fatal(err)
+	}
+	if cfg.ProviderRatePerSecond != 10 {
+		t.Errorf("ProviderRatePerSecond = %v, want 10", cfg.ProviderRatePerSecond)
 	}
 	if cfg.APIRateLimitPerMinute != 600 {
 		t.Errorf("APIRateLimitPerMinute = %d, want 600", cfg.APIRateLimitPerMinute)

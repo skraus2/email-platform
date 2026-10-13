@@ -23,8 +23,12 @@ LEFT JOIN email_contents c ON c.email_id = e.id AND c.project_id = e.project_id
 WHERE e.id = $1 AND e.project_id = $2;
 
 -- name: MarkSending :execrows
+-- Claims the email for a send attempt. The suppression check is part of the
+-- claim, so a suppression added before this point is always honoured.
 UPDATE emails SET status = 'sending', attempts = attempts + 1, updated_at = now()
-WHERE id = $1 AND project_id = $2 AND status IN ('queued', 'sending');
+WHERE emails.id = $1 AND emails.project_id = $2 AND emails.status IN ('queued', 'sending')
+  AND NOT EXISTS (SELECT 1 FROM suppressions s
+                  WHERE s.project_id = emails.project_id AND lower(s.recipient) = lower(emails.recipient));
 
 -- name: MarkDispatched :execrows
 UPDATE emails

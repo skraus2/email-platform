@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -23,6 +24,7 @@ import (
 // retry sends it again. Such attempts are detectable (the email is already
 // "sending" when an attempt starts) and are logged, not hidden.
 type Dispatcher struct {
+	limiter    *bucket // nil: no provider rate limit
 	pool       *pgxpool.Pool
 	provider   delivery.Provider
 	logger     *slog.Logger
@@ -35,6 +37,16 @@ type Dispatcher struct {
 func NewDispatcher(pool *pgxpool.Pool, p delivery.Provider, logger *slog.Logger, timeout, bodyMaxAge time.Duration) *Dispatcher {
 	return &Dispatcher{pool: pool, provider: p, logger: logger, timeout: timeout, bodyMaxAge: bodyMaxAge}
 }
+
+// LimitProviderRate caps how many messages per second this process hands to
+// the provider. Jobs over the budget are snoozed, not failed.
+func (d *Dispatcher) LimitProviderRate(perSecond float64) {
+	d.limiter = newBucket(perSecond, time.Now)
+}
+
+// maxRateWait is the longest a job waits in place for a provider token;
+// beyond that it is snoozed and frees its worker slot.
+const maxRateWait = time.Second
 
 // SendEmail is the send_email job handler. A nil return ends the job; an
 // error makes the queue retry it (the error text is stored by the queue, so
@@ -73,12 +85,37 @@ func (d *Dispatcher) SendEmail(ctx context.Context, args jobs.SendEmailArgs, at 
 		return d.fail(ctx, log, key, CodeSuppressed, CodeSuppressed)
 	}
 
+	if d.limiter != nil {
+		wait, ok := d.limiter.TryTake(maxRateWait)
+		if !ok {
+			return jobs.Snooze(wait + rand.N(wait/10+50*time.Millisecond)) //nolint:gosec // scheduling jitter, not security
+		}
+		if wait > 0 {
+			timer := time.NewTimer(wait)
+			select {
+			case <-timer.C:
+			case <-ctx.Done():
+				timer.Stop()
+				return ctx.Err()
+			}
+		}
+	}
+
 	n, err := store.New(d.pool).MarkSending(ctx, store.MarkSendingParams(key))
 	if err != nil {
 		return d.internalError(ctx, log, key, at, fmt.Errorf("mark sending: %w", err))
 	}
 	if n == 0 {
-		return nil // finalized concurrently (e.g. expired)
+		// Finalized concurrently (e.g. expired), or suppressed since it was
+		// loaded.
+		suppressed, err := store.New(d.pool).IsSuppressed(ctx, store.IsSuppressedParams{ProjectID: key.ProjectID, Recipient: e.Recipient})
+		if err != nil {
+			return d.internalError(ctx, log, key, at, fmt.Errorf("check suppression: %w", err))
+		}
+		if suppressed {
+			return d.fail(ctx, log, key, CodeSuppressed, CodeSuppressed)
+		}
+		return nil
 	}
 	if e.Status == "sending" {
 		// A previous attempt was interrupted after possibly reaching the

@@ -15,10 +15,10 @@ import (
 	"github.com/skraus2/email-platform/internal/jobs"
 )
 
-// The queue stores every job error it sees. Those must be the sanitized
-// texts, never provider replies (which can contain recipient addresses).
 var testRetry = jobs.RetryPolicy{Base: time.Second, Max: 10 * time.Second}
 
+// The queue stores every job error it sees. Those must be the sanitized
+// texts, never provider replies (which can contain recipient addresses).
 func TestQueueStoresOnlySanitizedErrors(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -145,4 +145,82 @@ func (s *safeBuffer) String() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.b.String()
+}
+
+// With a provider rate below the worker concurrency, a backlog drains at
+// that rate: never faster, never stalled, and snoozes cost no attempts.
+func TestProviderRateDrainsBacklog(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	pool, projectID := setup(t)
+	logger := slog.New(slog.DiscardHandler)
+	enq, err := jobs.NewEnqueuer(pool, logger, testMaxAttempts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := emails.NewService(pool, enq, logger, unlimited)
+	const m, rate = 20, 5
+	for range m {
+		if _, err := svc.Create(ctx, projectID, input); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var mu sync.Mutex
+	var sent []time.Time
+	p := &fakeProvider{send: func(c context.Context, msg delivery.Message) (delivery.Result, error) {
+		mu.Lock()
+		sent = append(sent, time.Now())
+		mu.Unlock()
+		return captured(c, msg)
+	}}
+	d := emails.NewDispatcher(pool, p, logger, 5*time.Second, 168*time.Hour)
+	d.LimitProviderRate(rate)
+	w, err := jobs.NewWorker(jobs.WorkerConfig{
+		Pool: pool, Logger: logger, Concurrency: 10, JobTimeout: 10 * time.Second, Retry: testRetry,
+		Handlers: jobs.Handlers{SendEmail: d.SendEmail, Cleanup: d.Cleanup},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = w.Stop(5 * time.Second) })
+
+	deadline := time.Now().Add(30 * time.Second)
+	for count(t, pool, "SELECT count(*) FROM emails WHERE status = 'captured'") < m {
+		if time.Now().After(deadline) {
+			t.Fatalf("backlog not drained: %d/%d captured", count(t, pool, "SELECT count(*) FROM emails WHERE status = 'captured'"), m)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(sent) != m {
+		t.Fatalf("provider calls = %d, want %d", len(sent), m)
+	}
+	// Burst of `rate`, then one every 1/rate s: ≈ (m-rate)/rate seconds.
+	span := sent[len(sent)-1].Sub(sent[0])
+	if want := time.Duration(m-rate) * time.Second / rate; span < want*8/10 || span > want*3 {
+		t.Errorf("drain took %v, want about %v", span, want)
+	}
+	for i := range sent {
+		inWindow := 0
+		for _, s := range sent {
+			if !s.Before(sent[i]) && s.Sub(sent[i]) < time.Second {
+				inWindow++
+			}
+		}
+		if inWindow > 2*rate {
+			t.Fatalf("%d sends within one second, want at most %d (rate + burst)", inWindow, 2*rate)
+		}
+	}
+	if n := count(t, pool, "SELECT count(*) FROM emails WHERE attempts <> 1"); n != 0 {
+		t.Errorf("%d emails used more than one attempt; snoozes must not count", n)
+	}
+	if n := count(t, pool, "SELECT count(*) FROM river_job WHERE kind = 'send_email' AND (attempt <> 1 OR errors IS NOT NULL)"); n != 0 {
+		t.Errorf("%d jobs recorded extra attempts or errors", n)
+	}
 }

@@ -59,6 +59,7 @@ func run() error {
 		return err
 	}
 	dispatcher := emails.NewDispatcher(pool, provider, logger, cfg.ProviderTimeout, cfg.BodyMaxAge)
+	dispatcher.LimitProviderRate(cfg.ProviderRatePerSecond)
 	worker, err := jobs.NewWorker(jobs.WorkerConfig{
 		Pool:   pool,
 		Logger: logger,
