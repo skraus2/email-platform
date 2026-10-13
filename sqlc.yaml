@@ -7,6 +7,7 @@ sql:
     schema:
       - db/migrations/00001_baseline.sql
       - db/migrations/00002_projects_and_api_keys.sql
+      - db/migrations/00004_emails.sql
     queries: db/queries
     gen:
       go:
@@ -24,4 +25,9 @@ sql:
             nullable: true
             go_type:
               type: time.Time
+              pointer: true
+          - db_type: text
+            nullable: true
+            go_type:
+              type: string
               pointer: true

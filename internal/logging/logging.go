@@ -7,6 +7,7 @@ package logging
 import (
 	"io"
 	"log/slog"
+	"strings"
 )
 
 // New returns a logger writing to w in the given format ("json" or "text"),
@@ -20,4 +21,14 @@ func New(w io.Writer, format string, level slog.Level, process string) *slog.Log
 		h = slog.NewJSONHandler(w, opts)
 	}
 	return slog.New(h).With(slog.String("process", process))
+}
+
+// MaskEmail hides the local part of an address for logs:
+// "customer@example.test" → "c***@example.test".
+func MaskEmail(addr string) string {
+	at := strings.LastIndexByte(addr, '@')
+	if at <= 0 {
+		return "***"
+	}
+	return addr[:1] + "***" + addr[at:]
 }

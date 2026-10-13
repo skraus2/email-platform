@@ -1,0 +1,157 @@
+//go:build integration
+
+package httpapi_test
+
+import (
+	"context"
+	"encoding/json"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/skraus2/email-platform/internal/auth"
+	"github.com/skraus2/email-platform/internal/emails"
+	"github.com/skraus2/email-platform/internal/httpapi"
+	"github.com/skraus2/email-platform/internal/jobs"
+	"github.com/skraus2/email-platform/internal/store"
+	"github.com/skraus2/email-platform/internal/testdb"
+)
+
+// stack is the API wired exactly like cmd/api, on a throwaway database.
+type stack struct {
+	pool *pgxpool.Pool
+	q    *store.Queries
+	srv  *httptest.Server
+}
+
+func newStack(t *testing.T) *stack {
+	t.Helper()
+	pool := testdb.NewMigrated(t)
+	q := store.New(pool)
+	logger := slog.New(slog.DiscardHandler)
+	enq, err := jobs.NewEnqueuer(pool, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	api := httpapi.New(httpapi.Deps{
+		Logger: logger,
+		Emails: emails.NewService(pool, enq, logger),
+		Authenticate: func(ctx context.Context, token string) (auth.Principal, error) {
+			return auth.Authenticate(ctx, q.GetActiveKeyByPrefix, token)
+		},
+	})
+	srv := httptest.NewServer(api.Handler())
+	t.Cleanup(srv.Close)
+	return &stack{pool: pool, q: q, srv: srv}
+}
+
+// project creates a project with a key holding the given scopes (nil = all).
+func (s *stack) project(t *testing.T, scopes ...string) (uuid.UUID, string) {
+	t.Helper()
+	ctx := context.Background()
+	p, err := auth.CreateProject(ctx, s.q, "app-"+uuid.NewString()[:8])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(scopes) == 0 {
+		scopes = nil
+	}
+	token, _, err := auth.CreateKey(ctx, s.q, p.ID, scopes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p.ID, token
+}
+
+func (s *stack) do(t *testing.T, method, path, token, body string) (int, map[string]any) {
+	t.Helper()
+	req, err := http.NewRequestWithContext(context.Background(), method, s.srv.URL+path, strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	if body != "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	var m map[string]any
+	_ = json.Unmarshal(raw, &m)
+	return resp.StatusCode, m
+}
+
+const sendBody = `{"from":"noreply@example.test","to":"customer@example.test","subject":"Hi","text":"Hello"}`
+
+func TestPostEmailPersistsAndQueues(t *testing.T) {
+	t.Parallel()
+	s := newStack(t)
+	projectID, token := s.project(t)
+
+	code, body := s.do(t, http.MethodPost, "/v1/emails", token, sendBody)
+	if code != http.StatusAccepted || body["status"] != "queued" {
+		t.Fatalf("POST = %d %v", code, body)
+	}
+	id := uuid.MustParse(body["id"].(string))
+
+	var status string
+	var owner uuid.UUID
+	if err := s.pool.QueryRow(context.Background(),
+		"SELECT status, project_id FROM emails WHERE id = $1", id).Scan(&status, &owner); err != nil {
+		t.Fatalf("email not persisted when 202 was returned: %v", err)
+	}
+	if status != "queued" || owner != projectID {
+		t.Fatalf("row = %s / %s", status, owner)
+	}
+	var jobs int
+	_ = s.pool.QueryRow(context.Background(), "SELECT count(*) FROM river_job WHERE args->>'email_id' = $1", id.String()).Scan(&jobs)
+	if jobs != 1 {
+		t.Fatalf("jobs for email = %d, want 1", jobs)
+	}
+}
+
+func TestPostEmailAuthFailures(t *testing.T) {
+	t.Parallel()
+	s := newStack(t)
+	_, readOnly := s.project(t, auth.ScopeEmailsRead)
+	projectID, revoked := s.project(t)
+	prefix, _, _ := auth.ParseToken(revoked)
+	if err := auth.RevokeKey(context.Background(), s.q, prefix); err != nil {
+		t.Fatal(err)
+	}
+	disabledID, disabledKey := s.project(t)
+	if err := auth.SetProjectStatus(context.Background(), s.q, disabledID, false); err != nil {
+		t.Fatal(err)
+	}
+
+	for name, tc := range map[string]struct {
+		token string
+		want  int
+	}{
+		"no key":           {"", http.StatusUnauthorized},
+		"garbage key":      {"ep_nope", http.StatusUnauthorized},
+		"revoked key":      {revoked, http.StatusUnauthorized},
+		"disabled project": {disabledKey, http.StatusUnauthorized},
+		"missing scope":    {readOnly, http.StatusForbidden},
+	} {
+		if code, _ := s.do(t, http.MethodPost, "/v1/emails", tc.token, sendBody); code != tc.want {
+			t.Errorf("%s: code = %d, want %d", name, code, tc.want)
+		}
+	}
+	var n int
+	_ = s.pool.QueryRow(context.Background(), "SELECT count(*) FROM emails").Scan(&n)
+	if n != 0 {
+		t.Fatalf("%d emails created by rejected requests (project %s)", n, projectID)
+	}
+}

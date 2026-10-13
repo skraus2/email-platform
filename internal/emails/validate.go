@@ -1,0 +1,85 @@
+// Package emails accepts send requests: validation, persistence of the email
+// with its content, and enqueueing the dispatch job in the same transaction.
+package emails
+
+import (
+	"net/mail"
+	"strings"
+	"unicode/utf8"
+)
+
+// Limits for a send request.
+const (
+	MaxAddressLen  = 254
+	MaxSubjectLen  = 255 // characters
+	MaxBodyBytes   = 512 << 10
+	headerForbidCh = "\r\n\x00"
+)
+
+// CreateInput is one send request for one recipient.
+type CreateInput struct {
+	From    string
+	To      string
+	Subject string
+	Text    string
+	HTML    string
+}
+
+// ValidationError names the invalid field. Its message never repeats the
+// submitted value, so it is safe to return to clients and to log.
+type ValidationError struct {
+	Field  string
+	Reason string
+}
+
+func (e *ValidationError) Error() string { return e.Field + ": " + e.Reason }
+
+func invalid(field, reason string) error { return &ValidationError{Field: field, Reason: reason} }
+
+// Validate checks the request against the API contract.
+func (in CreateInput) Validate() error {
+	if err := validateAddress("from", in.From); err != nil {
+		return err
+	}
+	if err := validateAddress("to", in.To); err != nil {
+		return err
+	}
+	switch n := utf8.RuneCountInString(in.Subject); {
+	case n == 0:
+		return invalid("subject", "is required")
+	case n > MaxSubjectLen:
+		return invalid("subject", "must be at most 255 characters")
+	case strings.ContainsAny(in.Subject, headerForbidCh):
+		return invalid("subject", "must not contain line breaks or NUL")
+	}
+	if in.Text == "" && in.HTML == "" {
+		return invalid("text", "text or html is required")
+	}
+	for _, b := range []struct{ field, v string }{{"text", in.Text}, {"html", in.HTML}} {
+		if len(b.v) > MaxBodyBytes {
+			return invalid(b.field, "must be at most 512 KiB")
+		}
+		if strings.ContainsRune(b.v, 0) {
+			return invalid(b.field, "must not contain NUL")
+		}
+	}
+	return nil
+}
+
+// validateAddress accepts exactly one bare address (no display name, no
+// surrounding whitespace, no list).
+func validateAddress(field, v string) error {
+	switch {
+	case v == "":
+		return invalid(field, "is required")
+	case len(v) > MaxAddressLen:
+		return invalid(field, "must be at most 254 characters")
+	case strings.ContainsAny(v, headerForbidCh):
+		return invalid(field, "must not contain line breaks or NUL")
+	}
+	a, err := mail.ParseAddress(v)
+	if err != nil || a.Name != "" || a.Address != v {
+		return invalid(field, "must be a single plain email address like name@example.com")
+	}
+	return nil
+}

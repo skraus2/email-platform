@@ -134,7 +134,7 @@ func TestReadyzWhileDraining(t *testing.T) {
 
 func TestUnknownRouteReturnsErrorEnvelope(t *testing.T) {
 	s, _ := newTestServer(t)
-	resp := do(t, s, http.MethodGet, "/v1/emails", nil)
+	resp := do(t, s, http.MethodGet, "/v1/unknown", nil)
 	if resp.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", resp.Code)
 	}

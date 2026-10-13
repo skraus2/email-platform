@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"sync/atomic"
 	"time"
+
+	"github.com/skraus2/email-platform/internal/auth"
 )
 
 // readinessTimeout bounds all readiness checks together so a hung dependency
@@ -28,6 +30,7 @@ type Deps struct {
 	Logger       *slog.Logger
 	Checks       []Check
 	Authenticate Authenticator
+	Emails       EmailService
 }
 
 // Server holds the HTTP handler and readiness state.
@@ -35,13 +38,14 @@ type Server struct {
 	logger       *slog.Logger
 	checks       []Check
 	authenticate Authenticator
+	emails       EmailService
 	draining     atomic.Bool
 	handler      http.Handler
 }
 
 // New builds the API handler.
 func New(d Deps) *Server {
-	s := &Server{logger: d.Logger, checks: d.Checks, authenticate: d.Authenticate}
+	s := &Server{logger: d.Logger, checks: d.Checks, authenticate: d.Authenticate, emails: d.Emails}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
@@ -50,6 +54,8 @@ func New(d Deps) *Server {
 	// into 404s instead of 405s.
 	mux.HandleFunc("/healthz", methodNotAllowed(http.MethodGet))
 	mux.HandleFunc("/readyz", methodNotAllowed(http.MethodGet))
+	mux.HandleFunc("POST /v1/emails", s.requireScope(auth.ScopeEmailsSend, s.handleCreateEmail))
+	mux.HandleFunc("/v1/emails", methodNotAllowed(http.MethodPost))
 	mux.HandleFunc("/", handleNotFound)
 
 	s.handler = requestLogger(s.logger, mux)

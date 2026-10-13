@@ -20,6 +20,30 @@ type ApiKey struct {
 	RevokedAt  *time.Time
 }
 
+type Email struct {
+	ID         uuid.UUID
+	ProjectID  uuid.UUID
+	Sender     string
+	Recipient  string
+	Subject    string
+	Status     string
+	Provider   *string
+	ProviderID *string
+	Attempts   int32
+	LastError  *string
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
+	FinishedAt *time.Time
+}
+
+type EmailContent struct {
+	EmailID   uuid.UUID
+	ProjectID uuid.UUID
+	TextBody  *string
+	HtmlBody  *string
+	CreatedAt time.Time
+}
+
 type Project struct {
 	ID        uuid.UUID
 	Name      string

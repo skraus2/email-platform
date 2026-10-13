@@ -16,7 +16,9 @@ import (
 	"github.com/skraus2/email-platform/internal/auth"
 	"github.com/skraus2/email-platform/internal/config"
 	"github.com/skraus2/email-platform/internal/database"
+	"github.com/skraus2/email-platform/internal/emails"
 	"github.com/skraus2/email-platform/internal/httpapi"
+	"github.com/skraus2/email-platform/internal/jobs"
 	"github.com/skraus2/email-platform/internal/logging"
 	"github.com/skraus2/email-platform/internal/store"
 )
@@ -51,8 +53,13 @@ func run() error {
 	defer func() { _ = migrator.Close() }()
 
 	queries := store.New(pool)
+	enqueuer, err := jobs.NewEnqueuer(pool, logger)
+	if err != nil {
+		return err
+	}
 	api := httpapi.New(httpapi.Deps{
 		Logger: logger,
+		Emails: emails.NewService(pool, enqueuer, logger),
 		Authenticate: func(ctx context.Context, token string) (auth.Principal, error) {
 			return auth.Authenticate(ctx, queries.GetActiveKeyByPrefix, token)
 		},
