@@ -175,7 +175,12 @@ func TestProviderRateDrainsBacklog(t *testing.T) {
 		return captured(c, msg)
 	}}
 	d := emails.NewDispatcher(pool, p, logger, 5*time.Second, 168*time.Hour)
-	d.LimitProviderRate(rate)
+	if err := d.LimitProviderRate(rate); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.LimitProviderRate(0); err == nil {
+		t.Fatal("rate 0 accepted")
+	}
 	w, err := jobs.NewWorker(jobs.WorkerConfig{
 		Pool: pool, Logger: logger, Concurrency: 10, JobTimeout: 10 * time.Second, Retry: testRetry,
 		Handlers: jobs.Handlers{SendEmail: d.SendEmail, Cleanup: d.Cleanup},
@@ -213,12 +218,17 @@ func TestProviderRateDrainsBacklog(t *testing.T) {
 				inWindow++
 			}
 		}
-		if inWindow > 2*rate {
-			t.Fatalf("%d sends within one second, want at most %d (rate + burst)", inWindow, 2*rate)
+		// Provider call times trail token times by the claim's latency, so
+		// allow one send of slack.
+		if inWindow > 2*rate+1 {
+			t.Fatalf("%d sends within one second, want at most %d (rate + burst + 1 slack)", inWindow, 2*rate+1)
 		}
 	}
 	if n := count(t, pool, "SELECT count(*) FROM emails WHERE attempts <> 1"); n != 0 {
 		t.Errorf("%d emails used more than one attempt; snoozes must not count", n)
+	}
+	if n := count(t, pool, "SELECT count(*) FROM river_job WHERE kind = 'send_email' AND (metadata->>'snoozes')::int > 0"); n == 0 {
+		t.Error("no job was snoozed; the snooze path was not exercised")
 	}
 	if n := count(t, pool, "SELECT count(*) FROM river_job WHERE kind = 'send_email' AND (attempt <> 1 OR errors IS NOT NULL)"); n != 0 {
 		t.Errorf("%d jobs recorded extra attempts or errors", n)

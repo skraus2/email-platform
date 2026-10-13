@@ -32,9 +32,15 @@ type cleanupArgs struct{}
 
 func (cleanupArgs) Kind() string { return "cleanup_emails" }
 
-// Snooze, returned by a handler, runs the job again after d without using up
-// an attempt (backpressure, not failure).
+// Snooze, returned by a handler, runs the job again after d (at least
+// MinSnooze) without using up an attempt (backpressure, not failure).
 func Snooze(d time.Duration) error { return &snoozeError{d: d} }
+
+// MinSnooze keeps a snoozing job from spinning: snoozes cost no attempt, so
+// a near-zero snooze would loop on the database without bound.
+const MinSnooze = 100 * time.Millisecond
+
+func snoozeFor(d time.Duration) time.Duration { return max(d, MinSnooze) }
 
 type snoozeError struct{ d time.Duration }
 
@@ -176,7 +182,7 @@ func (w *sendEmailWorker) Work(ctx context.Context, job *river.Job[SendEmailArgs
 	err := w.fn(ctx, job.Args, Attempt{JobID: job.ID, Number: job.Attempt, MaxAttempts: job.MaxAttempts})
 	var snooze *snoozeError
 	if errors.As(err, &snooze) {
-		return river.JobSnooze(max(snooze.d, 0))
+		return river.JobSnooze(snoozeFor(snooze.d))
 	}
 	return err
 }

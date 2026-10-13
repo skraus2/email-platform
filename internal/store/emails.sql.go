@@ -331,6 +331,7 @@ func (q *Queries) MarkQueuedFailed(ctx context.Context, arg MarkQueuedFailedPara
 const markSending = `-- name: MarkSending :execrows
 UPDATE emails SET status = 'sending', attempts = attempts + 1, updated_at = now()
 WHERE emails.id = $1 AND emails.project_id = $2 AND emails.status IN ('queued', 'sending')
+  AND EXISTS (SELECT 1 FROM projects p WHERE p.id = emails.project_id AND p.status = 'active')
   AND NOT EXISTS (SELECT 1 FROM suppressions s
                   WHERE s.project_id = emails.project_id AND lower(s.recipient) = lower(emails.recipient))
 `
@@ -340,8 +341,9 @@ type MarkSendingParams struct {
 	ProjectID uuid.UUID
 }
 
-// Claims the email for a send attempt. The suppression check is part of the
-// claim, so a suppression added before this point is always honoured.
+// Claims the email for a send attempt. Project status and suppression are
+// checked as part of the claim, so a change made before this point is always
+// honoured.
 func (q *Queries) MarkSending(ctx context.Context, arg MarkSendingParams) (int64, error) {
 	result, err := q.db.Exec(ctx, markSending, arg.ID, arg.ProjectID)
 	if err != nil {

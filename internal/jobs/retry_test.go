@@ -72,3 +72,12 @@ func TestRetryNeverOverflows(t *testing.T) {
 		t.Errorf("doubling towards a huge Max overflowed: %v", d)
 	}
 }
+
+func TestSnoozeFloor(t *testing.T) {
+	t.Parallel()
+	for in, want := range map[time.Duration]time.Duration{-time.Second: MinSnooze, 0: MinSnooze, time.Millisecond: MinSnooze, 3 * time.Second: 3 * time.Second} {
+		if got := snoozeFor(in); got != want {
+			t.Errorf("snoozeFor(%v) = %v, want %v", in, got, want)
+		}
+	}
+}

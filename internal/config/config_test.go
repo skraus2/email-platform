@@ -76,6 +76,10 @@ func TestLoadRejectsInvalid(t *testing.T) {
 		{"bad max delay", map[string]string{"DATABASE_URL": devURL, "RETRY_MAX_DELAY": "later"}, "RETRY_MAX_DELAY"},
 		{"provider rate zero", map[string]string{"DATABASE_URL": devURL, "PROVIDER_RATE_PER_SECOND": "0"}, "PROVIDER_RATE_PER_SECOND"},
 		{"provider rate NaN", map[string]string{"DATABASE_URL": devURL, "PROVIDER_RATE_PER_SECOND": "NaN"}, "PROVIDER_RATE_PER_SECOND"},
+		{"provider rate below minimum", map[string]string{"DATABASE_URL": devURL, "PROVIDER_RATE_PER_SECOND": "0.005"}, "PROVIDER_RATE_PER_SECOND"},
+		{"provider rate negative", map[string]string{"DATABASE_URL": devURL, "PROVIDER_RATE_PER_SECOND": "-1"}, "PROVIDER_RATE_PER_SECOND"},
+		{"provider rate Inf", map[string]string{"DATABASE_URL": devURL, "PROVIDER_RATE_PER_SECOND": "Inf"}, "PROVIDER_RATE_PER_SECOND"},
+		{"provider rate overflow", map[string]string{"DATABASE_URL": devURL, "PROVIDER_RATE_PER_SECOND": "1e400"}, "PROVIDER_RATE_PER_SECOND"},
 		{"provider rate too high", map[string]string{"DATABASE_URL": devURL, "PROVIDER_RATE_PER_SECOND": "20000"}, "PROVIDER_RATE_PER_SECOND"},
 		{"rate limit zero", map[string]string{"DATABASE_URL": devURL, "API_RATE_LIMIT_PER_MINUTE": "0"}, "API_RATE_LIMIT_PER_MINUTE"},
 		{"rate limit too high", map[string]string{"DATABASE_URL": devURL, "API_RATE_LIMIT_PER_MINUTE": "1000001"}, "API_RATE_LIMIT_PER_MINUTE"},
@@ -170,6 +174,9 @@ func TestLoadRetryDefaults(t *testing.T) {
 	cfg, err = Load(env(map[string]string{"DATABASE_URL": devURL, "SEND_MAX_ATTEMPTS": "20", "RETRY_BASE_DELAY": "1s", "RETRY_MAX_DELAY": "5s"}))
 	if err != nil {
 		t.Fatal(err)
+	}
+	if frac, err := Load(env(map[string]string{"DATABASE_URL": devURL, "PROVIDER_RATE_PER_SECOND": "0.5"})); err != nil || frac.ProviderRatePerSecond != 0.5 {
+		t.Errorf("fractional provider rate: %v, %v", frac.ProviderRatePerSecond, err)
 	}
 	if cfg.SendMaxAttempts != 20 || cfg.RetryBaseDelay != time.Second || cfg.RetryMaxDelay != 5*time.Second {
 		t.Fatalf("retry overrides = %d %v %v", cfg.SendMaxAttempts, cfg.RetryBaseDelay, cfg.RetryMaxDelay)

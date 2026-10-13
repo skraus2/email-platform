@@ -39,9 +39,13 @@ func NewDispatcher(pool *pgxpool.Pool, p delivery.Provider, logger *slog.Logger,
 }
 
 // LimitProviderRate caps how many messages per second this process hands to
-// the provider. Jobs over the budget are snoozed, not failed.
-func (d *Dispatcher) LimitProviderRate(perSecond float64) {
+// the provider (0.01 to 10000). Jobs over the budget are snoozed, not failed.
+func (d *Dispatcher) LimitProviderRate(perSecond float64) error {
+	if !(perSecond >= 0.01 && perSecond <= 10_000) { // also rejects NaN
+		return errors.New("provider rate must be between 0.01 and 10000 per second")
+	}
 	d.limiter = newBucket(perSecond, time.Now)
+	return nil
 }
 
 // maxRateWait is the longest a job waits in place for a provider token;
@@ -96,7 +100,7 @@ func (d *Dispatcher) SendEmail(ctx context.Context, args jobs.SendEmailArgs, at 
 			case <-timer.C:
 			case <-ctx.Done():
 				timer.Stop()
-				return ctx.Err()
+				return d.internalError(ctx, log, key, at, fmt.Errorf("provider rate wait: %w", ctx.Err()))
 			}
 		}
 	}
@@ -106,13 +110,19 @@ func (d *Dispatcher) SendEmail(ctx context.Context, args jobs.SendEmailArgs, at 
 		return d.internalError(ctx, log, key, at, fmt.Errorf("mark sending: %w", err))
 	}
 	if n == 0 {
-		// Finalized concurrently (e.g. expired), or suppressed since it was
-		// loaded.
-		suppressed, err := store.New(d.pool).IsSuppressed(ctx, store.IsSuppressedParams{ProjectID: key.ProjectID, Recipient: e.Recipient})
-		if err != nil {
-			return d.internalError(ctx, log, key, at, fmt.Errorf("check suppression: %w", err))
-		}
-		if suppressed {
+		// Finalized concurrently (e.g. expired), or the project was disabled
+		// or the recipient suppressed since the email was loaded.
+		now, err := store.New(d.pool).GetEmailForDispatch(ctx, key)
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			return nil
+		case err != nil:
+			return d.internalError(ctx, log, key, at, fmt.Errorf("reload email: %w", err))
+		case now.Status != "queued" && now.Status != "sending":
+			return nil
+		case now.ProjectStatus != "active":
+			return d.fail(ctx, log, key, CodeProjectDisabled, CodeProjectDisabled)
+		case now.Suppressed:
 			return d.fail(ctx, log, key, CodeSuppressed, CodeSuppressed)
 		}
 		return nil
@@ -231,9 +241,11 @@ func (d *Dispatcher) finish(ctx context.Context, log *slog.Logger, key store.Get
 func (d *Dispatcher) fail(ctx context.Context, log *slog.Logger, key store.GetEmailForDispatchParams, code, detail string) error {
 	dctx, cancel := detached(ctx)
 	defer cancel()
+	var n int64
 	err := pgx.BeginFunc(dctx, d.pool, func(tx pgx.Tx) error {
 		q := store.New(tx)
-		if _, err := q.MarkFailed(dctx, store.MarkFailedParams{ID: key.ID, ProjectID: key.ProjectID, LastError: &detail, ErrorCode: &code}); err != nil {
+		var err error
+		if n, err = q.MarkFailed(dctx, store.MarkFailedParams{ID: key.ID, ProjectID: key.ProjectID, LastError: &detail, ErrorCode: &code}); err != nil {
 			return err
 		}
 		return q.DeleteEmailContent(dctx, store.DeleteEmailContentParams{EmailID: key.ID, ProjectID: key.ProjectID})
@@ -241,7 +253,9 @@ func (d *Dispatcher) fail(ctx context.Context, log *slog.Logger, key store.GetEm
 	if err != nil {
 		return fmt.Errorf("mark failed: %w", err)
 	}
-	log.WarnContext(ctx, "email failed", slog.String("error_code", code), slog.String("reason", detail))
+	if n > 0 {
+		log.WarnContext(ctx, "email failed", slog.String("error_code", code), slog.String("reason", detail))
+	}
 	return nil
 }
 
