@@ -1,5 +1,5 @@
-# Developer entry points. Every target here is exercised in CI or documented
-# as verified in README.md. Run `make help` for the list.
+# Developer entry points. Run `make help` for the list; README.md documents
+# which commands were verified.
 
 SHELL := /bin/bash
 .DEFAULT_GOAL := help
@@ -67,7 +67,7 @@ lint: lint-go lint-web lint-ci ## Run all linters
 
 .PHONY: lint-ci
 lint-ci: ## Lint GitHub Actions workflows (pinned actionlint)
-	go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+	go tool -modfile=tools/actionlint/go.mod actionlint
 
 .PHONY: lint-go
 lint-go: ## golangci-lint (incl. integration-tagged files)
@@ -95,7 +95,7 @@ build: ## Build Go binaries into ./bin and the dashboard
 check: fmt-check lint test build ## Fast full gate (no Docker needed)
 
 .PHONY: ci
-ci: check test-integration ## Everything CI runs (needs `make up`)
+ci: check test-integration smoke ## Local superset of CI gates (needs `make up migrate`)
 
 .PHONY: smoke
 smoke: ## Start API + worker binaries, probe health endpoints, stop them

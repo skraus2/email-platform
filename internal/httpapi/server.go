@@ -51,8 +51,11 @@ func New(logger *slog.Logger, checks []Check) *Server {
 // Handler returns the root handler including middleware.
 func (s *Server) Handler() http.Handler { return s.handler }
 
-// SetDraining marks the process as shutting down: /readyz fails immediately so
-// load balancers stop routing new traffic while in-flight requests finish.
+// SetDraining marks the process as shutting down so /readyz reports 503 on
+// connections that are still open. cmd/api calls http.Server.Shutdown right
+// after, which closes the listener: new probes then get "connection refused",
+// which is the not-ready signal. A drain delay before Shutdown is only needed
+// once a load balancer sits in front (none yet).
 func (s *Server) SetDraining() { s.draining.Store(true) }
 
 // handleHealthz is liveness: the process is up and serving HTTP. It must not

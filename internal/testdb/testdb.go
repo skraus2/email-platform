@@ -8,12 +8,14 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"net/url"
 	"os"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -26,7 +28,8 @@ func New(t testing.TB) *pgxpool.Pool {
 	t.Helper()
 	pool, err := pgxpool.New(context.Background(), NewURL(t))
 	if err != nil {
-		t.Fatalf("testdb: connect: %v", err)
+		// pgx parse errors can echo the URL incl. password; keep the message fixed.
+		t.Fatal("testdb: cannot connect to the throwaway database")
 	}
 	t.Cleanup(pool.Close)
 	return pool
@@ -44,7 +47,7 @@ func NewURL(t testing.TB) string {
 
 	admin, err := pgx.Connect(ctx, adminURL)
 	if err != nil {
-		t.Fatalf("testdb: connect admin (is `make up` running?): %v", err)
+		t.Fatalf("testdb: connect admin (is `make up` running?): %v", redact(err))
 	}
 	defer admin.Close(context.Background())
 
@@ -61,7 +64,7 @@ func NewURL(t testing.TB) string {
 		defer cancel()
 		conn, err := pgx.Connect(ctx, adminURL)
 		if err != nil {
-			t.Errorf("testdb: cleanup connect: %v", err)
+			t.Errorf("testdb: cleanup connect: %v", redact(err))
 			return
 		}
 		defer conn.Close(context.Background())
@@ -76,4 +79,14 @@ func NewURL(t testing.TB) string {
 	}
 	u.Path = "/" + name
 	return u.String()
+}
+
+// redact keeps connection errors useful (refused, auth failed) but drops
+// config parse errors, which can contain the full connection string.
+func redact(err error) error {
+	var pgErr *pgconn.ConnectError
+	if errors.As(err, &pgErr) {
+		return err
+	}
+	return errors.New("invalid TEST_DATABASE_URL or connection failure")
 }

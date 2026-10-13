@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io/fs"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/pressly/goose/v3"
@@ -16,6 +17,9 @@ import (
 
 	"github.com/skraus2/email-platform/db"
 )
+
+// sqlstateUndefinedTable is PostgreSQL's undefined_table error code.
+const sqlstateUndefinedTable = "42P01"
 
 // ErrSchemaBehind means the database has not been migrated to the version this
 // binary was built with. The process must not report ready in that state.
@@ -38,8 +42,10 @@ func Open(ctx context.Context, url string) (*pgxpool.Pool, error) {
 
 // Migrator applies and inspects the embedded goose migrations.
 type Migrator struct {
+	pool     *pgxpool.Pool
 	sqlDB    *sql.DB
 	provider *goose.Provider
+	target   int64 // newest embedded migration version
 }
 
 // NewMigrator builds a Migrator on top of an existing pool.
@@ -60,7 +66,11 @@ func NewMigrator(pool *pgxpool.Pool) (*Migrator, error) {
 		_ = sqlDB.Close()
 		return nil, fmt.Errorf("create migration provider: %w", err)
 	}
-	return &Migrator{sqlDB: sqlDB, provider: provider}, nil
+	var target int64
+	for _, src := range provider.ListSources() {
+		target = max(target, src.Version)
+	}
+	return &Migrator{pool: pool, sqlDB: sqlDB, provider: provider, target: target}, nil
 }
 
 // Up applies all pending migrations.
@@ -86,13 +96,22 @@ func (m *Migrator) Versions(ctx context.Context) (current, target int64, err err
 
 // CheckSchema returns ErrSchemaBehind if migrations are pending. A database
 // that is ahead of this binary is accepted (expand/contract deployments).
+//
+// It is a plain read on the pool on purpose: goose's GetVersions creates the
+// version table and serialises on a mutex that ignores ctx, which a readiness
+// probe must never do.
 func (m *Migrator) CheckSchema(ctx context.Context) error {
-	current, target, err := m.Versions(ctx)
-	if err != nil {
+	var current int64
+	err := m.pool.QueryRow(ctx, "SELECT COALESCE(MAX(version_id), 0) FROM goose_db_version").Scan(&current)
+	var pgErr *pgconn.PgError
+	switch {
+	case errors.As(err, &pgErr) && pgErr.Code == sqlstateUndefinedTable:
+		current = 0 // never migrated
+	case err != nil:
 		return fmt.Errorf("read schema version: %w", err)
 	}
-	if current < target {
-		return fmt.Errorf("%w: at %d, want %d", ErrSchemaBehind, current, target)
+	if current < m.target {
+		return fmt.Errorf("%w: at %d, want %d", ErrSchemaBehind, current, m.target)
 	}
 	return nil
 }

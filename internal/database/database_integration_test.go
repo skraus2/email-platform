@@ -76,7 +76,36 @@ func TestReadyFailsWhenDatabaseUnreachable(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = m.Close() })
 
-	if err := database.Ready(ctx, pool, m); err == nil {
-		t.Fatal("Ready = nil for unreachable database")
+	err = database.Ready(ctx, pool, m)
+	if err == nil || errors.Is(err, database.ErrSchemaBehind) {
+		t.Fatalf("Ready = %v, want a connection error", err)
+	}
+}
+
+// Readiness probes run constantly and under a least-privilege role later; they
+// must never write (e.g. create goose's version table) or take migration locks.
+func TestReadinessCheckIsReadOnly(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	pool, err := database.Open(ctx, testdb.NewURL(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	m, err := database.NewMigrator(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = m.Close() })
+
+	if err := database.Ready(ctx, pool, m); !errors.Is(err, database.ErrSchemaBehind) {
+		t.Fatalf("Ready on empty db = %v, want ErrSchemaBehind", err)
+	}
+	var table *string
+	if err := pool.QueryRow(ctx, "SELECT to_regclass('goose_db_version')::text").Scan(&table); err != nil {
+		t.Fatal(err)
+	}
+	if table != nil {
+		t.Fatalf("readiness check created %s; it must be read-only", *table)
 	}
 }
