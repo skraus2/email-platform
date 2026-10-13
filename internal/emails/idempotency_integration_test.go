@@ -23,7 +23,7 @@ import (
 
 func newService(t *testing.T, pool *pgxpool.Pool, logs *bytes.Buffer) *emails.Service {
 	t.Helper()
-	enq, err := jobs.NewEnqueuer(pool, slog.New(slog.DiscardHandler))
+	enq, err := jobs.NewEnqueuer(pool, slog.New(slog.DiscardHandler), testMaxAttempts)
 	if err != nil {
 		t.Fatal(err)
 	}

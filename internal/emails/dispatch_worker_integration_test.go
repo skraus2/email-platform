@@ -17,12 +17,14 @@ import (
 
 // The queue stores every job error it sees. Those must be the sanitized
 // texts, never provider replies (which can contain recipient addresses).
+var testRetry = jobs.RetryPolicy{Base: time.Second, Max: 10 * time.Second}
+
 func TestQueueStoresOnlySanitizedErrors(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	pool, projectID := setup(t)
 	logger := slog.New(slog.DiscardHandler)
-	enq, err := jobs.NewEnqueuer(pool, logger)
+	enq, err := jobs.NewEnqueuer(pool, logger, testMaxAttempts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,7 +40,7 @@ func TestQueueStoresOnlySanitizedErrors(t *testing.T) {
 	}}
 	d := emails.NewDispatcher(pool, p, logger, 5*time.Second, 168*time.Hour)
 	w, err := jobs.NewWorker(jobs.WorkerConfig{
-		Pool: pool, Logger: logger, Concurrency: 1, JobTimeout: 10 * time.Second,
+		Pool: pool, Logger: logger, Concurrency: 1, JobTimeout: 10 * time.Second, Retry: testRetry,
 		Handlers: jobs.Handlers{SendEmail: d.SendEmail, Cleanup: d.Cleanup},
 	})
 	if err != nil {
@@ -85,7 +87,7 @@ func TestInterruptedDispatchIsRescuedAndFlagged(t *testing.T) {
 	ctx := context.Background()
 	pool, projectID := setup(t)
 	quiet := slog.New(slog.DiscardHandler)
-	enq, _ := jobs.NewEnqueuer(pool, quiet)
+	enq, _ := jobs.NewEnqueuer(pool, quiet, testMaxAttempts)
 	e, err := emails.NewService(pool, enq, quiet).Create(ctx, projectID, input)
 	if err != nil {
 		t.Fatal(err)
@@ -105,7 +107,7 @@ func TestInterruptedDispatchIsRescuedAndFlagged(t *testing.T) {
 	p := &fakeProvider{send: captured}
 	d := emails.NewDispatcher(pool, p, logger, 5*time.Second, 168*time.Hour)
 	w, err := jobs.NewWorker(jobs.WorkerConfig{
-		Pool: pool, Logger: quiet, Concurrency: 1, JobTimeout: 500 * time.Millisecond, RescueStuckJobsAfter: time.Second,
+		Pool: pool, Logger: quiet, Concurrency: 1, JobTimeout: 500 * time.Millisecond, RescueStuckJobsAfter: time.Second, Retry: testRetry,
 		Handlers: jobs.Handlers{SendEmail: d.SendEmail, Cleanup: d.Cleanup},
 	})
 	if err != nil {

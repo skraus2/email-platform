@@ -21,6 +21,8 @@ import (
 	"github.com/skraus2/email-platform/internal/testdb"
 )
 
+const testMaxAttempts = 5
+
 type failingEnqueuer struct{}
 
 func (failingEnqueuer) EnqueueSendEmail(context.Context, pgx.Tx, jobs.SendEmailArgs) error {
@@ -54,7 +56,7 @@ func TestCreatePersistsEmailContentAndJobTogether(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	pool, projectID := setup(t)
-	enq, err := jobs.NewEnqueuer(pool, slog.New(slog.DiscardHandler))
+	enq, err := jobs.NewEnqueuer(pool, slog.New(slog.DiscardHandler), testMaxAttempts)
 	if err != nil {
 		t.Fatal(err)
 	}

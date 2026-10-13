@@ -8,10 +8,12 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/skraus2/email-platform/internal/delivery"
+	"github.com/skraus2/email-platform/internal/jobs"
 )
 
 // Environment names. Production enables stricter validation.
@@ -36,6 +38,12 @@ type Config struct {
 	SMTPAddr        string
 	ProviderTimeout time.Duration
 	BodyMaxAge      time.Duration
+
+	// Dispatch retries. The API stamps SendMaxAttempts on each new job; the
+	// worker spaces retries with the delays.
+	SendMaxAttempts int
+	RetryBaseDelay  time.Duration
+	RetryMaxDelay   time.Duration
 }
 
 // LookupFunc matches os.LookupEnv so tests can inject an environment.
@@ -104,10 +112,41 @@ func Load(lookup LookupFunc) (Config, error) {
 		errs = append(errs, errors.New("BODY_MAX_AGE must be at most 720h (message content is deleted by then at the latest)"))
 	}
 
+	cfg.SendMaxAttempts, errs = intInRange(get, "SEND_MAX_ATTEMPTS", "8", 1, maxSendAttempts, errs)
+	cfg.RetryBaseDelay, errs = positiveDuration(get, "RETRY_BASE_DELAY", "30s", errs)
+	if cfg.RetryBaseDelay > 0 && cfg.RetryBaseDelay < time.Second {
+		errs = append(errs, errors.New("RETRY_BASE_DELAY must be at least 1s"))
+	}
+	cfg.RetryMaxDelay, errs = positiveDuration(get, "RETRY_MAX_DELAY", "1h", errs)
+	if cfg.RetryMaxDelay > 0 && cfg.RetryMaxDelay < cfg.RetryBaseDelay {
+		errs = append(errs, errors.New("RETRY_MAX_DELAY must not be shorter than RETRY_BASE_DELAY"))
+	}
+	if len(errs) == 0 {
+		// Sanity check, not a hard bound (snoozes, queue lag and crash rescue
+		// add time; the expiry job is the real safety net): a full retry
+		// schedule must fit into the content retention.
+		policy := jobs.RetryPolicy{Base: cfg.RetryBaseDelay, Max: cfg.RetryMaxDelay}
+		schedule := policy.WorstCase(cfg.SendMaxAttempts) + time.Duration(cfg.SendMaxAttempts)*jobs.AttemptBudget(cfg.ProviderTimeout)
+		if schedule >= cfg.BodyMaxAge {
+			errs = append(errs, fmt.Errorf("retry schedule (up to %v with SEND_MAX_ATTEMPTS, RETRY_*_DELAY and PROVIDER_TIMEOUT) must be shorter than BODY_MAX_AGE", schedule))
+		}
+	}
+
 	if err := errors.Join(errs...); err != nil {
 		return Config{}, fmt.Errorf("invalid configuration: %w", err)
 	}
 	return cfg, nil
+}
+
+// maxSendAttempts bounds how often one email can be retried.
+const maxSendAttempts = 25
+
+func intInRange(get func(string, string) string, key, def string, lo, hi int, errs []error) (int, []error) {
+	n, err := strconv.Atoi(get(key, def))
+	if err != nil || n < lo || n > hi {
+		return 0, append(errs, fmt.Errorf("%s must be an integer between %d and %d", key, lo, hi))
+	}
+	return n, errs
 }
 
 // maxBodyMaxAge caps the content safety net so it cannot be disabled by

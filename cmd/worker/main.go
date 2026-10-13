@@ -66,10 +66,11 @@ func run() error {
 			SendEmail: dispatcher.SendEmail,
 			Cleanup:   dispatcher.Cleanup,
 		},
+		Retry:       jobs.RetryPolicy{Base: cfg.RetryBaseDelay, Max: cfg.RetryMaxDelay},
 		Concurrency: workerConcurrency,
 		// A job may run for one provider call plus a few DB round trips; a job
 		// still "running" well past that belongs to a dead worker.
-		JobTimeout:           cfg.ProviderTimeout + 30*time.Second,
+		JobTimeout:           jobs.AttemptBudget(cfg.ProviderTimeout),
 		RescueStuckJobsAfter: 5 * time.Minute,
 	})
 	if err != nil {

@@ -53,7 +53,7 @@ func run() error {
 	defer func() { _ = migrator.Close() }()
 
 	queries := store.New(pool)
-	enqueuer, err := jobs.NewEnqueuer(pool, logger)
+	enqueuer, err := jobs.NewEnqueuer(pool, logger, cfg.SendMaxAttempts)
 	if err != nil {
 		return err
 	}

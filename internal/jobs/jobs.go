@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	"time"
 
 	"github.com/google/uuid"
@@ -16,9 +17,6 @@ import (
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 )
-
-// SendEmailMaxAttempts bounds dispatch retries until retry tuning exists.
-const SendEmailMaxAttempts = 5
 
 // SendEmailArgs identifies the email to dispatch. Both ids are carried so the
 // handler can scope every query by project.
@@ -29,11 +27,6 @@ type SendEmailArgs struct {
 
 // Kind implements river.JobArgs.
 func (SendEmailArgs) Kind() string { return "send_email" }
-
-// InsertOpts implements river.JobArgsWithInsertOpts.
-func (SendEmailArgs) InsertOpts() river.InsertOpts {
-	return river.InsertOpts{MaxAttempts: SendEmailMaxAttempts}
-}
 
 type cleanupArgs struct{}
 
@@ -58,22 +51,27 @@ type Handlers struct {
 
 // Enqueuer inserts jobs. The API process uses it insert-only.
 type Enqueuer struct {
-	client *river.Client[pgx.Tx]
+	client      *river.Client[pgx.Tx]
+	maxAttempts int
 }
 
-// NewEnqueuer builds an insert-only client (it never works jobs).
-func NewEnqueuer(pool *pgxpool.Pool, logger *slog.Logger) (*Enqueuer, error) {
+// NewEnqueuer builds an insert-only client (it never works jobs). Every
+// send_email job gets sendMaxAttempts attempts.
+func NewEnqueuer(pool *pgxpool.Pool, logger *slog.Logger, sendMaxAttempts int) (*Enqueuer, error) {
+	if sendMaxAttempts < 1 {
+		return nil, errors.New("jobs: sendMaxAttempts must be at least 1")
+	}
 	c, err := river.NewClient(riverpgxv5.New(pool), &river.Config{Logger: logger})
 	if err != nil {
 		return nil, fmt.Errorf("create job client: %w", err)
 	}
-	return &Enqueuer{client: c}, nil
+	return &Enqueuer{client: c, maxAttempts: sendMaxAttempts}, nil
 }
 
 // EnqueueSendEmail inserts the dispatch job in tx. The job only becomes
 // visible to workers when tx commits, and disappears if it rolls back.
 func (e *Enqueuer) EnqueueSendEmail(ctx context.Context, tx pgx.Tx, args SendEmailArgs) error {
-	if _, err := e.client.InsertTx(ctx, tx, args, nil); err != nil {
+	if _, err := e.client.InsertTx(ctx, tx, args, &river.InsertOpts{MaxAttempts: e.maxAttempts}); err != nil {
 		return fmt.Errorf("enqueue send_email: %w", err)
 	}
 	return nil
@@ -84,6 +82,7 @@ type WorkerConfig struct {
 	Pool            *pgxpool.Pool
 	Logger          *slog.Logger
 	Handlers        Handlers
+	Retry           RetryPolicy // spacing of send_email retries
 	Concurrency     int
 	JobTimeout      time.Duration
 	CleanupInterval time.Duration
@@ -102,8 +101,11 @@ func NewWorker(cfg WorkerConfig) (*Worker, error) {
 	if cfg.Handlers.SendEmail == nil || cfg.Handlers.Cleanup == nil {
 		return nil, errors.New("jobs: all handlers are required")
 	}
+	if cfg.Retry.Base <= 0 || cfg.Retry.Max < cfg.Retry.Base {
+		return nil, errors.New("jobs: retry policy needs 0 < Base <= Max")
+	}
 	workers := river.NewWorkers()
-	river.AddWorker(workers, &sendEmailWorker{fn: cfg.Handlers.SendEmail})
+	river.AddWorker(workers, &sendEmailWorker{fn: cfg.Handlers.SendEmail, retry: cfg.Retry})
 	river.AddWorker(workers, &cleanupWorker{fn: cfg.Handlers.Cleanup})
 
 	interval := cfg.CleanupInterval
@@ -151,7 +153,15 @@ func (w *Worker) Stop(timeout time.Duration) error {
 
 type sendEmailWorker struct {
 	river.WorkerDefaults[SendEmailArgs]
-	fn func(context.Context, SendEmailArgs, Attempt) error
+	fn    func(context.Context, SendEmailArgs, Attempt) error
+	retry RetryPolicy
+}
+
+// NextRetry replaces River's default schedule. Like River's own policy it
+// numbers retries by recorded errors (the current one is not in the row
+// yet); snoozes record no error and so do not advance the backoff.
+func (w *sendEmailWorker) NextRetry(job *river.Job[SendEmailArgs]) time.Time {
+	return time.Now().Add(w.retry.Delay(len(job.Errors)+1, rand.Float64))
 }
 
 func (w *sendEmailWorker) Work(ctx context.Context, job *river.Job[SendEmailArgs]) error {

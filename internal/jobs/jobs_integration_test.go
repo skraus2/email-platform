@@ -4,6 +4,7 @@ package jobs_test
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"sync"
@@ -19,6 +20,10 @@ import (
 
 var quiet = slog.New(slog.NewTextHandler(io.Discard, nil))
 
+const testMaxAttempts = 5
+
+var testRetry = jobs.RetryPolicy{Base: time.Second, Max: 10 * time.Second}
+
 func countJobs(t *testing.T, pool *pgxpool.Pool) int {
 	t.Helper()
 	var n int
@@ -32,7 +37,7 @@ func TestEnqueueIsTransactional(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	pool := testdb.NewMigrated(t)
-	enq, err := jobs.NewEnqueuer(pool, quiet)
+	enq, err := jobs.NewEnqueuer(pool, quiet, testMaxAttempts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,8 +71,8 @@ func TestEnqueueIsTransactional(t *testing.T) {
 	if err := pool.QueryRow(ctx, "SELECT max_attempts FROM river_job WHERE kind = 'send_email'").Scan(&maxAttempts); err != nil {
 		t.Fatal(err)
 	}
-	if maxAttempts != jobs.SendEmailMaxAttempts {
-		t.Fatalf("max_attempts = %d, want %d", maxAttempts, jobs.SendEmailMaxAttempts)
+	if maxAttempts != testMaxAttempts {
+		t.Fatalf("max_attempts = %d, want %d", maxAttempts, testMaxAttempts)
 	}
 }
 
@@ -103,7 +108,7 @@ func (r *recorder) handlers() jobs.Handlers {
 func startWorker(t *testing.T, pool *pgxpool.Pool, h jobs.Handlers, rescueAfter time.Duration) {
 	t.Helper()
 	w, err := jobs.NewWorker(jobs.WorkerConfig{
-		Pool: pool, Logger: quiet, Handlers: h, Concurrency: 2,
+		Pool: pool, Logger: quiet, Handlers: h, Concurrency: 2, Retry: testRetry,
 		JobTimeout: 500 * time.Millisecond, RescueStuckJobsAfter: rescueAfter,
 	})
 	if err != nil {
@@ -135,7 +140,7 @@ func TestWorkerRunsSendEmailAndCleanup(t *testing.T) {
 	rec := newRecorder()
 	startWorker(t, pool, rec.handlers(), 0)
 
-	enq, _ := jobs.NewEnqueuer(pool, quiet)
+	enq, _ := jobs.NewEnqueuer(pool, quiet, testMaxAttempts)
 	args := jobs.SendEmailArgs{EmailID: uuid.New(), ProjectID: uuid.New()}
 	tx, _ := pool.Begin(ctx)
 	if err := enq.EnqueueSendEmail(ctx, tx, args); err != nil {
@@ -152,7 +157,7 @@ func TestWorkerRunsSendEmailAndCleanup(t *testing.T) {
 	if gotArgs != args {
 		t.Errorf("handler args = %+v, want %+v", gotArgs, args)
 	}
-	if a := gotAttempt; a.Number != 1 || a.MaxAttempts != jobs.SendEmailMaxAttempts || a.Final() {
+	if a := gotAttempt; a.Number != 1 || a.MaxAttempts != testMaxAttempts || a.Final() {
 		t.Errorf("attempt = %+v", a)
 	}
 	select {
@@ -169,7 +174,7 @@ func TestStuckJobIsRescuedAndRetried(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	pool := testdb.NewMigrated(t)
-	enq, _ := jobs.NewEnqueuer(pool, quiet)
+	enq, _ := jobs.NewEnqueuer(pool, quiet, testMaxAttempts)
 	args := jobs.SendEmailArgs{EmailID: uuid.New(), ProjectID: uuid.New()}
 	tx, _ := pool.Begin(ctx)
 	if err := enq.EnqueueSendEmail(ctx, tx, args); err != nil {
@@ -206,7 +211,7 @@ func TestStartContextCancelDoesNotCancelRunningJobs(t *testing.T) {
 	running := make(chan struct{})
 	result := make(chan error, 1)
 	w, err := jobs.NewWorker(jobs.WorkerConfig{
-		Pool: pool, Logger: quiet, Concurrency: 1, JobTimeout: 10 * time.Second,
+		Pool: pool, Logger: quiet, Concurrency: 1, JobTimeout: 10 * time.Second, Retry: testRetry,
 		Handlers: jobs.Handlers{
 			SendEmail: func(jobCtx context.Context, _ jobs.SendEmailArgs, _ jobs.Attempt) error {
 				close(running)
@@ -228,7 +233,7 @@ func TestStartContextCancelDoesNotCancelRunningJobs(t *testing.T) {
 	if err := w.Start(startCtx); err != nil {
 		t.Fatal(err)
 	}
-	enq, _ := jobs.NewEnqueuer(pool, quiet)
+	enq, _ := jobs.NewEnqueuer(pool, quiet, testMaxAttempts)
 	tx, _ := pool.Begin(ctx)
 	_ = enq.EnqueueSendEmail(ctx, tx, jobs.SendEmailArgs{EmailID: uuid.New(), ProjectID: uuid.New()})
 	_ = tx.Commit(ctx)
@@ -244,5 +249,71 @@ func TestStartContextCancelDoesNotCancelRunningJobs(t *testing.T) {
 	}
 	if err := <-result; err != nil {
 		t.Fatalf("running job was cancelled by the start context: %v", err)
+	}
+}
+
+// A failed send_email job is rescheduled by the configured policy, not by
+// River's default (which would retry the first time after about 1 s).
+func TestFailedSendIsRescheduledByPolicy(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	pool := testdb.NewMigrated(t)
+	failed := make(chan struct{}, 1)
+	w, err := jobs.NewWorker(jobs.WorkerConfig{
+		Pool: pool, Logger: quiet, Concurrency: 1, JobTimeout: 10 * time.Second,
+		Retry: jobs.RetryPolicy{Base: time.Minute, Max: time.Hour},
+		Handlers: jobs.Handlers{
+			SendEmail: func(context.Context, jobs.SendEmailArgs, jobs.Attempt) error {
+				failed <- struct{}{}
+				return errors.New("delivery failed: connect")
+			},
+			Cleanup: func(context.Context) error { return nil },
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = w.Stop(5 * time.Second) })
+	enq, _ := jobs.NewEnqueuer(pool, quiet, testMaxAttempts)
+	tx, _ := pool.Begin(ctx)
+	if err := enq.EnqueueSendEmail(ctx, tx, jobs.SendEmailArgs{EmailID: uuid.New(), ProjectID: uuid.New()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-failed:
+	case <-time.After(15 * time.Second):
+		t.Fatal("job never ran")
+	}
+
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var state string
+		var wait float64
+		err := pool.QueryRow(ctx, `SELECT state, extract(epoch FROM scheduled_at - (errors[1]->>'at')::timestamptz)
+			FROM river_job WHERE kind = 'send_email'`).Scan(&state, &wait)
+		if err == nil && state == "retryable" {
+			// First retry: between Base/2 and Base (1 s slack for clocks).
+			if wait < 29 || wait > 61 {
+				t.Fatalf("first retry scheduled %.1fs after the error, want 30–60s", wait)
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("job not retryable: state %q, err %v", state, err)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+func TestEnqueueRequiresAttempts(t *testing.T) {
+	t.Parallel()
+	if _, err := jobs.NewEnqueuer(testdb.NewMigrated(t), quiet, 0); err == nil {
+		t.Fatal("zero attempts accepted")
 	}
 }

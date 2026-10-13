@@ -86,7 +86,7 @@ func dispatcher(pool *pgxpool.Pool, p delivery.Provider, logs *bytes.Buffer) *em
 }
 
 func attempt(n int) jobs.Attempt {
-	return jobs.Attempt{JobID: 1, Number: n, MaxAttempts: jobs.SendEmailMaxAttempts}
+	return jobs.Attempt{JobID: 1, Number: n, MaxAttempts: testMaxAttempts}
 }
 
 func args(e emails.Email) jobs.SendEmailArgs {
@@ -174,7 +174,7 @@ func TestDispatchTemporaryErrorRetriesThenFailsOnFinalAttempt(t *testing.T) {
 		t.Fatalf("after attempt 1: %+v (code %q)", s, s.code())
 	}
 
-	if err := d.SendEmail(context.Background(), args(e), attempt(jobs.SendEmailMaxAttempts)); err != nil {
+	if err := d.SendEmail(context.Background(), args(e), attempt(testMaxAttempts)); err != nil {
 		t.Fatalf("final attempt must end the job, got %v", err)
 	}
 	if s := state(t, pool, e.ID); s.status != "failed" || s.hasContent || !s.finished || s.code() != emails.CodeProviderUnreachable {
@@ -435,7 +435,7 @@ func TestInternalErrorOnFinalAttemptFailsEmail(t *testing.T) {
 		t.Fatalf("after a non-final internal error: %+v", s)
 	}
 
-	if err := d.SendEmail(gone, args(e), attempt(jobs.SendEmailMaxAttempts)); err != nil {
+	if err := d.SendEmail(gone, args(e), attempt(testMaxAttempts)); err != nil {
 		t.Fatalf("final attempt must end the job, got %v", err)
 	}
 	if s := state(t, pool, e.ID); p.calls != 0 || s.status != "failed" || s.hasContent || s.code() != emails.CodeInternalError {

@@ -31,6 +31,7 @@ func TestSendThroughWorkerToMailpit(t *testing.T) {
 	d := emails.NewDispatcher(s.pool, mp, logger, 5*time.Second, 168*time.Hour)
 	w, err := jobs.NewWorker(jobs.WorkerConfig{
 		Pool: s.pool, Logger: logger, Concurrency: 2, JobTimeout: 30 * time.Second,
+		Retry:    jobs.RetryPolicy{Base: time.Second, Max: 10 * time.Second},
 		Handlers: jobs.Handlers{SendEmail: d.SendEmail, Cleanup: d.Cleanup},
 	})
 	if err != nil {

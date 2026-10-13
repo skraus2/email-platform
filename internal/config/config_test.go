@@ -68,6 +68,13 @@ func TestLoadRejectsInvalid(t *testing.T) {
 		{"bad timeout", map[string]string{"DATABASE_URL": devURL, "SHUTDOWN_TIMEOUT": "soon"}, "SHUTDOWN_TIMEOUT"},
 		{"negative timeout", map[string]string{"DATABASE_URL": devURL, "SHUTDOWN_TIMEOUT": "-1s"}, "SHUTDOWN_TIMEOUT"},
 		{"production without tls", map[string]string{"DATABASE_URL": devURL, "APP_ENV": "production"}, "sslmode"},
+		{"max attempts zero", map[string]string{"DATABASE_URL": devURL, "SEND_MAX_ATTEMPTS": "0"}, "SEND_MAX_ATTEMPTS"},
+		{"max attempts too high", map[string]string{"DATABASE_URL": devURL, "SEND_MAX_ATTEMPTS": "26"}, "SEND_MAX_ATTEMPTS"},
+		{"max attempts not a number", map[string]string{"DATABASE_URL": devURL, "SEND_MAX_ATTEMPTS": "many"}, "SEND_MAX_ATTEMPTS"},
+		{"base delay below 1s", map[string]string{"DATABASE_URL": devURL, "RETRY_BASE_DELAY": "500ms"}, "RETRY_BASE_DELAY"},
+		{"max delay below base", map[string]string{"DATABASE_URL": devURL, "RETRY_BASE_DELAY": "1m", "RETRY_MAX_DELAY": "30s"}, "RETRY_MAX_DELAY"},
+		{"bad max delay", map[string]string{"DATABASE_URL": devURL, "RETRY_MAX_DELAY": "later"}, "RETRY_MAX_DELAY"},
+		{"retries outlive content", map[string]string{"DATABASE_URL": devURL, "SEND_MAX_ATTEMPTS": "25", "RETRY_BASE_DELAY": "1h", "RETRY_MAX_DELAY": "24h", "BODY_MAX_AGE": "48h"}, "BODY_MAX_AGE"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -137,6 +144,23 @@ func TestLoadMailDefaults(t *testing.T) {
 	if cfg.MailProvider != "mailpit" || cfg.SMTPAddr != "127.0.0.1:1025" ||
 		cfg.ProviderTimeout != 10*time.Second || cfg.BodyMaxAge != 168*time.Hour {
 		t.Fatalf("mail defaults = %q %q %v %v", cfg.MailProvider, cfg.SMTPAddr, cfg.ProviderTimeout, cfg.BodyMaxAge)
+	}
+}
+
+func TestLoadRetryDefaults(t *testing.T) {
+	cfg, err := Load(env(map[string]string{"DATABASE_URL": devURL}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.SendMaxAttempts != 8 || cfg.RetryBaseDelay != 30*time.Second || cfg.RetryMaxDelay != time.Hour {
+		t.Fatalf("retry defaults = %d %v %v", cfg.SendMaxAttempts, cfg.RetryBaseDelay, cfg.RetryMaxDelay)
+	}
+	cfg, err = Load(env(map[string]string{"DATABASE_URL": devURL, "SEND_MAX_ATTEMPTS": "20", "RETRY_BASE_DELAY": "1s", "RETRY_MAX_DELAY": "5s"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.SendMaxAttempts != 20 || cfg.RetryBaseDelay != time.Second || cfg.RetryMaxDelay != 5*time.Second {
+		t.Fatalf("retry overrides = %d %v %v", cfg.SendMaxAttempts, cfg.RetryBaseDelay, cfg.RetryMaxDelay)
 	}
 }
 

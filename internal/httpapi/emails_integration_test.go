@@ -36,7 +36,7 @@ func newStack(t *testing.T) *stack {
 	pool := testdb.NewMigrated(t)
 	q := store.New(pool)
 	logger := slog.New(slog.DiscardHandler)
-	enq, err := jobs.NewEnqueuer(pool, logger)
+	enq, err := jobs.NewEnqueuer(pool, logger, 5)
 	if err != nil {
 		t.Fatal(err)
 	}
