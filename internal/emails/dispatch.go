@@ -171,24 +171,29 @@ func (d *Dispatcher) fail(ctx context.Context, log *slog.Logger, key store.GetEm
 
 // Cleanup is the periodic safety net: emails stuck before a terminal state
 // longer than bodyMaxAge are failed, and any content older than that is
-// deleted (covers crashes or panics on a final attempt).
+// deleted (covers crashes or panics on a final attempt). Expired idempotency
+// keys are removed too.
 func (d *Dispatcher) Cleanup(ctx context.Context) error {
 	cutoff := time.Now().Add(-d.bodyMaxAge)
-	var expired, deleted int64
+	var expired, deleted, keys int64
 	err := pgx.BeginFunc(ctx, d.pool, func(tx pgx.Tx) error {
 		q := store.New(tx)
 		var err error
 		if expired, err = q.ExpireOpenEmails(ctx, cutoff); err != nil {
 			return err
 		}
-		deleted, err = q.DeleteContentsBefore(ctx, cutoff)
+		if deleted, err = q.DeleteContentsBefore(ctx, cutoff); err != nil {
+			return err
+		}
+		keys, err = q.DeleteIdempotencyKeysOlderThan(ctx, IdempotencyKeyTTL.Seconds())
 		return err
 	})
 	if err != nil {
 		return fmt.Errorf("cleanup emails: %w", err)
 	}
-	if expired > 0 || deleted > 0 {
-		d.logger.InfoContext(ctx, "email cleanup", slog.Int64("expired", expired), slog.Int64("contents_deleted", deleted))
+	if expired > 0 || deleted > 0 || keys > 0 {
+		d.logger.InfoContext(ctx, "email cleanup", slog.Int64("expired", expired),
+			slog.Int64("contents_deleted", deleted), slog.Int64("idempotency_keys_deleted", keys))
 	}
 	return nil
 }

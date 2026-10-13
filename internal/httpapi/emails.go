@@ -43,10 +43,15 @@ func (s *Server) handleCreateEmail(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnsupportedMediaType, "unsupported_media_type", "Content-Type must be application/json")
 		return
 	}
-	if _, ok := r.Header["Idempotency-Key"]; ok {
-		writeError(w, http.StatusBadRequest, "idempotency_not_supported",
-			"the Idempotency-Key header is not supported yet; send without it")
-		return
+	// Present but empty, repeated or malformed keys are refused rather than
+	// silently treated as "no key": the client asked for deduplication.
+	var idemKey string
+	if vals, ok := r.Header["Idempotency-Key"]; ok {
+		if len(vals) != 1 || emails.ValidateIdempotencyKey(vals[0]) != nil {
+			writeInvalidIdempotencyKey(w)
+			return
+		}
+		idemKey = vals[0]
 	}
 
 	var req createEmailRequest
@@ -63,11 +68,19 @@ func (s *Server) handleCreateEmail(w http.ResponseWriter, r *http.Request) {
 	p := principalFrom(r.Context())
 	e, err := s.emails.Create(r.Context(), p.ProjectID, emails.CreateInput{
 		From: req.From, To: req.To, Subject: req.Subject, Text: req.Text, HTML: req.HTML,
+		IdempotencyKey: idemKey,
 	})
 	var ve *emails.ValidationError
 	switch {
 	case errors.As(err, &ve):
 		writeError(w, http.StatusUnprocessableEntity, "validation_failed", ve.Error())
+		return
+	case errors.Is(err, emails.ErrInvalidIdempotencyKey):
+		writeInvalidIdempotencyKey(w)
+		return
+	case errors.Is(err, emails.ErrIdempotencyKeyReused):
+		writeError(w, http.StatusConflict, "idempotency_key_reused",
+			"this Idempotency-Key was already used with a different request; use a new key for a new email")
 		return
 	case err != nil:
 		s.logger.ErrorContext(r.Context(), "create email failed",
@@ -75,7 +88,17 @@ func (s *Server) handleCreateEmail(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal_error", "internal error")
 		return
 	}
-	writeJSON(w, http.StatusAccepted, map[string]string{"id": e.ID.String(), "status": e.Status})
+	if e.Replayed {
+		w.Header().Set("Idempotent-Replayed", "true")
+	}
+	// The creation response always says "queued"; a replay repeats it even
+	// if the email has moved on (its current status is on GET).
+	writeJSON(w, http.StatusAccepted, map[string]string{"id": e.ID.String(), "status": "queued"})
+}
+
+func writeInvalidIdempotencyKey(w http.ResponseWriter) {
+	writeError(w, http.StatusBadRequest, "invalid_idempotency_key",
+		"Idempotency-Key must be sent once, with 1-255 printable ASCII characters and no spaces")
 }
 
 // decodeStrict reads exactly one JSON object with known fields only. It

@@ -44,6 +44,15 @@ type EmailContent struct {
 	CreatedAt time.Time
 }
 
+type IdempotencyKey struct {
+	ProjectID   uuid.UUID
+	Operation   string
+	Key         string
+	Fingerprint []byte
+	EmailID     uuid.UUID
+	CreatedAt   time.Time
+}
+
 type Project struct {
 	ID        uuid.UUID
 	Name      string

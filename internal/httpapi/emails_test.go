@@ -21,6 +21,7 @@ type fakeEmails struct {
 	created   []emails.CreateInput
 	projectID uuid.UUID
 	err       error
+	replayed  bool
 }
 
 func (f *fakeEmails) Create(_ context.Context, projectID uuid.UUID, in emails.CreateInput) (emails.Email, error) {
@@ -32,7 +33,12 @@ func (f *fakeEmails) Create(_ context.Context, projectID uuid.UUID, in emails.Cr
 	}
 	f.created = append(f.created, in)
 	f.projectID = projectID
-	return emails.Email{ID: uuid.MustParse("01a13601-4b3e-72cd-9dcd-4d9159938763"), ProjectID: projectID, Status: "queued", CreatedAt: time.Now()}, nil
+	status := "queued"
+	if f.replayed {
+		status = "captured" // a replay names an email that has moved on
+	}
+	return emails.Email{ID: uuid.MustParse("01a13601-4b3e-72cd-9dcd-4d9159938763"), ProjectID: projectID, Status: status,
+		CreatedAt: time.Now(), Replayed: f.replayed}, nil
 }
 
 func (f *fakeEmails) Get(context.Context, uuid.UUID, uuid.UUID) (emails.Email, error) {
@@ -107,7 +113,9 @@ func TestCreateEmailRejects(t *testing.T) {
 		{"wrong type", `{"from":"a@example.test","to":["b@example.test"],"subject":"s","text":"t"}`, nil, 400, "invalid_json"},
 		{"trailing data", okBody + `{}`, nil, 400, "invalid_json"},
 		{"empty body", ``, nil, 400, "invalid_json"},
-		{"idempotency key", okBody, map[string]string{"Idempotency-Key": "k1"}, 400, "idempotency_not_supported"},
+		{"idempotency key with space", okBody, map[string]string{"Idempotency-Key": "a b"}, 400, "invalid_idempotency_key"},
+		{"idempotency key too long", okBody, map[string]string{"Idempotency-Key": strings.Repeat("k", 256)}, 400, "invalid_idempotency_key"},
+		{"idempotency key non-ascii", okBody, map[string]string{"Idempotency-Key": "schlüssel"}, 400, "invalid_idempotency_key"},
 		{"no content type", okBody, map[string]string{"Content-Type": ""}, 415, "unsupported_media_type"},
 		{"form content type", okBody, map[string]string{"Content-Type": "application/x-www-form-urlencoded"}, 415, "unsupported_media_type"},
 		{"too large", big, nil, 413, "payload_too_large"},
@@ -174,5 +182,68 @@ func TestEmailsWrongMethod(t *testing.T) {
 	s.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("code = %d, want 405", rec.Code)
+	}
+}
+
+func TestCreateEmailPassesIdempotencyKey(t *testing.T) {
+	svc := &fakeEmails{}
+	s, logs := emailServer(t, svc, principal)
+	rec := post(t, s, okBody, map[string]string{"Idempotency-Key": "welcome-user-123"})
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("code = %d body = %s", rec.Code, rec.Body)
+	}
+	if svc.created[0].IdempotencyKey != "welcome-user-123" {
+		t.Fatalf("key = %q", svc.created[0].IdempotencyKey)
+	}
+	if rec.Header().Get("Idempotent-Replayed") != "" {
+		t.Error("first request marked as replay")
+	}
+	if strings.Contains(logs.String(), "welcome-user-123") {
+		t.Error("idempotency key value logged")
+	}
+}
+
+func TestCreateEmailReplay(t *testing.T) {
+	s, _ := emailServer(t, &fakeEmails{replayed: true}, principal)
+	rec := post(t, s, okBody, map[string]string{"Idempotency-Key": "k1"})
+	if rec.Code != http.StatusAccepted || rec.Header().Get("Idempotent-Replayed") != "true" {
+		t.Fatalf("code = %d, Idempotent-Replayed = %q", rec.Code, rec.Header().Get("Idempotent-Replayed"))
+	}
+	// The replay is the original response: status queued, whatever the
+	// email's current status is.
+	body := decode(t, rec)
+	if body["status"] != "queued" || body["id"] != "01a13601-4b3e-72cd-9dcd-4d9159938763" || len(body) != 2 {
+		t.Fatalf("body = %v", body)
+	}
+}
+
+func TestCreateEmailIdempotencyConflict(t *testing.T) {
+	s, _ := emailServer(t, &fakeEmails{err: emails.ErrIdempotencyKeyReused}, principal)
+	rec := post(t, s, okBody, map[string]string{"Idempotency-Key": "k1"})
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("code = %d, want 409", rec.Code)
+	}
+	assertErrorCode(t, rec, "idempotency_key_reused")
+}
+
+func TestCreateEmailRejectsEmptyOrRepeatedIdempotencyKey(t *testing.T) {
+	for name, values := range map[string][]string{"empty": {""}, "repeated": {"k1", "k2"}, "repeated same": {"k1", "k1"}} {
+		t.Run(name, func(t *testing.T) {
+			svc := &fakeEmails{}
+			s, _ := emailServer(t, svc, principal)
+			req := httptest.NewRequest(http.MethodPost, "/v1/emails", strings.NewReader(okBody))
+			req.Header.Set("Authorization", "Bearer "+testToken)
+			req.Header.Set("Content-Type", "application/json")
+			req.Header["Idempotency-Key"] = values
+			rec := httptest.NewRecorder()
+			s.Handler().ServeHTTP(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("code = %d, want 400", rec.Code)
+			}
+			assertErrorCode(t, rec, "invalid_idempotency_key")
+			if len(svc.created) != 0 {
+				t.Fatal("email created")
+			}
+		})
 	}
 }

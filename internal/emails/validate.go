@@ -23,6 +23,9 @@ type CreateInput struct {
 	Subject string
 	Text    string
 	HTML    string
+	// IdempotencyKey is optional (empty = no deduplication). It is not part
+	// of the payload fingerprint.
+	IdempotencyKey string
 }
 
 // ValidationError names the invalid field. Its message never repeats the
@@ -38,6 +41,11 @@ func invalid(field, reason string) error { return &ValidationError{Field: field,
 
 // Validate checks the request against the API contract.
 func (in CreateInput) Validate() error {
+	if in.IdempotencyKey != "" {
+		if err := ValidateIdempotencyKey(in.IdempotencyKey); err != nil {
+			return err
+		}
+	}
 	if err := validateAddress("from", in.From); err != nil {
 		return err
 	}
