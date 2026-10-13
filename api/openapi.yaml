@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Email Platform API
-  version: 0.1.0
+  version: 0.2.0
   description: |
     Internal email sending API. Every request is authenticated with a
     project API key and only ever sees data of that project.
@@ -25,17 +25,35 @@ paths:
 
         Requires scope `emails:send`.
 
-        The `Idempotency-Key` header is not supported yet and is rejected with
-        `400 idempotency_not_supported`, so that no client relies on
-        deduplication that does not exist. Template fields are reserved and
-        rejected with `422 templates_not_supported`.
+        Send an `Idempotency-Key` whenever a request may be retried. Within 24
+        hours, a repeated request with the same key and the same payload
+        returns the original response (same `id`, header
+        `Idempotent-Replayed: true`) and creates nothing; the same key with a
+        different payload returns `409 idempotency_key_reused`. Keys are scoped
+        to the project. Without the header, every request creates a new email.
+
+        Checks run in this order: validation, idempotency replay, suppression
+        (`422 recipient_suppressed`), project rate limit (`429 rate_limited`).
+        Rejected requests store nothing and do not count towards the rate
+        limit. Template fields are reserved and rejected with
+        `422 templates_not_supported`.
+
+        A `503` (or a lost connection) means the outcome is unknown: the
+        email may have been accepted. Retry with the same `Idempotency-Key`
+        to avoid a duplicate.
       parameters:
         - name: Idempotency-Key
           in: header
           required: false
-          description: Not supported yet; any value is rejected.
+          description: |
+            Client-chosen key, 1–255 printable ASCII characters without spaces
+            (0x21–0x7E). Invalid keys are rejected with
+            `400 invalid_idempotency_key`. Expires 24 hours after first use.
           schema:
             type: string
+            minLength: 1
+            maxLength: 255
+            pattern: "^[\\x21-\\x7E]+$"
       requestBody:
         required: true
         content:
@@ -50,7 +68,15 @@ paths:
               html: <p>Your account is ready.</p>
       responses:
         "202":
-          description: Persisted and queued for dispatch.
+          description: |
+            Persisted and queued for dispatch, or the replay of an earlier
+            request with the same idempotency key.
+          headers:
+            Idempotent-Replayed:
+              description: "`true` when this is the stored response of an earlier request with the same key."
+              schema:
+                type: string
+                enum: ["true"]
           content:
             application/json:
               schema:
@@ -61,12 +87,16 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
         "415":
           $ref: "#/components/responses/UnsupportedMediaType"
         "422":
           $ref: "#/components/responses/UnprocessableEntity"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
         "500":
           $ref: "#/components/responses/InternalError"
         "503":
@@ -154,10 +184,43 @@ components:
     EmailStatus:
       type: string
       enum: [queued, sending, captured, submitted, failed]
+    ErrorCode:
+      type: string
+      description: |
+        Why the last dispatch attempt failed. Retryable codes (the email is
+        retried until its attempts are used up): `provider_unreachable`,
+        `provider_timeout`, `provider_protocol_error`, `provider_deferred`,
+        `internal_error`. Permanent codes (no further attempts):
+        `provider_rejected`, `message_invalid`, `unsafe_target`, `suppressed`,
+        `project_disabled`, `content_missing`, `expired`.
+      enum:
+        - provider_unreachable
+        - provider_timeout
+        - provider_protocol_error
+        - provider_deferred
+        - provider_rejected
+        - message_invalid
+        - unsafe_target
+        - suppressed
+        - project_disabled
+        - content_missing
+        - expired
+        - internal_error
     Email:
       type: object
       required:
-        [id, status, from, to, subject, created_at, updated_at, finished_at]
+        [
+          id,
+          status,
+          from,
+          to,
+          subject,
+          attempts,
+          error_code,
+          created_at,
+          updated_at,
+          finished_at,
+        ]
       properties:
         id:
           type: string
@@ -170,6 +233,19 @@ components:
           type: string
         subject:
           type: string
+        attempts:
+          type: integer
+          minimum: 0
+          description: Dispatch attempts started so far.
+        error_code:
+          description: |
+            `null` when no attempt has failed or the email was dispatched.
+            While the status is `queued` or `sending`, the reason of the last
+            failed attempt (a retry is pending); with status `failed`, the
+            final reason.
+          oneOf:
+            - $ref: "#/components/schemas/ErrorCode"
+            - type: "null"
         created_at:
           type: string
           format: date-time
@@ -195,7 +271,7 @@ components:
               description: Human-readable explanation; never contains internals.
   responses:
     BadRequest:
-      description: "Malformed request: `invalid_json` or `idempotency_not_supported`."
+      description: "Malformed request: `invalid_json` or `invalid_idempotency_key`."
       content:
         application/json:
           schema:
@@ -208,6 +284,25 @@ components:
             $ref: "#/components/schemas/Error"
     Forbidden:
       description: "`forbidden`: the key lacks the required scope."
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Conflict:
+      description: "`idempotency_key_reused`: the key was already used with a different payload."
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    TooManyRequests:
+      description: "`rate_limited`: the project's send rate limit is exhausted; retry after `Retry-After` seconds."
+      headers:
+        Retry-After:
+          description: Seconds until the current rate-limit window ends (1–60).
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 60
       content:
         application/json:
           schema:
@@ -231,7 +326,7 @@ components:
           schema:
             $ref: "#/components/schemas/Error"
     UnprocessableEntity:
-      description: "`validation_failed` (message names the field) or `templates_not_supported`."
+      description: "`validation_failed` (message names the field), `recipient_suppressed` (the recipient is on the project's suppression list) or `templates_not_supported`."
       content:
         application/json:
           schema:
