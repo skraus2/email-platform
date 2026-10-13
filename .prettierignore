@@ -1,0 +1,9 @@
+# Prettier formats TS/JS/JSON/CSS/YAML/Markdown in the web workspace only.
+# Go is formatted by gofmt.
+pnpm-lock.yaml
+**/.next/
+**/node_modules/
+bin/
+tmp/
+*.go
+go.sum

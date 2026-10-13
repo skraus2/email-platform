@@ -10,6 +10,7 @@ POSTGRES_PORT     ?= 54320
 DATABASE_URL      ?= postgres://email_platform:email_platform@localhost:$(POSTGRES_PORT)/email_platform?sslmode=disable
 TEST_DATABASE_URL ?= postgres://email_platform:email_platform@localhost:$(POSTGRES_PORT)/postgres?sslmode=disable
 LOG_FORMAT        ?= text
+export NEXT_TELEMETRY_DISABLED := 1
 export POSTGRES_PORT DATABASE_URL TEST_DATABASE_URL LOG_FORMAT APP_ENV HTTP_ADDR LOG_LEVEL SHUTDOWN_TIMEOUT
 
 GOLANGCI_LINT := go tool -modfile=tools/go.mod golangci-lint

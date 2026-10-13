@@ -1,0 +1,11 @@
+packages:
+  - apps/*
+
+# Supply-chain hygiene: do not install package versions younger than 24h.
+minimumReleaseAge: 1440
+
+# Install scripts are blocked by default (pnpm 10); these two only ship
+# optional native speedups we do not need.
+ignoredBuiltDependencies:
+  - sharp
+  - unrs-resolver
