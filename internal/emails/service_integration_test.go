@@ -136,3 +136,7 @@ func TestContentProjectMustMatchEmailProject(t *testing.T) {
 		t.Fatal("content attached to an email of another project")
 	}
 }
+
+type noopEnqueuer struct{}
+
+func (noopEnqueuer) EnqueueSendEmail(context.Context, pgx.Tx, jobs.SendEmailArgs) error { return nil }

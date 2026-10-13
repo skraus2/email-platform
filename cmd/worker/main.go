@@ -1,6 +1,5 @@
-// Command worker runs the background worker process. For now it only proves
-// controlled startup/shutdown against the database; job processing is not
-// implemented yet.
+// Command worker runs the background worker process: it dispatches queued
+// emails to the configured provider and runs periodic cleanup.
 package main
 
 import (
@@ -14,6 +13,9 @@ import (
 
 	"github.com/skraus2/email-platform/internal/config"
 	"github.com/skraus2/email-platform/internal/database"
+	"github.com/skraus2/email-platform/internal/delivery"
+	"github.com/skraus2/email-platform/internal/emails"
+	"github.com/skraus2/email-platform/internal/jobs"
 	"github.com/skraus2/email-platform/internal/logging"
 )
 
@@ -52,12 +54,42 @@ func run() error {
 		logger.Info("shutdown before ready")
 		return nil
 	}
-	logger.Info("worker ready", slog.Int("registered_jobs", 0))
+	provider, err := delivery.NewMailpit(cfg.SMTPAddr)
+	if err != nil {
+		return err
+	}
+	dispatcher := emails.NewDispatcher(pool, provider, logger, cfg.ProviderTimeout, cfg.BodyMaxAge)
+	worker, err := jobs.NewWorker(jobs.WorkerConfig{
+		Pool:   pool,
+		Logger: logger,
+		Handlers: jobs.Handlers{
+			SendEmail: dispatcher.SendEmail,
+			Cleanup:   dispatcher.Cleanup,
+		},
+		Concurrency: workerConcurrency,
+		// A job may run for one provider call plus a few DB round trips; a job
+		// still "running" well past that belongs to a dead worker.
+		JobTimeout:           cfg.ProviderTimeout + 30*time.Second,
+		RescueStuckJobsAfter: 5 * time.Minute,
+	})
+	if err != nil {
+		return err
+	}
+	if err := worker.Start(ctx); err != nil {
+		return fmt.Errorf("start job worker: %w", err)
+	}
+	logger.Info("worker ready", slog.String("provider", cfg.MailProvider), slog.String("smtp_addr", cfg.SMTPAddr))
 
 	<-ctx.Done()
+	logger.Info("shutdown started", slog.Duration("timeout", cfg.ShutdownTimeout))
+	if err := worker.Stop(cfg.ShutdownTimeout); err != nil {
+		logger.Warn("job worker did not stop cleanly", slog.Any("error", err))
+	}
 	logger.Info("shutdown complete")
 	return nil
 }
+
+const workerConcurrency = 10
 
 // waitReady polls check with capped exponential backoff until it succeeds
 // (true) or ctx is cancelled (false). A database that comes up after the
