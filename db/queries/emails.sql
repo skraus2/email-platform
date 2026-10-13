@@ -47,6 +47,12 @@ UPDATE emails
 SET status = 'failed', last_error = $3, error_code = $4, finished_at = now(), updated_at = now()
 WHERE id = $1 AND project_id = $2 AND status IN ('queued', 'sending');
 
+-- name: MarkQueuedFailed :execrows
+-- Like MarkFailed, but only for an email no attempt can have sent yet.
+UPDATE emails
+SET status = 'failed', last_error = $3, error_code = $4, finished_at = now(), updated_at = now()
+WHERE id = $1 AND project_id = $2 AND status = 'queued';
+
 -- name: DeleteEmailContent :exec
 DELETE FROM email_contents WHERE email_id = $1 AND project_id = $2;
 

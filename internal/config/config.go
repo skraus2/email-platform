@@ -125,6 +125,9 @@ func Load(lookup LookupFunc) (Config, error) {
 	if cfg.RetryMaxDelay > 0 && cfg.RetryMaxDelay < cfg.RetryBaseDelay {
 		errs = append(errs, errors.New("RETRY_MAX_DELAY must not be shorter than RETRY_BASE_DELAY"))
 	}
+	if cfg.RetryMaxDelay > maxRetryDelay {
+		errs = append(errs, errors.New("RETRY_MAX_DELAY must be at most 24h"))
+	}
 	if len(errs) == 0 {
 		// Sanity check, not a hard bound (snoozes, queue lag and crash rescue
 		// add time; the expiry job is the real safety net): a full retry
@@ -142,8 +145,12 @@ func Load(lookup LookupFunc) (Config, error) {
 	return cfg, nil
 }
 
-// maxSendAttempts bounds how often one email can be retried.
-const maxSendAttempts = 25
+// maxSendAttempts bounds how often one email can be retried; maxRetryDelay
+// bounds the wait between two attempts.
+const (
+	maxSendAttempts = 25
+	maxRetryDelay   = 24 * time.Hour
+)
 
 func intInRange(get func(string, string) string, key, def string, lo, hi int, errs []error) (int, []error) {
 	n, err := strconv.Atoi(get(key, def))

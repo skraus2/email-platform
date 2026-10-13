@@ -23,6 +23,9 @@ func (p RetryPolicy) Delay(n int, rnd func() float64) time.Duration {
 func (p RetryPolicy) ceiling(n int) time.Duration {
 	d := p.Base
 	for i := 1; i < n && d < p.Max; i++ {
+		if d > p.Max/2 {
+			return p.Max
+		}
 		d *= 2
 	}
 	return min(d, p.Max)
@@ -31,9 +34,14 @@ func (p RetryPolicy) ceiling(n int) time.Duration {
 // WorstCase is the longest total wait of all retries of a job with
 // maxAttempts attempts.
 func (p RetryPolicy) WorstCase(maxAttempts int) time.Duration {
+	const maxDuration = time.Duration(1<<63 - 1)
 	var total time.Duration
 	for n := 1; n < maxAttempts; n++ {
-		total += p.ceiling(n)
+		c := p.ceiling(n)
+		if total > maxDuration-c {
+			return maxDuration
+		}
+		total += c
 	}
 	return total
 }

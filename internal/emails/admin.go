@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
+	"unicode"
 
 	"github.com/google/uuid"
 
@@ -58,8 +60,23 @@ func ListEmails(ctx context.Context, q *store.Queries, projectID uuid.UUID, stat
 	for _, r := range rows {
 		out = append(out, AdminEmail{
 			ID: r.ID, Status: r.Status, ErrorCode: r.ErrorCode, Detail: r.LastError, Attempts: int(r.Attempts),
-			Recipient: logging.MaskEmail(r.Recipient), CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt, FinishedAt: r.FinishedAt,
+			Recipient: terminalSafe(logging.MaskEmail(r.Recipient)), CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt, FinishedAt: r.FinishedAt,
 		})
 	}
 	return out, nil
+}
+
+// terminalSafe escapes runes that are not graphic (control characters,
+// bidi overrides and other format characters) so that client-supplied text
+// cannot rewrite an operator's terminal output.
+func terminalSafe(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if unicode.IsGraphic(r) {
+			b.WriteRune(r)
+		} else {
+			fmt.Fprintf(&b, `\u%04x`, r)
+		}
+	}
+	return b.String()
 }

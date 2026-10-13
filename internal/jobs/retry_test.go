@@ -55,3 +55,20 @@ func TestRetryWorstCase(t *testing.T) {
 		t.Errorf("WorstCase(1) = %v, want 0 (no retry)", got)
 	}
 }
+
+func TestRetryNeverOverflows(t *testing.T) {
+	t.Parallel()
+	huge := RetryPolicy{Base: 200000 * time.Hour, Max: 200000 * time.Hour}
+	for _, n := range []int{1, 2, 25, 1 << 30} {
+		if d := huge.Delay(n, func() float64 { return 0.5 }); d <= 0 || d > huge.Max {
+			t.Errorf("Delay(%d) = %v, want in (0, Max]", n, d)
+		}
+	}
+	if w := huge.WorstCase(25); w <= 0 {
+		t.Errorf("WorstCase overflowed to %v", w)
+	}
+	near := RetryPolicy{Base: time.Second, Max: time.Duration(1<<63 - 1)}
+	if d := near.Delay(80, func() float64 { return 0 }); d <= 0 {
+		t.Errorf("doubling towards a huge Max overflowed: %v", d)
+	}
+}

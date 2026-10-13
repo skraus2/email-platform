@@ -416,30 +416,58 @@ func TestStateUpdatesNeverLeaveTerminalStates(t *testing.T) {
 	}
 }
 
-// Errors outside the provider call (here: the database is unreachable for
-// this attempt) are retried, and on the final attempt the email fails with
+// failMarkSending makes the database refuse every move to "sending" (a
+// fault that is not a context cancellation).
+func failMarkSending(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	if _, err := pool.Exec(context.Background(), `
+		CREATE FUNCTION refuse_sending() RETURNS trigger LANGUAGE plpgsql AS
+		$$ BEGIN RAISE EXCEPTION 'injected fault'; END $$;
+		CREATE TRIGGER refuse_sending BEFORE UPDATE ON emails
+		FOR EACH ROW WHEN (NEW.status = 'sending') EXECUTE FUNCTION refuse_sending();`); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Errors outside the provider call (here: the database refuses the update)
+// are retried, and on the final attempt a queued email fails with
 // internal_error instead of staying open until the expiry safety net.
 func TestInternalErrorOnFinalAttemptFailsEmail(t *testing.T) {
 	t.Parallel()
 	pool, projectID := setup(t)
 	e := queued(t, pool, projectID)
+	failMarkSending(t, pool)
 	p := &fakeProvider{send: captured}
 	d := dispatcher(pool, p, nil)
-	gone, cancel := context.WithCancel(context.Background())
-	cancel()
 
-	if err := d.SendEmail(gone, args(e), attempt(1)); err == nil {
+	if err := d.SendEmail(context.Background(), args(e), attempt(1)); err == nil {
 		t.Fatal("an internal error before the final attempt must be retried")
 	}
 	if s := state(t, pool, e.ID); s.status != "queued" || !s.hasContent {
 		t.Fatalf("after a non-final internal error: %+v", s)
 	}
 
-	if err := d.SendEmail(gone, args(e), attempt(testMaxAttempts)); err != nil {
+	if err := d.SendEmail(context.Background(), args(e), attempt(testMaxAttempts)); err != nil {
 		t.Fatalf("final attempt must end the job, got %v", err)
 	}
 	if s := state(t, pool, e.ID); p.calls != 0 || s.status != "failed" || s.hasContent || s.code() != emails.CodeInternalError {
 		t.Fatalf("calls=%d state=%+v (code %q), want failed/internal_error", p.calls, s, s.code())
+	}
+}
+
+// A cancelled job context (hard shutdown) on the final attempt is an
+// interruption, not a failure: the email stays untouched for River to retry.
+func TestCancelledFinalAttemptLeavesEmailOpen(t *testing.T) {
+	t.Parallel()
+	pool, projectID := setup(t)
+	e := queued(t, pool, projectID)
+	gone, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := dispatcher(pool, &fakeProvider{send: captured}, nil).SendEmail(gone, args(e), attempt(testMaxAttempts)); err == nil {
+		t.Fatal("a cancelled attempt must return its error")
+	}
+	if s := state(t, pool, e.ID); s.status != "queued" || !s.hasContent {
+		t.Fatalf("cancelled final attempt changed the email: %+v", s)
 	}
 }
 
@@ -463,5 +491,57 @@ func TestNoDuplicateWarningWhenNothingIsSent(t *testing.T) {
 	}
 	if p.calls != 0 || strings.Contains(logs.String(), "possible_duplicate_send") {
 		t.Fatalf("calls=%d; logs: %s", p.calls, logs.String())
+	}
+}
+
+// An email still "sending" may already be out (an earlier attempt reached
+// the provider but could not record it). An internal error on the final
+// attempt must not mark it failed; the expiry safety net closes it.
+func TestInternalErrorOnFinalAttemptKeepsPossiblySentEmail(t *testing.T) {
+	t.Parallel()
+	pool, projectID := setup(t)
+	e := queued(t, pool, projectID)
+	if _, err := pool.Exec(context.Background(), "UPDATE emails SET status = 'sending', attempts = 4 WHERE id = $1", e.ID); err != nil {
+		t.Fatal(err)
+	}
+	failMarkSending(t, pool)
+	if err := dispatcher(pool, &fakeProvider{send: captured}, nil).SendEmail(context.Background(), args(e), attempt(testMaxAttempts)); err != nil {
+		t.Fatalf("final attempt must end the job, got %v", err)
+	}
+	if s := state(t, pool, e.ID); s.status != "sending" || !s.hasContent {
+		t.Fatalf("possibly sent email changed: %+v", s)
+	}
+}
+
+// The provider accepted the message but recording it failed: the email must
+// never be marked failed (it is out). It stays open and is closed by the
+// expiry safety net.
+func TestUnrecordedSuccessIsNeverFailed(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	pool, projectID := setup(t)
+	e := queued(t, pool, projectID)
+	// A status the database refuses makes recording the success fail.
+	p := &fakeProvider{send: func(context.Context, delivery.Message) (delivery.Result, error) {
+		return delivery.Result{Provider: "fake", ProviderID: "<x@y>", Status: "bogus"}, nil
+	}}
+	d := dispatcher(pool, p, nil)
+	if err := d.SendEmail(ctx, args(e), attempt(testMaxAttempts)); err == nil {
+		t.Fatal("an unrecorded success must return an error")
+	}
+	if s := state(t, pool, e.ID); s.status != "sending" || s.finished || !s.hasContent {
+		t.Fatalf("unrecorded success changed to %+v, want still sending", s)
+	}
+	for _, table := range []string{"emails", "email_contents"} {
+		col := map[string]string{"emails": "id", "email_contents": "email_id"}[table]
+		if _, err := pool.Exec(ctx, "UPDATE "+table+" SET created_at = now() - interval '8 days' WHERE "+col+" = $1", e.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := d.Cleanup(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if s := state(t, pool, e.ID); s.status != "failed" || s.code() != emails.CodeExpired || s.hasContent {
+		t.Fatalf("after expiry: %+v (code %q), want failed/expired", s, s.code())
 	}
 }

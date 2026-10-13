@@ -297,6 +297,33 @@ func (q *Queries) MarkFailed(ctx context.Context, arg MarkFailedParams) (int64, 
 	return result.RowsAffected(), nil
 }
 
+const markQueuedFailed = `-- name: MarkQueuedFailed :execrows
+UPDATE emails
+SET status = 'failed', last_error = $3, error_code = $4, finished_at = now(), updated_at = now()
+WHERE id = $1 AND project_id = $2 AND status = 'queued'
+`
+
+type MarkQueuedFailedParams struct {
+	ID        uuid.UUID
+	ProjectID uuid.UUID
+	LastError *string
+	ErrorCode *string
+}
+
+// Like MarkFailed, but only for an email no attempt can have sent yet.
+func (q *Queries) MarkQueuedFailed(ctx context.Context, arg MarkQueuedFailedParams) (int64, error) {
+	result, err := q.db.Exec(ctx, markQueuedFailed,
+		arg.ID,
+		arg.ProjectID,
+		arg.LastError,
+		arg.ErrorCode,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const markSending = `-- name: MarkSending :execrows
 UPDATE emails SET status = 'sending', attempts = attempts + 1, updated_at = now()
 WHERE id = $1 AND project_id = $2 AND status IN ('queued', 'sending')

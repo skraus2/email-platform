@@ -116,16 +116,34 @@ func (d *Dispatcher) SendEmail(ctx context.Context, args jobs.SendEmailArgs, at 
 }
 
 // internalError handles a failure outside the provider call (typically the
-// database). It is retried; on the final attempt the email fails, so it does
-// not stay open until the expiry safety net. Nothing was sent in this
-// attempt, so failing cannot hide a delivered message.
+// database). It is retried; on the final attempt a still-queued email fails,
+// so it does not stay open until the expiry safety net. An email left
+// "sending" may already be out (an earlier attempt could not record its
+// success), so it is not marked failed; the expiry safety net closes it.
 func (d *Dispatcher) internalError(ctx context.Context, log *slog.Logger, key store.GetEmailForDispatchParams, at jobs.Attempt, err error) error {
-	if !at.Final() {
+	// A cancelled job (hard shutdown) is interrupted, not failed: the queue
+	// puts the attempt back.
+	if !at.Final() || ctx.Err() != nil {
 		return err
 	}
 	log.ErrorContext(ctx, "dispatch failed on the final attempt", slog.Any("error", err))
-	if ferr := d.fail(ctx, log, key, CodeInternalError, CodeInternalError); ferr != nil {
-		return errors.Join(err, ferr)
+	dctx, cancel := detached(ctx)
+	defer cancel()
+	code := CodeInternalError
+	var n int64
+	ferr := pgx.BeginFunc(dctx, d.pool, func(tx pgx.Tx) error {
+		q := store.New(tx)
+		var err error
+		if n, err = q.MarkQueuedFailed(dctx, store.MarkQueuedFailedParams{ID: key.ID, ProjectID: key.ProjectID, LastError: &code, ErrorCode: &code}); err != nil || n == 0 {
+			return err
+		}
+		return q.DeleteEmailContent(dctx, store.DeleteEmailContentParams{EmailID: key.ID, ProjectID: key.ProjectID})
+	})
+	if ferr != nil {
+		return errors.Join(err, fmt.Errorf("mark failed: %w", ferr))
+	}
+	if n > 0 {
+		log.WarnContext(ctx, "email failed", slog.String("error_code", code), slog.String("reason", code))
 	}
 	return nil
 }

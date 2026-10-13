@@ -194,6 +194,10 @@ components:
         `internal_error`. Permanent codes (no further attempts):
         `provider_rejected`, `message_invalid`, `unsafe_target`, `suppressed`,
         `project_disabled`, `content_missing`, `expired`.
+
+        `provider_timeout` and `provider_protocol_error` mean the outcome of
+        that attempt is unknown: a `failed` email with one of these codes may
+        still have been delivered.
       enum:
         - provider_unreachable
         - provider_timeout
