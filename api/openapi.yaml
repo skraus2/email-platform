@@ -34,8 +34,8 @@ paths:
 
         Checks run in this order: validation, idempotency replay, suppression
         (`422 recipient_suppressed`), project rate limit (`429 rate_limited`).
-        Rejected requests store nothing and do not count towards the rate
-        limit. Template fields are reserved and rejected with
+        Rejected requests store nothing; neither they nor idempotent replays
+        count towards the rate limit. Template fields are reserved and rejected with
         `422 templates_not_supported`.
 
         A `503` (or a lost connection) means the outcome is unknown: the
@@ -47,8 +47,9 @@ paths:
           required: false
           description: |
             Client-chosen key, 1–255 printable ASCII characters without spaces
-            (0x21–0x7E). Invalid keys are rejected with
-            `400 invalid_idempotency_key`. Expires 24 hours after first use.
+            (0x21–0x7E), sent at most once. Empty, repeated or invalid keys
+            are rejected with `400 invalid_idempotency_key`. Expires 24 hours
+            after first use: a retry later than that creates a new email.
           schema:
             type: string
             minLength: 1

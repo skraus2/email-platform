@@ -175,21 +175,24 @@ func (d *Dispatcher) fail(ctx context.Context, log *slog.Logger, key store.GetEm
 // keys are removed too.
 func (d *Dispatcher) Cleanup(ctx context.Context) error {
 	cutoff := time.Now().Add(-d.bodyMaxAge)
-	var expired, deleted, keys int64
+	var expired, deleted int64
 	err := pgx.BeginFunc(ctx, d.pool, func(tx pgx.Tx) error {
 		q := store.New(tx)
 		var err error
 		if expired, err = q.ExpireOpenEmails(ctx, cutoff); err != nil {
 			return err
 		}
-		if deleted, err = q.DeleteContentsBefore(ctx, cutoff); err != nil {
-			return err
-		}
-		keys, err = q.DeleteIdempotencyKeysOlderThan(ctx, IdempotencyKeyTTL.Seconds())
+		deleted, err = q.DeleteContentsBefore(ctx, cutoff)
 		return err
 	})
 	if err != nil {
 		return fmt.Errorf("cleanup emails: %w", err)
+	}
+	// Separate statement: a problem with the key table must not hold back
+	// expiry and content deletion.
+	keys, err := store.New(d.pool).DeleteIdempotencyKeysOlderThan(ctx, IdempotencyKeyTTL.Seconds())
+	if err != nil {
+		return fmt.Errorf("cleanup idempotency keys: %w", err)
 	}
 	if expired > 0 || deleted > 0 || keys > 0 {
 		d.logger.InfoContext(ctx, "email cleanup", slog.Int64("expired", expired),

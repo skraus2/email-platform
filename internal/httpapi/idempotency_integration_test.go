@@ -75,26 +75,39 @@ func TestPostEmailConcurrentSameKeyOverHTTP(t *testing.T) {
 	var wg sync.WaitGroup
 	ids := make([]any, n)
 	codes := make([]int, n)
+	replays := make([]string, n)
 	start := make(chan struct{})
 	for i := range n {
 		wg.Go(func() {
 			<-start
 			var body map[string]any
-			codes[i], body, _ = s.postKeyed(t, token, "parallel", sendBody)
+			codes[i], body, replays[i] = s.postKeyed(t, token, "parallel", sendBody)
 			ids[i] = body["id"]
 		})
 	}
 	close(start)
 	wg.Wait()
+	fresh := 0
 	for i := range n {
 		if codes[i] != http.StatusAccepted || ids[i] != ids[0] {
 			t.Fatalf("request %d: %d id=%v, want 202 id=%v", i, codes[i], ids[i], ids[0])
 		}
+		switch replays[i] {
+		case "":
+			fresh++
+		case "true":
+		default:
+			t.Fatalf("request %d: Idempotent-Replayed = %q", i, replays[i])
+		}
 	}
-	var emails, jobs int
+	if fresh != 1 {
+		t.Errorf("%d responses without Idempotent-Replayed, want exactly 1", fresh)
+	}
+	var emails, contents, jobs int
 	_ = s.pool.QueryRow(context.Background(), "SELECT count(*) FROM emails").Scan(&emails)
+	_ = s.pool.QueryRow(context.Background(), "SELECT count(*) FROM email_contents").Scan(&contents)
 	_ = s.pool.QueryRow(context.Background(), "SELECT count(*) FROM river_job WHERE kind = 'send_email'").Scan(&jobs)
-	if emails != 1 || jobs != 1 {
-		t.Fatalf("emails = %d, jobs = %d, want 1 each", emails, jobs)
+	if emails != 1 || contents != 1 || jobs != 1 {
+		t.Fatalf("emails = %d, contents = %d, jobs = %d, want 1 each", emails, contents, jobs)
 	}
 }

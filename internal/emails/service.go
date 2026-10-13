@@ -69,10 +69,11 @@ func (s *Service) Create(ctx context.Context, projectID uuid.UUID, in CreateInpu
 		return Email{}, err
 	}
 	var key *store.GetIdempotencyKeyParams
+	var fingerprint []byte
 	if in.IdempotencyKey != "" {
 		key = &store.GetIdempotencyKeyParams{ProjectID: projectID, Operation: operationCreateEmail, Key: in.IdempotencyKey}
+		fingerprint = in.Fingerprint()
 	}
-	fingerprint := in.Fingerprint()
 
 	var row store.Email
 	var replayOf uuid.UUID
