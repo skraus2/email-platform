@@ -1,0 +1,230 @@
+openapi: 3.1.0
+info:
+  title: Email Platform API
+  version: 0.1.0
+  description: |
+    Internal email sending API. Every request is authenticated with a
+    project API key and only ever sees data of that project.
+
+    Accepted is not delivered: `queued` means the request is persisted,
+    `captured` means the local test sink (Mailpit) received the message,
+    `submitted` means a real provider accepted it. Delivery is only reported
+    from real provider events.
+servers:
+  - url: http://127.0.0.1:8080
+    description: Local development
+security:
+  - projectKey: []
+paths:
+  /v1/emails:
+    post:
+      operationId: createEmail
+      summary: Queue one email for one recipient
+      description: |
+        Returns `202` only after the email and its dispatch job are committed.
+
+        Requires scope `emails:send`.
+
+        The `Idempotency-Key` header is not supported yet and is rejected with
+        `400 idempotency_not_supported`, so that no client relies on
+        deduplication that does not exist. Template fields are reserved and
+        rejected with `422 templates_not_supported`.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: false
+          description: Not supported yet; any value is rejected.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateEmailRequest"
+            example:
+              from: noreply@example.test
+              to: customer@example.test
+              subject: Welcome
+              text: Your account is ready.
+              html: <p>Your account is ready.</p>
+      responses:
+        "202":
+          description: Persisted and queued for dispatch.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateEmailResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+  /v1/emails/{id}:
+    get:
+      operationId: getEmail
+      summary: Get the status of an email of the authenticated project
+      description: |
+        Requires scope `emails:read`. Unknown ids, malformed ids and ids of
+        other projects all return the same `404`.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: The email.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Email"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+components:
+  securitySchemes:
+    projectKey:
+      type: http
+      scheme: bearer
+      description: "Project API key, format `ep_<prefix>_<secret>`. Shown once at creation."
+  schemas:
+    CreateEmailRequest:
+      type: object
+      additionalProperties: false
+      required: [from, to, subject]
+      properties:
+        from:
+          type: string
+          format: email
+          maxLength: 254
+          description: Bare address, no display name.
+        to:
+          type: string
+          format: email
+          maxLength: 254
+          description: Exactly one bare recipient address.
+        subject:
+          type: string
+          minLength: 1
+          maxLength: 255
+          description: Must not contain CR, LF or NUL.
+        text:
+          type: string
+          description: Plain-text body, at most 512 KiB. At least one of text/html is required.
+        html:
+          type: string
+          description: HTML body, at most 512 KiB. At least one of text/html is required.
+        template_id:
+          description: Reserved. Rejected with 422 templates_not_supported.
+        template_version:
+          description: Reserved. Rejected with 422 templates_not_supported.
+        variables:
+          description: Reserved. Rejected with 422 templates_not_supported.
+    CreateEmailResponse:
+      type: object
+      required: [id, status]
+      properties:
+        id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          const: queued
+    EmailStatus:
+      type: string
+      enum: [queued, sending, captured, submitted, failed]
+    Email:
+      type: object
+      required:
+        [id, status, from, to, subject, created_at, updated_at, finished_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        status:
+          $ref: "#/components/schemas/EmailStatus"
+        from:
+          type: string
+        to:
+          type: string
+        subject:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        finished_at:
+          type: [string, "null"]
+          format: date-time
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: Stable snake_case error code.
+            message:
+              type: string
+              description: Human-readable explanation; never contains internals.
+  responses:
+    BadRequest:
+      description: "Malformed request: `invalid_json` or `idempotency_not_supported`."
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Unauthorized:
+      description: "`unauthorized`: missing, malformed, unknown or revoked key, or disabled project."
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Forbidden:
+      description: "`forbidden`: the key lacks the required scope."
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: "`not_found`."
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    PayloadTooLarge:
+      description: "`payload_too_large`: request body larger than 1 MiB."
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    UnsupportedMediaType:
+      description: "`unsupported_media_type`: Content-Type is not application/json."
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    UnprocessableEntity:
+      description: "`validation_failed` (message names the field) or `templates_not_supported`."
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
