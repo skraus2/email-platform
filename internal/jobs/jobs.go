@@ -1,0 +1,162 @@
+// Package jobs is the only place that knows the job queue implementation
+// (River). Other packages enqueue work inside their own transaction and
+// register plain handler functions; they never import River.
+package jobs
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/riverdriver/riverpgxv5"
+)
+
+// SendEmailMaxAttempts bounds dispatch retries until retry tuning exists.
+const SendEmailMaxAttempts = 5
+
+// SendEmailArgs identifies the email to dispatch. Both ids are carried so the
+// handler can scope every query by project.
+type SendEmailArgs struct {
+	EmailID   uuid.UUID `json:"email_id"`
+	ProjectID uuid.UUID `json:"project_id"`
+}
+
+// Kind implements river.JobArgs.
+func (SendEmailArgs) Kind() string { return "send_email" }
+
+// InsertOpts implements river.JobArgsWithInsertOpts.
+func (SendEmailArgs) InsertOpts() river.InsertOpts {
+	return river.InsertOpts{MaxAttempts: SendEmailMaxAttempts}
+}
+
+type cleanupArgs struct{}
+
+func (cleanupArgs) Kind() string { return "cleanup_emails" }
+
+// Attempt describes the current execution of a job.
+type Attempt struct {
+	JobID       int64
+	Number      int // 1-based
+	MaxAttempts int
+}
+
+// Final reports whether this is the last attempt River will make.
+func (a Attempt) Final() bool { return a.Number >= a.MaxAttempts }
+
+// Handlers are the functions the worker runs.
+type Handlers struct {
+	SendEmail func(ctx context.Context, args SendEmailArgs, a Attempt) error
+	// Cleanup runs periodically (and once on start).
+	Cleanup func(ctx context.Context) error
+}
+
+// Enqueuer inserts jobs. The API process uses it insert-only.
+type Enqueuer struct {
+	client *river.Client[pgx.Tx]
+}
+
+// NewEnqueuer builds an insert-only client (it never works jobs).
+func NewEnqueuer(pool *pgxpool.Pool, logger *slog.Logger) (*Enqueuer, error) {
+	c, err := river.NewClient(riverpgxv5.New(pool), &river.Config{Logger: logger})
+	if err != nil {
+		return nil, fmt.Errorf("create job client: %w", err)
+	}
+	return &Enqueuer{client: c}, nil
+}
+
+// EnqueueSendEmail inserts the dispatch job in tx. The job only becomes
+// visible to workers when tx commits, and disappears if it rolls back.
+func (e *Enqueuer) EnqueueSendEmail(ctx context.Context, tx pgx.Tx, args SendEmailArgs) error {
+	if _, err := e.client.InsertTx(ctx, tx, args, nil); err != nil {
+		return fmt.Errorf("enqueue send_email: %w", err)
+	}
+	return nil
+}
+
+// WorkerConfig configures the job-processing side.
+type WorkerConfig struct {
+	Pool            *pgxpool.Pool
+	Logger          *slog.Logger
+	Handlers        Handlers
+	Concurrency     int
+	JobTimeout      time.Duration
+	CleanupInterval time.Duration
+	// RescueStuckJobsAfter: a job still "running" this long after its timeout
+	// (e.g. the worker crashed) is made available again. Zero = River default.
+	RescueStuckJobsAfter time.Duration
+}
+
+// Worker runs job handlers until stopped.
+type Worker struct {
+	client *river.Client[pgx.Tx]
+}
+
+// NewWorker registers the handlers and builds the client.
+func NewWorker(cfg WorkerConfig) (*Worker, error) {
+	if cfg.Handlers.SendEmail == nil || cfg.Handlers.Cleanup == nil {
+		return nil, errors.New("jobs: all handlers are required")
+	}
+	workers := river.NewWorkers()
+	river.AddWorker(workers, &sendEmailWorker{fn: cfg.Handlers.SendEmail})
+	river.AddWorker(workers, &cleanupWorker{fn: cfg.Handlers.Cleanup})
+
+	interval := cfg.CleanupInterval
+	if interval <= 0 {
+		interval = time.Hour
+	}
+	c, err := river.NewClient(riverpgxv5.New(cfg.Pool), &river.Config{
+		Logger:               cfg.Logger,
+		Workers:              workers,
+		Queues:               map[string]river.QueueConfig{river.QueueDefault: {MaxWorkers: max(cfg.Concurrency, 1)}},
+		JobTimeout:           cfg.JobTimeout,
+		RescueStuckJobsAfter: cfg.RescueStuckJobsAfter,
+		PeriodicJobs: []*river.PeriodicJob{
+			river.NewPeriodicJob(river.PeriodicInterval(interval),
+				func() (river.JobArgs, *river.InsertOpts) { return cleanupArgs{}, nil },
+				&river.PeriodicJobOpts{ID: "cleanup_emails", RunOnStart: true}),
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create job worker: %w", err)
+	}
+	return &Worker{client: c}, nil
+}
+
+// Start begins fetching and working jobs.
+func (w *Worker) Start(ctx context.Context) error { return w.client.Start(ctx) }
+
+// Stop waits for running jobs up to timeout, then cancels the rest. A job
+// cancelled mid-send may be retried later; that duplicate risk is inherent to
+// external side effects and is logged by the handler on the next attempt.
+func (w *Worker) Stop(timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	if err := w.client.Stop(ctx); err == nil {
+		return nil
+	}
+	hard, cancelHard := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelHard()
+	return w.client.StopAndCancel(hard)
+}
+
+type sendEmailWorker struct {
+	river.WorkerDefaults[SendEmailArgs]
+	fn func(context.Context, SendEmailArgs, Attempt) error
+}
+
+func (w *sendEmailWorker) Work(ctx context.Context, job *river.Job[SendEmailArgs]) error {
+	return w.fn(ctx, job.Args, Attempt{JobID: job.ID, Number: job.Attempt, MaxAttempts: job.MaxAttempts})
+}
+
+type cleanupWorker struct {
+	river.WorkerDefaults[cleanupArgs]
+	fn func(context.Context) error
+}
+
+func (w *cleanupWorker) Work(ctx context.Context, _ *river.Job[cleanupArgs]) error { return w.fn(ctx) }

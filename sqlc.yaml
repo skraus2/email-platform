@@ -1,7 +1,12 @@
 version: "2"
 sql:
   - engine: postgresql
-    schema: db/migrations
+    # App migrations only. River's schema (00003_river_queue.sql) is excluded
+    # on purpose: its tables are owned by River and never queried directly.
+    # Add every new app migration here (sqlc fails on unknown tables).
+    schema:
+      - db/migrations/00001_baseline.sql
+      - db/migrations/00002_projects_and_api_keys.sql
     queries: db/queries
     gen:
       go:
