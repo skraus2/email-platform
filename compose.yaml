@@ -68,10 +68,14 @@ services:
     profiles: [app]
     build: .
     command: ["/app/worker"]
-    environment: *app-env
+    environment:
+      <<: *app-env
+      SMTP_ADDR: mailpit:1025
     depends_on:
       migrate:
         condition: service_completed_successfully
+      mailpit:
+        condition: service_healthy
 
 volumes:
   postgres-data:

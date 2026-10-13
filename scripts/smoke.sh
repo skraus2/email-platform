@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Process-level smoke test: builds the binaries, starts API and worker against
-# the local Compose database, probes /healthz and /readyz, then sends SIGTERM
-# and requires a clean shutdown. Needs `make up migrate` first.
+# the local Compose database and Mailpit, probes /healthz and /readyz, sends
+# one email end to end (admin CLI -> POST -> worker -> Mailpit), then sends
+# SIGTERM and requires a clean shutdown. Needs `make up migrate` first.
 set -euo pipefail
 
 : "${DATABASE_URL:?DATABASE_URL must be set (make sets a local default)}"
@@ -9,7 +10,8 @@ ADDR="127.0.0.1:${SMOKE_PORT:-18080}"
 TMP="$(mktemp -d)"
 trap 'kill "${API_PID:-}" "${WORKER_PID:-}" 2>/dev/null || true; rm -rf "$TMP"' EXIT
 
-go build -o "$TMP/" ./cmd/api ./cmd/worker
+MAILPIT_URL="${TEST_MAILPIT_URL:-http://127.0.0.1:8025}"
+go build -o "$TMP/" ./cmd/api ./cmd/worker ./cmd/admin
 
 HTTP_ADDR="$ADDR" LOG_FORMAT=json "$TMP/api" >"$TMP/api.log" 2>&1 &
 API_PID=$!
@@ -35,6 +37,33 @@ for _ in $(seq 1 50); do
 done
 grep -q '"worker ready"' "$TMP/worker.log" || fail "worker did not become ready"
 echo "worker -> ready"
+
+# One email end to end through the real processes.
+project=$("$TMP/admin" project create -name "smoke-$(date +%s)" | cut -f1)
+key=$("$TMP/admin" key create -project "$project" 2>/dev/null)
+[[ "$key" == ep_* ]] || fail "admin did not issue a key"
+subject="smoke $(date +%s%N)"
+code=$(curl -sS -o "$TMP/post.json" -w '%{http_code}' -X POST "http://$ADDR/v1/emails" \
+  -H "Authorization: Bearer $key" -H 'Content-Type: application/json' \
+  -d "{\"from\":\"smoke@example.test\",\"to\":\"smoke-recipient@example.test\",\"subject\":\"$subject\",\"text\":\"smoke body\"}")
+[[ "$code" == 202 ]] || fail "POST /v1/emails: $code $(cat "$TMP/post.json")"
+id=$(sed -nE 's/.*"id":"([0-9a-f-]{36})".*/\1/p' "$TMP/post.json")
+[[ -n "$id" ]] || fail "no id in POST response"
+echo "POST /v1/emails -> 202 queued ($id)"
+status=""
+for _ in $(seq 1 100); do
+  status=$(curl -sS "http://$ADDR/v1/emails/$id" -H "Authorization: Bearer $key" | sed -E 's/.*"status":"([^"]+)".*/\1/')
+  [[ "$status" == captured || "$status" == failed ]] && break
+  sleep 0.1
+done
+[[ "$status" == captured ]] || fail "email status $status, want captured"
+count=$(curl -sS "$MAILPIT_URL/api/v1/search?query=message-id:%22$id@email-platform.local%22" | sed -E 's/.*"messages_count":([0-9]+).*/\1/')
+[[ "$count" == 1 ]] || fail "Mailpit holds $count copies, want 1"
+echo "worker -> Mailpit captured exactly 1 message"
+for leak in "$key" "smoke-recipient@example.test" "smoke body"; do
+  if grep -qF "$leak" "$TMP/api.log" "$TMP/worker.log"; then fail "logs contain a secret or personal data"; fi
+done
+echo "logs contain no API key, recipient or body"
 
 kill -TERM "$API_PID" "$WORKER_PID"
 wait "$API_PID" || fail "api exited non-zero after SIGTERM"
