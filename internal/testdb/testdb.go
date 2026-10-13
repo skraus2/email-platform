@@ -1,0 +1,79 @@
+// Package testdb gives integration tests an isolated, throwaway PostgreSQL
+// database. Each call creates a uniquely named database on the server named by
+// TEST_DATABASE_URL and drops it when the test ends, so tests never touch the
+// development database and can run in parallel.
+package testdb
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"net/url"
+	"os"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+// EnvVar names the admin connection URL (any database on the test server; the
+// role needs CREATEDB). Set by `make test-integration`.
+const EnvVar = "TEST_DATABASE_URL"
+
+// New creates an empty database and returns a pool connected to it.
+func New(t testing.TB) *pgxpool.Pool {
+	t.Helper()
+	pool, err := pgxpool.New(context.Background(), NewURL(t))
+	if err != nil {
+		t.Fatalf("testdb: connect: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	return pool
+}
+
+// NewURL creates an empty database and returns its connection URL.
+func NewURL(t testing.TB) string {
+	t.Helper()
+	adminURL := os.Getenv(EnvVar)
+	if adminURL == "" {
+		t.Fatalf("testdb: %s is not set; run `make test-integration` (needs `make up`)", EnvVar)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	admin, err := pgx.Connect(ctx, adminURL)
+	if err != nil {
+		t.Fatalf("testdb: connect admin (is `make up` running?): %v", err)
+	}
+	defer admin.Close(context.Background())
+
+	var b [6]byte
+	_, _ = rand.Read(b[:])
+	name := "ep_test_" + hex.EncodeToString(b[:])
+	// name is generated from hex only, so identifier quoting is sufficient.
+	if _, err := admin.Exec(ctx, "CREATE DATABASE "+pgx.Identifier{name}.Sanitize()); err != nil {
+		t.Fatalf("testdb: create database: %v", err)
+	}
+
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		conn, err := pgx.Connect(ctx, adminURL)
+		if err != nil {
+			t.Errorf("testdb: cleanup connect: %v", err)
+			return
+		}
+		defer conn.Close(context.Background())
+		if _, err := conn.Exec(ctx, "DROP DATABASE IF EXISTS "+pgx.Identifier{name}.Sanitize()+" WITH (FORCE)"); err != nil {
+			t.Errorf("testdb: drop database %s: %v", name, err)
+		}
+	})
+
+	u, err := url.Parse(adminURL)
+	if err != nil {
+		t.Fatalf("testdb: parse %s", EnvVar)
+	}
+	u.Path = "/" + name
+	return u.String()
+}

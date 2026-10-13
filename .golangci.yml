@@ -1,0 +1,38 @@
+# golangci-lint v2 configuration. Version pinned in tools/go.mod and CI.
+version: "2"
+
+run:
+  build-tags:
+    - integration # lint integration tests too
+
+linters:
+  default: standard # errcheck, govet, ineffassign, staticcheck, unused
+  enable:
+    - bodyclose
+    - errorlint # correct errors.Is/As and %w wrapping
+    - gosec # security smells
+    - misspell
+    - noctx # HTTP/DB calls must carry a context
+    - revive
+    - sqlclosecheck
+    - unconvert
+  settings:
+    revive:
+      rules:
+        - name: exported
+          disabled: true # internal packages; doc comments by judgement
+  exclusions:
+    presets:
+      - std-error-handling
+    rules:
+      - path: _test\.go
+        linters: [gosec, noctx]
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/skraus2/email-platform
