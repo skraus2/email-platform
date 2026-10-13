@@ -85,8 +85,10 @@ func (q *Queries) GetEmail(ctx context.Context, arg GetEmailParams) (Email, erro
 
 const getEmailForDispatch = `-- name: GetEmailForDispatch :one
 SELECT e.id, e.project_id, e.sender, e.recipient, e.subject, e.status,
-       c.text_body, c.html_body, (c.email_id IS NOT NULL)::boolean AS has_content
+       c.text_body, c.html_body, (c.email_id IS NOT NULL)::boolean AS has_content,
+       p.status AS project_status
 FROM emails e
+JOIN projects p ON p.id = e.project_id
 LEFT JOIN email_contents c ON c.email_id = e.id AND c.project_id = e.project_id
 WHERE e.id = $1 AND e.project_id = $2
 `
@@ -97,15 +99,16 @@ type GetEmailForDispatchParams struct {
 }
 
 type GetEmailForDispatchRow struct {
-	ID         uuid.UUID
-	ProjectID  uuid.UUID
-	Sender     string
-	Recipient  string
-	Subject    string
-	Status     string
-	TextBody   *string
-	HtmlBody   *string
-	HasContent bool
+	ID            uuid.UUID
+	ProjectID     uuid.UUID
+	Sender        string
+	Recipient     string
+	Subject       string
+	Status        string
+	TextBody      *string
+	HtmlBody      *string
+	HasContent    bool
+	ProjectStatus string
 }
 
 // Content columns are NULL once the content has been deleted.
@@ -122,6 +125,7 @@ func (q *Queries) GetEmailForDispatch(ctx context.Context, arg GetEmailForDispat
 		&i.TextBody,
 		&i.HtmlBody,
 		&i.HasContent,
+		&i.ProjectStatus,
 	)
 	return i, err
 }
@@ -265,7 +269,27 @@ type RecordAttemptErrorParams struct {
 	LastError *string
 }
 
+// Outcome unknown (timeout/protocol error mid-send): stay "sending", so the
+// retry logs a possible duplicate.
 func (q *Queries) RecordAttemptError(ctx context.Context, arg RecordAttemptErrorParams) error {
 	_, err := q.db.Exec(ctx, recordAttemptError, arg.ID, arg.ProjectID, arg.LastError)
+	return err
+}
+
+const requeueAfterError = `-- name: RequeueAfterError :exec
+UPDATE emails SET status = 'queued', last_error = $3, updated_at = now()
+WHERE id = $1 AND project_id = $2 AND status = 'sending'
+`
+
+type RequeueAfterErrorParams struct {
+	ID        uuid.UUID
+	ProjectID uuid.UUID
+	LastError *string
+}
+
+// The provider certainly did not accept the message (connect failure or SMTP
+// rejection): back to queued, so the retry is not flagged as a duplicate.
+func (q *Queries) RequeueAfterError(ctx context.Context, arg RequeueAfterErrorParams) error {
+	_, err := q.db.Exec(ctx, requeueAfterError, arg.ID, arg.ProjectID, arg.LastError)
 	return err
 }

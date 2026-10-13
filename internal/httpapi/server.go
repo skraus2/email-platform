@@ -1,6 +1,6 @@
-// Package httpapi wires the HTTP surface of the API process. It currently
-// exposes only liveness (/healthz) and readiness (/readyz); /v1 routes are
-// added with the features that need them.
+// Package httpapi wires the HTTP surface of the API process: liveness
+// (/healthz), readiness (/readyz) and the project-authenticated /v1 API
+// described in api/openapi.yaml.
 package httpapi
 
 import (

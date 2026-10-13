@@ -46,6 +46,9 @@ const (
 	ClassTimeout  = "timeout"  // deadline exceeded mid-conversation
 	ClassRejected = "rejected" // provider answered with an SMTP error
 	ClassProtocol = "protocol" // unexpected protocol failure
+	// ClassUnsafeTarget: the server is not the expected test sink (e.g. a
+	// real MTA on localhost). Nothing was sent; never retry.
+	ClassUnsafeTarget = "unsafe_target"
 )
 
 // Error is a sanitized provider error.

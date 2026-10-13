@@ -151,6 +151,7 @@ func TestLoadRejectsUnsafeMailConfig(t *testing.T) {
 		"timeout > shutdown":   {"PROVIDER_TIMEOUT": "20s", "SHUTDOWN_TIMEOUT": "15s"},
 		"bad provider timeout": {"PROVIDER_TIMEOUT": "fast"},
 		"zero body max age":    {"BODY_MAX_AGE": "0s"},
+		"huge body max age":    {"BODY_MAX_AGE": "876000h"},
 	}
 	for name, extra := range tests {
 		t.Run(name, func(t *testing.T) {

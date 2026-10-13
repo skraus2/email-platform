@@ -13,8 +13,10 @@ SELECT * FROM emails WHERE id = $1 AND project_id = $2;
 -- name: GetEmailForDispatch :one
 -- Content columns are NULL once the content has been deleted.
 SELECT e.id, e.project_id, e.sender, e.recipient, e.subject, e.status,
-       c.text_body, c.html_body, (c.email_id IS NOT NULL)::boolean AS has_content
+       c.text_body, c.html_body, (c.email_id IS NOT NULL)::boolean AS has_content,
+       p.status AS project_status
 FROM emails e
+JOIN projects p ON p.id = e.project_id
 LEFT JOIN email_contents c ON c.email_id = e.id AND c.project_id = e.project_id
 WHERE e.id = $1 AND e.project_id = $2;
 
@@ -28,7 +30,15 @@ SET status = $3, provider = $4, provider_id = $5, last_error = NULL,
     finished_at = now(), updated_at = now()
 WHERE id = $1 AND project_id = $2 AND status = 'sending';
 
+-- name: RequeueAfterError :exec
+-- The provider certainly did not accept the message (connect failure or SMTP
+-- rejection): back to queued, so the retry is not flagged as a duplicate.
+UPDATE emails SET status = 'queued', last_error = $3, updated_at = now()
+WHERE id = $1 AND project_id = $2 AND status = 'sending';
+
 -- name: RecordAttemptError :exec
+-- Outcome unknown (timeout/protocol error mid-send): stay "sending", so the
+-- retry logs a possible duplicate.
 UPDATE emails SET last_error = $3, updated_at = now()
 WHERE id = $1 AND project_id = $2 AND status = 'sending';
 

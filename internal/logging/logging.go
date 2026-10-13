@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"strings"
+	"unicode/utf8"
 )
 
 // New returns a logger writing to w in the given format ("json" or "text"),
@@ -30,5 +31,6 @@ func MaskEmail(addr string) string {
 	if at <= 0 {
 		return "***"
 	}
-	return addr[:1] + "***" + addr[at:]
+	r, _ := utf8.DecodeRuneInString(addr)
+	return string(r) + "***" + addr[at:]
 }

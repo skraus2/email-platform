@@ -128,8 +128,12 @@ func NewWorker(cfg WorkerConfig) (*Worker, error) {
 	return &Worker{client: c}, nil
 }
 
-// Start begins fetching and working jobs.
-func (w *Worker) Start(ctx context.Context) error { return w.client.Start(ctx) }
+// Start begins fetching and working jobs. Cancelling ctx does NOT stop the
+// worker: River would cancel running jobs mid-send on context cancellation.
+// Shutdown always goes through Stop, which lets in-flight jobs finish.
+func (w *Worker) Start(ctx context.Context) error {
+	return w.client.Start(context.WithoutCancel(ctx))
+}
 
 // Stop waits for running jobs up to timeout, then cancels the rest. A job
 // cancelled mid-send may be retried later; that duplicate risk is inherent to
@@ -160,3 +164,7 @@ type cleanupWorker struct {
 }
 
 func (w *cleanupWorker) Work(ctx context.Context, _ *river.Job[cleanupArgs]) error { return w.fn(ctx) }
+
+// Timeout gives cleanup its own budget: it can touch many rows and must not
+// inherit the short per-email job timeout.
+func (w *cleanupWorker) Timeout(*river.Job[cleanupArgs]) time.Duration { return 5 * time.Minute }

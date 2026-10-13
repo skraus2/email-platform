@@ -37,6 +37,9 @@ jobs:
         ports:
           - 1025:1025
           - 8025:8025
+        options: >-
+          --health-cmd "/mailpit readyz"
+          --health-interval 2s --health-timeout 3s --health-retries 30
     env:
       TEST_DATABASE_URL: postgres://email_platform:email_platform@localhost:5432/postgres?sslmode=disable
       DATABASE_URL: postgres://email_platform:email_platform@localhost:5432/email_platform?sslmode=disable

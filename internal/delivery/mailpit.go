@@ -5,10 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"net/smtp"
 	"net/textproto"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -83,37 +83,73 @@ func (m *Mailpit) Send(ctx context.Context, msg Message) (Result, error) {
 	}, nil
 }
 
+// converse runs the SMTP dialogue. It reads the greeting itself and stops
+// before MAIL FROM unless the server identifies as Mailpit: a real MTA
+// listening on a local port (often relaying to the internet) must never get a
+// message, whatever SMTP_ADDR says.
 func (m *Mailpit) converse(conn net.Conn, msg Message, raw []byte) error {
-	c, err := smtp.NewClient(conn, m.host)
+	tp := textproto.NewConn(conn)
+	defer func() { _ = tp.Close() }()
+
+	_, greeting, err := tp.ReadResponse(220)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = c.Close() }()
-	if err := c.Hello(messageIDDomain); err != nil {
-		return err
+	if !strings.Contains(greeting, mailpitBanner) {
+		return &Error{Class: ClassUnsafeTarget}
 	}
-	if err := c.Mail(msg.From); err != nil {
-		return err
+	steps := []struct {
+		code int
+		cmd  string
+	}{
+		{250, "EHLO " + messageIDDomain},
+		{250, "MAIL FROM:<" + msg.From + ">"},
+		{25, "RCPT TO:<" + msg.To + ">"}, // 250 or 251
+		{354, "DATA"},
 	}
-	if err := c.Rcpt(msg.To); err != nil {
-		return err
+	for _, s := range steps {
+		if err := command(tp, s.code, s.cmd); err != nil {
+			return err
+		}
 	}
-	w, err := c.Data()
-	if err != nil {
-		return err
-	}
+	w := tp.DotWriter()
 	if _, err := w.Write(raw); err != nil {
 		return err
 	}
 	if err := w.Close(); err != nil {
 		return err
 	}
-	return c.Quit()
+	if _, _, err := tp.ReadResponse(250); err != nil {
+		return err
+	}
+	// The server has accepted the message. A QUIT failure now must not be
+	// reported as a send failure, or the retry would send it twice.
+	_ = command(tp, 221, "QUIT")
+	return nil
+}
+
+// mailpitBanner is part of Mailpit's SMTP greeting ("220 <host> Mailpit ESMTP
+// Service ready").
+const mailpitBanner = " Mailpit ESMTP"
+
+func command(tp *textproto.Conn, expect int, line string) error {
+	id, err := tp.Cmd("%s", line)
+	if err != nil {
+		return err
+	}
+	tp.StartResponse(id)
+	defer tp.EndResponse(id)
+	_, _, err = tp.ReadResponse(expect)
+	return err
 }
 
 // classify maps an SMTP conversation error to a sanitized Error, dropping
 // the server's text (it may contain addresses).
 func classify(ctx context.Context, err error) *Error {
+	var de *Error
+	if errors.As(err, &de) {
+		return de
+	}
 	var tpErr *textproto.Error
 	if errors.As(err, &tpErr) {
 		return &Error{Class: ClassRejected, Code: tpErr.Code}

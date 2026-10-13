@@ -195,3 +195,54 @@ func TestStuckJobIsRescuedAndRetried(t *testing.T) {
 		t.Errorf("rescued job ran as attempt %d, want 2", a.Number)
 	}
 }
+
+// Cancelling the context passed to Start (the process signal context) must
+// not cancel running jobs: shutdown goes through Stop, which lets in-flight
+// sends finish within the shutdown budget.
+func TestStartContextCancelDoesNotCancelRunningJobs(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	pool := testdb.NewMigrated(t)
+	running := make(chan struct{})
+	result := make(chan error, 1)
+	w, err := jobs.NewWorker(jobs.WorkerConfig{
+		Pool: pool, Logger: quiet, Concurrency: 1, JobTimeout: 10 * time.Second,
+		Handlers: jobs.Handlers{
+			SendEmail: func(jobCtx context.Context, _ jobs.SendEmailArgs, _ jobs.Attempt) error {
+				close(running)
+				select {
+				case <-time.After(500 * time.Millisecond):
+					result <- nil
+				case <-jobCtx.Done():
+					result <- jobCtx.Err()
+				}
+				return nil
+			},
+			Cleanup: func(context.Context) error { return nil },
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	startCtx, cancelStart := context.WithCancel(ctx)
+	if err := w.Start(startCtx); err != nil {
+		t.Fatal(err)
+	}
+	enq, _ := jobs.NewEnqueuer(pool, quiet)
+	tx, _ := pool.Begin(ctx)
+	_ = enq.EnqueueSendEmail(ctx, tx, jobs.SendEmailArgs{EmailID: uuid.New(), ProjectID: uuid.New()})
+	_ = tx.Commit(ctx)
+
+	select {
+	case <-running:
+	case <-time.After(15 * time.Second):
+		t.Fatal("job never started")
+	}
+	cancelStart() // SIGTERM arrives while the job runs
+	if err := w.Stop(5 * time.Second); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if err := <-result; err != nil {
+		t.Fatalf("running job was cancelled by the start context: %v", err)
+	}
+}

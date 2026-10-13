@@ -6,6 +6,7 @@ import (
 	"context"
 	"log/slog"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -71,7 +72,75 @@ func TestQueueStoresOnlySanitizedErrors(t *testing.T) {
 			t.Fatalf("queue error contains %q: %s", leak, errorsText)
 		}
 	}
-	if s := state(t, pool, e.ID); s.status != "sending" || !s.hasContent {
+	if s := state(t, pool, e.ID); s.status != "queued" || !s.hasContent {
 		t.Fatalf("after a temporary failure the email must wait for retry: %+v", s)
 	}
+}
+
+// AC12: a worker that died mid-send leaves job "running" and email
+// "sending". The rescuer retries it, the email ends captured, and the
+// possible duplicate is logged rather than hidden.
+func TestInterruptedDispatchIsRescuedAndFlagged(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	pool, projectID := setup(t)
+	quiet := slog.New(slog.DiscardHandler)
+	enq, _ := jobs.NewEnqueuer(pool, quiet)
+	e, err := emails.NewService(pool, enq, quiet).Create(ctx, projectID, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Simulate the crash: job running since an hour, email mid-send.
+	if _, err := pool.Exec(ctx, `UPDATE river_job SET state = 'running', attempt = 1,
+		attempted_at = now() - interval '1 hour', attempted_by = '{crashed-worker}'
+		WHERE args->>'email_id' = $1`, e.ID.String()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, "UPDATE emails SET status = 'sending', attempts = 1 WHERE id = $1", e.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	var logs safeBuffer
+	logger := slog.New(slog.NewJSONHandler(&logs, nil))
+	p := &fakeProvider{send: captured}
+	d := emails.NewDispatcher(pool, p, logger, 5*time.Second, 168*time.Hour)
+	w, err := jobs.NewWorker(jobs.WorkerConfig{
+		Pool: pool, Logger: quiet, Concurrency: 1, JobTimeout: 500 * time.Millisecond, RescueStuckJobsAfter: time.Second,
+		Handlers: jobs.Handlers{SendEmail: d.SendEmail, Cleanup: d.Cleanup},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = w.Stop(5 * time.Second) })
+
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) && state(t, pool, e.ID).status != "captured" {
+		time.Sleep(100 * time.Millisecond)
+	}
+	if s := state(t, pool, e.ID); s.status != "captured" || s.hasContent {
+		t.Fatalf("rescued email state = %+v, want captured with content deleted", s)
+	}
+	if !strings.Contains(logs.String(), "possible_duplicate_send") {
+		t.Fatal("rescued attempt was not flagged as a possible duplicate")
+	}
+}
+
+type safeBuffer struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (s *safeBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *safeBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
 }

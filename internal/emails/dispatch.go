@@ -65,6 +65,9 @@ func (d *Dispatcher) SendEmail(ctx context.Context, args jobs.SendEmailArgs, at 
 	default:
 		return nil // already terminal: a retry after the success was recorded
 	}
+	if e.ProjectStatus != "active" {
+		return d.fail(ctx, log, key, "project_disabled")
+	}
 	if !e.HasContent {
 		return d.fail(ctx, log, key, "content_missing")
 	}
@@ -94,9 +97,15 @@ func (d *Dispatcher) SendEmail(ctx context.Context, args jobs.SendEmailArgs, at 
 	if permanent || at.Final() {
 		return d.fail(ctx, log, key, reason)
 	}
-	if err := store.New(d.pool).RecordAttemptError(context.WithoutCancel(ctx), store.RecordAttemptErrorParams{
-		ID: key.ID, ProjectID: key.ProjectID, LastError: &reason,
-	}); err != nil {
+	wctx, cancelW := detached(ctx)
+	defer cancelW()
+	q := store.New(d.pool)
+	if notAccepted(sendErr) {
+		err = q.RequeueAfterError(wctx, store.RequeueAfterErrorParams{ID: key.ID, ProjectID: key.ProjectID, LastError: &reason})
+	} else {
+		err = q.RecordAttemptError(wctx, store.RecordAttemptErrorParams{ID: key.ID, ProjectID: key.ProjectID, LastError: &reason})
+	}
+	if err != nil {
 		log.ErrorContext(ctx, "record attempt error", slog.Any("error", err))
 	}
 	log.WarnContext(ctx, "send attempt failed; will retry", slog.String("reason", reason))
@@ -107,7 +116,8 @@ func (d *Dispatcher) SendEmail(ctx context.Context, args jobs.SendEmailArgs, at 
 // transaction. It runs detached from ctx: the message is already out, so the
 // record must not be lost to a shutdown cancellation.
 func (d *Dispatcher) finish(ctx context.Context, log *slog.Logger, key store.GetEmailForDispatchParams, res delivery.Result, recipient string) error {
-	dctx := context.WithoutCancel(ctx)
+	dctx, cancel := detached(ctx)
+	defer cancel()
 	var n int64
 	err := pgx.BeginFunc(dctx, d.pool, func(tx pgx.Tx) error {
 		q := store.New(tx)
@@ -140,7 +150,8 @@ func (d *Dispatcher) finish(ctx context.Context, log *slog.Logger, key store.Get
 
 // fail marks the email failed and deletes its content; the job then ends.
 func (d *Dispatcher) fail(ctx context.Context, log *slog.Logger, key store.GetEmailForDispatchParams, reason string) error {
-	dctx := context.WithoutCancel(ctx)
+	dctx, cancel := detached(ctx)
+	defer cancel()
 	err := pgx.BeginFunc(dctx, d.pool, func(tx pgx.Tx) error {
 		q := store.New(tx)
 		if _, err := q.MarkFailed(dctx, store.MarkFailedParams{ID: key.ID, ProjectID: key.ProjectID, LastError: &reason}); err != nil {
@@ -177,6 +188,21 @@ func (d *Dispatcher) Cleanup(ctx context.Context) error {
 		d.logger.InfoContext(ctx, "email cleanup", slog.Int64("expired", expired), slog.Int64("contents_deleted", deleted))
 	}
 	return nil
+}
+
+// terminalWriteTimeout bounds state writes that run detached from the job
+// context (they must survive shutdown, but never hang forever).
+const terminalWriteTimeout = 10 * time.Second
+
+func detached(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), terminalWriteTimeout)
+}
+
+// notAccepted reports whether the provider certainly did not take the
+// message (connection refused, or an SMTP rejection reply).
+func notAccepted(err error) bool {
+	var de *delivery.Error
+	return errors.As(err, &de) && (de.Class == delivery.ClassConnect || de.Class == delivery.ClassRejected)
 }
 
 // sanitize turns an error into text safe to store and log.

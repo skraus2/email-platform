@@ -17,6 +17,7 @@ import (
 	"github.com/skraus2/email-platform/internal/delivery"
 	"github.com/skraus2/email-platform/internal/emails"
 	"github.com/skraus2/email-platform/internal/jobs"
+	"github.com/skraus2/email-platform/internal/store"
 	"github.com/skraus2/email-platform/internal/testmailpit"
 )
 
@@ -107,16 +108,14 @@ func TestDispatchToMailpitCapturesAndDeletesContent(t *testing.T) {
 	if provider != "mailpit" || providerID != "<"+e.ID.String()+"@email-platform.local>" {
 		t.Fatalf("provider = %q %q", provider, providerID)
 	}
-	if got := testmailpit.FindByMessageID(t, e.ID.String()+"@email-platform.local", 5*time.Second); len(got) != 1 {
+	got := testmailpit.FindByMessageID(t, e.ID.String()+"@email-platform.local", 5*time.Second)
+	if len(got) != 1 {
 		t.Fatalf("Mailpit has %d copies, want exactly 1", len(got))
 	}
-
-	// A retry after success (queue finishing the job late) must not resend.
-	if err := d.SendEmail(context.Background(), args(e), attempt(2)); err != nil {
-		t.Fatal(err)
-	}
-	if got := testmailpit.FindByMessageID(t, e.ID.String()+"@email-platform.local", time.Second); len(got) != 1 {
-		t.Fatalf("Mailpit has %d copies after a late retry, want 1", len(got))
+	m := got[0]
+	if m.From.Address != input.From || len(m.To) != 1 || m.To[0].Address != input.To || m.Subject != input.Subject ||
+		strings.TrimSpace(m.Text) != input.Text || strings.TrimSpace(m.HTML) != input.HTML {
+		t.Fatalf("captured message differs from the request: %+v", m)
 	}
 	for _, leak := range []string{"customer@example.test", "Hello"} {
 		if strings.Contains(logs.String(), leak) {
@@ -162,7 +161,7 @@ func TestDispatchTemporaryErrorRetriesThenFailsOnFinalAttempt(t *testing.T) {
 		t.Fatalf("returned error leaks recipient: %v", err)
 	}
 	s := state(t, pool, e.ID)
-	if s.status != "sending" || !s.hasContent || s.lastError == nil || *s.lastError != "delivery failed: connect" {
+	if s.status != "queued" || !s.hasContent || s.lastError == nil || *s.lastError != "delivery failed: connect" {
 		t.Fatalf("after attempt 1: %+v", s)
 	}
 
@@ -243,5 +242,155 @@ func TestCleanupExpiresStaleEmailsAndContent(t *testing.T) {
 	}
 	if s := state(t, pool, fresh.ID); s.status != "queued" || !s.hasContent {
 		t.Fatalf("fresh email touched by cleanup: %+v", s)
+	}
+}
+
+func TestDispatchSkipsDisabledProject(t *testing.T) {
+	t.Parallel()
+	pool, projectID := setup(t)
+	e := queued(t, pool, projectID)
+	if _, err := pool.Exec(context.Background(), "UPDATE projects SET status = 'disabled' WHERE id = $1", projectID); err != nil {
+		t.Fatal(err)
+	}
+	p := &fakeProvider{send: captured}
+	if err := dispatcher(pool, p, nil).SendEmail(context.Background(), args(e), attempt(1)); err != nil {
+		t.Fatal(err)
+	}
+	s := state(t, pool, e.ID)
+	if p.calls != 0 || s.status != "failed" || s.hasContent || *s.lastError != "project_disabled" {
+		t.Fatalf("disabled project still sent or kept content: calls=%d state=%+v", p.calls, s)
+	}
+}
+
+func TestTemporaryFailureDoesNotTriggerDuplicateWarning(t *testing.T) {
+	t.Parallel()
+	pool, projectID := setup(t)
+	e := queued(t, pool, projectID)
+	fail := true
+	p := &fakeProvider{send: func(c context.Context, m delivery.Message) (delivery.Result, error) {
+		if fail {
+			fail = false
+			return delivery.Result{}, &delivery.Error{Class: delivery.ClassConnect}
+		}
+		return captured(c, m)
+	}}
+	var logs bytes.Buffer
+	d := dispatcher(pool, p, &logs)
+	_ = d.SendEmail(context.Background(), args(e), attempt(1))
+	if err := d.SendEmail(context.Background(), args(e), attempt(2)); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(logs.String(), "possible_duplicate_send") {
+		t.Fatal("a cleanly failed attempt was reported as a possible duplicate")
+	}
+	if s := state(t, pool, e.ID); s.status != "captured" {
+		t.Fatalf("state = %+v", s)
+	}
+}
+
+func TestLateRetryAfterSuccessDoesNotResend(t *testing.T) {
+	t.Parallel()
+	pool, projectID := setup(t)
+	e := queued(t, pool, projectID)
+	p := &fakeProvider{send: captured}
+	d := dispatcher(pool, p, nil)
+	for n := 1; n <= 2; n++ {
+		if err := d.SendEmail(context.Background(), args(e), attempt(n)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if p.calls != 1 {
+		t.Fatalf("provider called %d times, want 1", p.calls)
+	}
+}
+
+func TestTimeoutKeepsSendingAndRetryWarnsAboutDuplicate(t *testing.T) {
+	t.Parallel()
+	pool, projectID := setup(t)
+	e := queued(t, pool, projectID)
+	first := true
+	p := &fakeProvider{send: func(c context.Context, m delivery.Message) (delivery.Result, error) {
+		if first {
+			first = false
+			return delivery.Result{}, &delivery.Error{Class: delivery.ClassTimeout}
+		}
+		return captured(c, m)
+	}}
+	var logs bytes.Buffer
+	d := dispatcher(pool, p, &logs)
+	if err := d.SendEmail(context.Background(), args(e), attempt(1)); err == nil {
+		t.Fatal("timeout must be retried")
+	}
+	if s := state(t, pool, e.ID); s.status != "sending" {
+		t.Fatalf("after timeout status = %q, want sending (outcome unknown)", s.status)
+	}
+	if err := d.SendEmail(context.Background(), args(e), attempt(2)); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(logs.String(), "possible_duplicate_send") {
+		t.Fatal("retry after an unknown outcome must warn about a possible duplicate")
+	}
+}
+
+func TestCleanupDuringSendWinsOverLateSuccess(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	pool, projectID := setup(t)
+	e := queued(t, pool, projectID)
+	p := &fakeProvider{}
+	d := dispatcher(pool, p, nil)
+	p.send = func(c context.Context, m delivery.Message) (delivery.Result, error) {
+		// The safety net expires the email while the provider call runs.
+		if _, err := pool.Exec(ctx, "UPDATE emails SET created_at = now() - interval '8 days' WHERE id = $1", e.ID); err != nil {
+			t.Error(err)
+		}
+		if err := d.Cleanup(ctx); err != nil {
+			t.Error(err)
+		}
+		return captured(c, m)
+	}
+	if err := d.SendEmail(ctx, args(e), attempt(1)); err != nil {
+		t.Fatal(err)
+	}
+	if s := state(t, pool, e.ID); s.status != "failed" || *s.lastError != "expired" {
+		t.Fatalf("late success overwrote the terminal state: %+v", s)
+	}
+}
+
+func TestMissingContentFailsWithoutSending(t *testing.T) {
+	t.Parallel()
+	pool, projectID := setup(t)
+	e := queued(t, pool, projectID)
+	if _, err := pool.Exec(context.Background(), "DELETE FROM email_contents WHERE email_id = $1", e.ID); err != nil {
+		t.Fatal(err)
+	}
+	p := &fakeProvider{send: captured}
+	if err := dispatcher(pool, p, nil).SendEmail(context.Background(), args(e), attempt(1)); err != nil {
+		t.Fatal(err)
+	}
+	if s := state(t, pool, e.ID); p.calls != 0 || s.status != "failed" || *s.lastError != "content_missing" {
+		t.Fatalf("calls=%d state=%+v", p.calls, s)
+	}
+}
+
+func TestStateUpdatesNeverLeaveTerminalStates(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	pool, projectID := setup(t)
+	e := queued(t, pool, projectID)
+	if err := dispatcher(pool, &fakeProvider{send: captured}, nil).SendEmail(ctx, args(e), attempt(1)); err != nil {
+		t.Fatal(err)
+	}
+	q := store.New(pool)
+	reason := "late failure"
+	key := struct{ id, project uuid.UUID }{e.ID, projectID}
+	if n, _ := q.MarkFailed(ctx, store.MarkFailedParams{ID: key.id, ProjectID: key.project, LastError: &reason}); n != 0 {
+		t.Fatal("MarkFailed changed a captured email")
+	}
+	if n, _ := q.MarkSending(ctx, store.MarkSendingParams{ID: key.id, ProjectID: key.project}); n != 0 {
+		t.Fatal("MarkSending changed a captured email")
+	}
+	if s := state(t, pool, e.ID); s.status != "captured" {
+		t.Fatalf("status = %q", s.status)
 	}
 }

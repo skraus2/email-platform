@@ -6,6 +6,7 @@ func TestMaskEmail(t *testing.T) {
 	for in, want := range map[string]string{
 		"customer@example.test": "c***@example.test",
 		"a@b.test":              "a***@b.test",
+		"ärger@example.test":    "ä***@example.test",
 		"no-at-sign":            "***",
 		"@example.test":         "***",
 		"":                      "***",

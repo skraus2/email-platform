@@ -26,9 +26,18 @@ func TestNewMailpitRejectsNonLocalHosts(t *testing.T) {
 	}
 }
 
-// fakeSMTP speaks just enough SMTP to reach RCPT and answer it with reply.
+// fakeSMTP speaks just enough SMTP to reach RCPT and answer it with reply,
+// greeting like Mailpit does.
 func fakeSMTP(t *testing.T, rcptReply string) string {
 	t.Helper()
+	addr, _ := fakeSMTPGreeting(t, "220 fake Mailpit ESMTP Service ready", rcptReply)
+	return addr
+}
+
+// fakeSMTPGreeting returns the address and a channel of received commands.
+func fakeSMTPGreeting(t *testing.T, greeting, rcptReply string) (string, <-chan string) {
+	t.Helper()
+	cmds := make(chan string, 20)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -42,13 +51,15 @@ func fakeSMTP(t *testing.T, rcptReply string) string {
 		defer conn.Close()
 		r := bufio.NewReader(conn)
 		write := func(s string) { _, _ = conn.Write([]byte(s + "\r\n")) }
-		write("220 fake ESMTP")
+		write(greeting)
 		for {
 			line, err := r.ReadString('\n')
 			if err != nil {
 				return
 			}
-			switch cmd := strings.ToUpper(strings.Fields(line)[0]); cmd {
+			cmd := strings.ToUpper(strings.Fields(line)[0])
+			cmds <- cmd
+			switch cmd {
 			case "EHLO", "HELO":
 				write("250 fake")
 			case "MAIL":
@@ -63,7 +74,29 @@ func fakeSMTP(t *testing.T, rcptReply string) string {
 			}
 		}
 	}()
-	return ln.Addr().String()
+	return ln.Addr().String(), cmds
+}
+
+// A local SMTP server that is not Mailpit (e.g. Postfix on localhost:25,
+// often relaying to the internet) must never receive a message.
+func TestSendRefusesNonMailpitServer(t *testing.T) {
+	addr, cmds := fakeSMTPGreeting(t, "220 mx.example.test ESMTP Postfix (Debian/GNU)", "250 ok")
+	mp, err := NewMailpit(addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = mp.Send(context.Background(), sample())
+	var de *Error
+	if !errors.As(err, &de) || de.Class != ClassUnsafeTarget || de.Temporary() {
+		t.Fatalf("err = %v, want permanent unsafe_target", err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	n := len(cmds)
+	for range n {
+		if c := <-cmds; c == "MAIL" || c == "RCPT" || c == "DATA" {
+			t.Fatalf("sent %s to a non-Mailpit server", c)
+		}
+	}
 }
 
 func TestSendErrorsAreSanitized(t *testing.T) {
@@ -126,5 +159,54 @@ func TestSendConnectErrorAndTimeout(t *testing.T) {
 	}
 	if time.Since(start) > 2*time.Second {
 		t.Fatalf("Send ignored the context deadline (%v)", time.Since(start))
+	}
+}
+
+// Once the server answered 250 to the message data, it has the message. A
+// failure on QUIT afterwards must not turn into a retry (= duplicate send).
+func TestSendSucceedsWhenQuitFailsAfterAcceptance(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		r := bufio.NewReader(conn)
+		write := func(s string) { _, _ = conn.Write([]byte(s + "\r\n")) }
+		write("220 fake Mailpit ESMTP Service ready")
+		for {
+			line, err := r.ReadString('\n')
+			if err != nil {
+				return
+			}
+			switch strings.ToUpper(strings.Fields(line)[0]) {
+			case "DATA":
+				write("354 go ahead")
+				for {
+					l, err := r.ReadString('\n')
+					if err != nil || l == ".\r\n" {
+						break
+					}
+				}
+				write("250 queued as 1")
+			case "QUIT":
+				return // drop the connection instead of answering 221
+			default:
+				write("250 ok")
+			}
+		}
+	}()
+	mp, _ := NewMailpit(ln.Addr().String())
+	res, err := mp.Send(context.Background(), sample())
+	if err != nil {
+		t.Fatalf("Send = %v; the message was accepted, so this must succeed", err)
+	}
+	if res.Status != StatusCaptured {
+		t.Fatalf("status = %q", res.Status)
 	}
 }

@@ -100,12 +100,19 @@ func Load(lookup LookupFunc) (Config, error) {
 		errs = append(errs, errors.New("PROVIDER_TIMEOUT must not exceed SHUTDOWN_TIMEOUT (a send must finish within shutdown)"))
 	}
 	cfg.BodyMaxAge, errs = positiveDuration(get, "BODY_MAX_AGE", "168h", errs)
+	if cfg.BodyMaxAge > maxBodyMaxAge {
+		errs = append(errs, errors.New("BODY_MAX_AGE must be at most 720h (message content is deleted by then at the latest)"))
+	}
 
 	if err := errors.Join(errs...); err != nil {
 		return Config{}, fmt.Errorf("invalid configuration: %w", err)
 	}
 	return cfg, nil
 }
+
+// maxBodyMaxAge caps the content safety net so it cannot be disabled by
+// configuration.
+const maxBodyMaxAge = 720 * time.Hour
 
 func positiveDuration(get func(string, string) string, key, def string, errs []error) (time.Duration, []error) {
 	d, err := time.ParseDuration(get(key, def))
