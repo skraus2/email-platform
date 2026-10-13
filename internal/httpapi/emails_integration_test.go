@@ -228,12 +228,12 @@ func TestGetEmailShowsAttemptsAndErrorCode(t *testing.T) {
 
 func TestPostEmailRateLimitedOverHTTP(t *testing.T) {
 	t.Parallel()
-	if sec := time.Now().Second(); sec > 56 {
-		time.Sleep(time.Duration(61-sec) * time.Second) // stay inside one window
-	}
 	s := newLimitedStack(t, 2)
 	_, token := s.project(t)
 	_, otherToken := s.project(t)
+	if sec := time.Now().Second(); sec > 56 {
+		time.Sleep(time.Duration(61-sec) * time.Second) // stay inside one window
+	}
 	for i := range 2 {
 		if code, _ := s.do(t, http.MethodPost, "/v1/emails", token, sendBody); code != http.StatusAccepted {
 			t.Fatalf("send %d = %d", i+1, code)

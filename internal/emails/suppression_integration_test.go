@@ -28,7 +28,7 @@ func TestSuppressionAdmin(t *testing.T) {
 	if added, err := emails.AddSuppression(ctx, q, projectID, "customer@example.test", "bounce"); err != nil || added {
 		t.Fatalf("second add = %v, %v; want existing", added, err)
 	}
-	list, err := emails.ListSuppressions(ctx, q, projectID)
+	list, err := emails.ListSuppressions(ctx, q, projectID, 0)
 	if err != nil || len(list) != 1 || list[0].Recipient != "Customer@Example.test" || list[0].Reason != "manual" {
 		t.Fatalf("list = %+v, %v", list, err)
 	}
@@ -45,12 +45,23 @@ func TestSuppressionAdmin(t *testing.T) {
 		}
 	}
 
+	other, err := auth.CreateProject(ctx, q, "other")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := emails.AddSuppression(ctx, q, other.ID, "customer@example.test", "bounce"); err != nil {
+		t.Fatal(err)
+	}
+
 	removed, err := emails.RemoveSuppression(ctx, q, projectID, "CUSTOMER@example.test")
 	if err != nil || !removed {
 		t.Fatalf("remove = %v, %v", removed, err)
 	}
 	if removed, err := emails.RemoveSuppression(ctx, q, projectID, "customer@example.test"); err != nil || removed {
 		t.Fatalf("second remove = %v, %v; want nothing to remove", removed, err)
+	}
+	if list, err := emails.ListSuppressions(ctx, q, other.ID, 0); err != nil || len(list) != 1 {
+		t.Fatalf("other project's suppression = %+v, %v; removing in one project must not touch another", list, err)
 	}
 }
 
@@ -113,14 +124,27 @@ func TestDispatchRefusesRecipientSuppressedAfterQueueing(t *testing.T) {
 	ctx := context.Background()
 	pool, projectID := setup(t)
 	e := queued(t, pool, projectID)
+	other, err := auth.CreateProject(ctx, store.New(pool), "other")
+	if err != nil {
+		t.Fatal(err)
+	}
+	eOther := queued(t, pool, other.ID)
 	if _, err := emails.AddSuppression(ctx, store.New(pool), projectID, strings.ToUpper(input.To), "unsubscribe"); err != nil {
 		t.Fatal(err)
 	}
 	p := &fakeProvider{send: captured}
-	if err := dispatcher(pool, p, nil).SendEmail(ctx, args(e), attempt(1)); err != nil {
+	d := dispatcher(pool, p, nil)
+	if err := d.SendEmail(ctx, args(e), attempt(1)); err != nil {
 		t.Fatal(err)
 	}
 	if s := state(t, pool, e.ID); p.calls != 0 || s.status != "failed" || s.code() != emails.CodeSuppressed || s.hasContent {
 		t.Fatalf("calls=%d state=%+v (code %q), want failed/suppressed without sending", p.calls, s, s.code())
+	}
+	// The same address in another project is not suppressed there.
+	if err := d.SendEmail(ctx, args(eOther), attempt(1)); err != nil {
+		t.Fatal(err)
+	}
+	if s := state(t, pool, eOther.ID); p.calls != 1 || s.status != "captured" {
+		t.Fatalf("other project: calls=%d state=%+v, want captured", p.calls, s)
 	}
 }

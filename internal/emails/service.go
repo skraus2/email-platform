@@ -106,6 +106,13 @@ func (s *Service) Create(ctx context.Context, projectID uuid.UUID, in CreateInpu
 				return err
 			}
 		}
+		// Cheap read-only pre-checks: a request that will be refused does no
+		// write work and does not queue on the project's window row, so one
+		// project hammering the API cannot tie up connections for others.
+		// The checks after the key claim below stay authoritative.
+		if err := s.refuse(ctx, q, projectID, in.To, false); err != nil {
+			return err
+		}
 		var err error
 		row, err = q.InsertEmail(ctx, store.InsertEmailParams{
 			ProjectID: projectID, Sender: in.From, Recipient: in.To, Subject: in.Subject,
@@ -135,25 +142,9 @@ func (s *Service) Create(ctx context.Context, projectID uuid.UUID, in CreateInpu
 			}
 		}
 		// Refusals come after the idempotency key is claimed, so a duplicate
-		// of an accepted request replays instead of being refused.
-		suppressed, err := q.IsSuppressed(ctx, store.IsSuppressedParams{ProjectID: projectID, Recipient: in.To})
-		if err != nil {
-			return fmt.Errorf("check suppression: %w", err)
-		}
-		if suppressed {
-			return ErrRecipientSuppressed
-		}
-		// Counted last: a request is only refused after its idempotency key
-		// is claimed, so a duplicate replays instead of being limited, and
-		// the window row is locked only briefly.
-		c, err := q.CountSend(ctx, projectID)
-		if err != nil {
-			return fmt.Errorf("count send: %w", err)
-		}
-		if int(c.Count) > s.perMinute {
-			return &RateLimitError{RetryAfter: time.Duration(min(max(c.RetryAfterSeconds, 1), 60)) * time.Second}
-		}
-		return nil
+		// of an accepted request replays instead of being refused. The send
+		// is counted last, so the window row is locked only briefly.
+		return s.refuse(ctx, q, projectID, in.To, true)
 	})
 	if errors.Is(err, errKeyTaken) {
 		// Rolled back; the winner's key is committed and visible now.
@@ -184,6 +175,38 @@ func (s *Service) Create(ctx context.Context, projectID uuid.UUID, in CreateInpu
 		slog.String("recipient", logging.MaskEmail(in.To)),
 	)
 	return fromRow(row), nil
+}
+
+// refuse checks suppression and the project's rate limit. With count set it
+// counts this send (locking the window row until the transaction ends);
+// otherwise it only reads the committed count.
+func (s *Service) refuse(ctx context.Context, q *store.Queries, projectID uuid.UUID, to string, count bool) error {
+	suppressed, err := q.IsSuppressed(ctx, store.IsSuppressedParams{ProjectID: projectID, Recipient: to})
+	if err != nil {
+		return fmt.Errorf("check suppression: %w", err)
+	}
+	if suppressed {
+		return ErrRecipientSuppressed
+	}
+	var n, retryAfter int32
+	if count {
+		c, err := q.CountSend(ctx, projectID)
+		if err != nil {
+			return fmt.Errorf("count send: %w", err)
+		}
+		// This send is included in c.Count.
+		n, retryAfter = c.Count-1, c.RetryAfterSeconds
+	} else {
+		c, err := q.GetSendCount(ctx, projectID)
+		if err != nil {
+			return fmt.Errorf("read send count: %w", err)
+		}
+		n, retryAfter = c.Count, c.RetryAfterSeconds
+	}
+	if int(n) >= s.perMinute {
+		return &RateLimitError{RetryAfter: time.Duration(min(max(retryAfter, 1), 60)) * time.Second}
+	}
+	return nil
 }
 
 // errKeyTaken: a concurrent request committed the same idempotency key first.

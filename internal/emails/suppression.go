@@ -52,9 +52,16 @@ func RemoveSuppression(ctx context.Context, q *store.Queries, projectID uuid.UUI
 	return n > 0, nil
 }
 
-// ListSuppressions returns the project's suppressed addresses, newest first.
-func ListSuppressions(ctx context.Context, q *store.Queries, projectID uuid.UUID) ([]Suppression, error) {
-	rows, err := q.ListSuppressions(ctx, projectID)
+// ListSuppressions returns the project's suppressed addresses, newest first;
+// limit 0 means the default of the admin listing.
+func ListSuppressions(ctx context.Context, q *store.Queries, projectID uuid.UUID, limit int) ([]Suppression, error) {
+	if limit == 0 {
+		limit = DefaultAdminListLimit
+	}
+	if limit < 1 || limit > MaxAdminListLimit {
+		return nil, fmt.Errorf("limit must be between 1 and %d", MaxAdminListLimit)
+	}
+	rows, err := q.ListSuppressions(ctx, store.ListSuppressionsParams{ProjectID: projectID, Limit: int32(limit)}) //nolint:gosec // bounded above
 	if err != nil {
 		return nil, fmt.Errorf("list suppressions: %w", err)
 	}

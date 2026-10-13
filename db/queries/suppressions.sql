@@ -5,7 +5,7 @@ VALUES ($1, $2, $3)
 ON CONFLICT DO NOTHING;
 
 -- name: ListSuppressions :many
-SELECT * FROM suppressions WHERE project_id = $1 ORDER BY created_at DESC, id DESC;
+SELECT * FROM suppressions WHERE project_id = $1 ORDER BY created_at DESC, id DESC LIMIT $2;
 
 -- name: RemoveSuppression :execrows
 DELETE FROM suppressions WHERE project_id = $1 AND lower(recipient) = lower(sqlc.arg(recipient));

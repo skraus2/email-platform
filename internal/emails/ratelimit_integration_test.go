@@ -162,6 +162,7 @@ func TestIdempotentRaceWithExhaustedLimit(t *testing.T) {
 	const n = 20
 	var wg sync.WaitGroup
 	ids := make([]uuid.UUID, n)
+	replayed := make([]bool, n)
 	errs := make([]error, n)
 	start := make(chan struct{})
 	for i := range n {
@@ -169,15 +170,22 @@ func TestIdempotentRaceWithExhaustedLimit(t *testing.T) {
 			<-start
 			var e emails.Email
 			e, errs[i] = svc.Create(ctx, projectID, keyed("race"))
-			ids[i] = e.ID
+			ids[i], replayed[i] = e.ID, e.Replayed
 		})
 	}
 	close(start)
 	wg.Wait()
+	fresh := 0
 	for i := range n {
 		if errs[i] != nil || ids[i] != ids[0] {
 			t.Fatalf("request %d: id %s err %v; want every request to get the one email", i, ids[i], errs[i])
 		}
+		if !replayed[i] {
+			fresh++
+		}
+	}
+	if fresh != 1 {
+		t.Errorf("%d requests created the email, want 1", fresh)
 	}
 	if got := counts(t, pool); got.emails != 1 {
 		t.Errorf("emails = %d, want 1", got.emails)
@@ -202,5 +210,32 @@ func TestCleanupDeletesOldRateLimitWindows(t *testing.T) {
 	}
 	if n := count(t, pool, "SELECT count(*) FROM rate_limit_windows"); n != 1 {
 		t.Errorf("windows after cleanup = %d, want only the current one", n)
+	}
+}
+
+// A refused request must not do write work or wait for the project's window
+// row: with the window full and its row locked by another transaction, a new
+// request is refused at once.
+func TestRefusalDoesNotWaitForWindowLock(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	pool, projectID := setup(t)
+	svc := limitedService(t, pool, 1)
+	freshWindow(t)
+	if _, err := svc.Create(ctx, projectID, input); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, "SELECT * FROM rate_limit_windows WHERE project_id = $1 FOR UPDATE", projectID); err != nil {
+		t.Fatal(err)
+	}
+	quick, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	if _, err := svc.Create(quick, projectID, input); !rateLimited(t, err) {
+		t.Fatalf("err = %v, want an immediate RateLimitError", err)
 	}
 }

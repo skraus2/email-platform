@@ -127,8 +127,8 @@ func (d *Dispatcher) SendEmail(ctx context.Context, args jobs.SendEmailArgs, at 
 // success), so it is not marked failed; the expiry safety net closes it.
 func (d *Dispatcher) internalError(ctx context.Context, log *slog.Logger, key store.GetEmailForDispatchParams, at jobs.Attempt, err error) error {
 	// A cancelled job (hard shutdown) is interrupted, not failed: the queue
-	// puts the attempt back.
-	if !at.Final() || ctx.Err() != nil {
+	// puts the attempt back. A job that ran out of time is a failure.
+	if !at.Final() || errors.Is(ctx.Err(), context.Canceled) {
 		return err
 	}
 	log.ErrorContext(ctx, "dispatch failed on the final attempt", slog.Any("error", err))

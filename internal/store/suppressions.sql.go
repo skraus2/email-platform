@@ -51,11 +51,16 @@ func (q *Queries) IsSuppressed(ctx context.Context, arg IsSuppressedParams) (boo
 }
 
 const listSuppressions = `-- name: ListSuppressions :many
-SELECT id, project_id, recipient, reason, created_at FROM suppressions WHERE project_id = $1 ORDER BY created_at DESC, id DESC
+SELECT id, project_id, recipient, reason, created_at FROM suppressions WHERE project_id = $1 ORDER BY created_at DESC, id DESC LIMIT $2
 `
 
-func (q *Queries) ListSuppressions(ctx context.Context, projectID uuid.UUID) ([]Suppression, error) {
-	rows, err := q.db.Query(ctx, listSuppressions, projectID)
+type ListSuppressionsParams struct {
+	ProjectID uuid.UUID
+	Limit     int32
+}
+
+func (q *Queries) ListSuppressions(ctx context.Context, arg ListSuppressionsParams) ([]Suppression, error) {
+	rows, err := q.db.Query(ctx, listSuppressions, arg.ProjectID, arg.Limit)
 	if err != nil {
 		return nil, err
 	}

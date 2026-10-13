@@ -45,3 +45,23 @@ func (q *Queries) DeleteRateLimitWindowsBefore(ctx context.Context) (int64, erro
 	}
 	return result.RowsAffected(), nil
 }
+
+const getSendCount = `-- name: GetSendCount :one
+SELECT coalesce((SELECT w.count FROM rate_limit_windows w
+                 WHERE w.project_id = $1 AND w.window_start = date_trunc('minute', now())), 0)::integer AS count,
+       ceil(extract(epoch FROM date_trunc('minute', now()) + interval '1 minute' - clock_timestamp()))::integer AS retry_after_seconds
+`
+
+type GetSendCountRow struct {
+	Count             int32
+	RetryAfterSeconds int32
+}
+
+// Read-only pre-check: sends already committed in the current minute of the
+// project, and the seconds until that window ends.
+func (q *Queries) GetSendCount(ctx context.Context, projectID uuid.UUID) (GetSendCountRow, error) {
+	row := q.db.QueryRow(ctx, getSendCount, projectID)
+	var i GetSendCountRow
+	err := row.Scan(&i.Count, &i.RetryAfterSeconds)
+	return i, err
+}

@@ -494,6 +494,22 @@ func TestNoDuplicateWarningWhenNothingIsSent(t *testing.T) {
 	}
 }
 
+// An attempt that ran out of its time budget on the final attempt is a
+// failure (the queue discards the job), unlike a shutdown cancellation.
+func TestTimedOutFinalAttemptFailsQueuedEmail(t *testing.T) {
+	t.Parallel()
+	pool, projectID := setup(t)
+	e := queued(t, pool, projectID)
+	expired, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	if err := dispatcher(pool, &fakeProvider{send: captured}, nil).SendEmail(expired, args(e), attempt(testMaxAttempts)); err != nil {
+		t.Fatalf("final attempt must end the job, got %v", err)
+	}
+	if s := state(t, pool, e.ID); s.status != "failed" || s.code() != emails.CodeInternalError || s.hasContent {
+		t.Fatalf("state = %+v (code %q), want failed/internal_error", s, s.code())
+	}
+}
+
 // An email still "sending" may already be out (an earlier attempt reached
 // the provider but could not record it). An internal error on the final
 // attempt must not mark it failed; the expiry safety net closes it.

@@ -10,7 +10,7 @@
 //	admin key revoke -prefix <prefix>
 //	admin email list -project <uuid> [-status failed] [-limit 50]
 //	admin suppression add -project <uuid> -email <addr> [-reason manual]
-//	admin suppression list -project <uuid>
+//	admin suppression list -project <uuid> [-limit 50]
 //	admin suppression remove -project <uuid> -email <addr>
 package main
 
@@ -46,7 +46,7 @@ const usage = `usage:
   admin key revoke -prefix <prefix>
   admin email list -project <uuid> [-status failed] [-limit 50]
   admin suppression add -project <uuid> -email <addr> [-reason manual]
-  admin suppression list -project <uuid>
+  admin suppression list -project <uuid> [-limit 50]
   admin suppression remove -project <uuid> -email <addr>`
 
 func main() {
@@ -170,7 +170,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		if err != nil {
 			return errors.New("-project must be a project uuid")
 		}
-		return suppression(ctx, q, args[1], pid, *email, *reason, stdout)
+		return suppression(ctx, q, args[1], pid, *email, *reason, *limit, stdout)
 	default:
 		return errors.New(usage)
 	}
@@ -184,7 +184,7 @@ func orDash(s *string) string {
 	return *s
 }
 
-func suppression(ctx context.Context, q *store.Queries, action string, pid uuid.UUID, email, reason string, stdout io.Writer) error {
+func suppression(ctx context.Context, q *store.Queries, action string, pid uuid.UUID, email, reason string, limit int, stdout io.Writer) error {
 	switch action {
 	case "add":
 		added, err := emails.AddSuppression(ctx, q, pid, email, reason)
@@ -205,7 +205,7 @@ func suppression(ctx context.Context, q *store.Queries, action string, pid uuid.
 		}
 		return nil
 	default:
-		list, err := emails.ListSuppressions(ctx, q, pid)
+		list, err := emails.ListSuppressions(ctx, q, pid, limit)
 		if err != nil {
 			return err
 		}

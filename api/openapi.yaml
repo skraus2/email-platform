@@ -197,7 +197,9 @@ components:
 
         `provider_timeout` and `provider_protocol_error` mean the outcome of
         that attempt is unknown: a `failed` email with one of these codes may
-        still have been delivered.
+        still have been delivered. The same holds for `suppressed` and
+        `project_disabled` on an email with `attempts` > 0 whose earlier
+        attempt ended with an unknown outcome: no further attempt is made.
       enum:
         - provider_unreachable
         - provider_timeout
@@ -246,7 +248,8 @@ components:
           description: |
             `null` when no attempt has failed or the email was dispatched.
             While the status is `queued` or `sending`, the reason of the last
-            failed attempt (a retry is pending); with status `failed`, the
+            failed attempt (a retry may be pending; otherwise the email is
+            closed by expiry); with status `failed`, the
             final reason.
           oneOf:
             - $ref: "#/components/schemas/ErrorCode"
