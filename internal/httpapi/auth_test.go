@@ -160,3 +160,9 @@ func assertErrorCode(t *testing.T, rec *httptest.ResponseRecorder, code string) 
 		t.Fatalf("body = %v, want error code %q", body, code)
 	}
 }
+
+func quietLogger() *slog.Logger { return slog.New(slog.DiscardHandler) }
+
+func fixedAuth(p auth.Principal) Authenticator {
+	return func(context.Context, string) (auth.Principal, error) { return p, nil }
+}

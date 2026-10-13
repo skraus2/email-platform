@@ -56,6 +56,8 @@ func New(d Deps) *Server {
 	mux.HandleFunc("/readyz", methodNotAllowed(http.MethodGet))
 	mux.HandleFunc("POST /v1/emails", s.requireScope(auth.ScopeEmailsSend, s.handleCreateEmail))
 	mux.HandleFunc("/v1/emails", methodNotAllowed(http.MethodPost))
+	mux.HandleFunc("GET /v1/emails/{id}", s.requireScope(auth.ScopeEmailsRead, s.handleGetEmail))
+	mux.HandleFunc("/v1/emails/{id}", methodNotAllowed(http.MethodGet))
 	mux.HandleFunc("/", handleNotFound)
 
 	s.handler = requestLogger(s.logger, mux)

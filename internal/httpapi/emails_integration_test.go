@@ -155,3 +155,35 @@ func TestPostEmailAuthFailures(t *testing.T) {
 		t.Fatalf("%d emails created by rejected requests (project %s)", n, projectID)
 	}
 }
+
+func TestGetEmailIsolationBetweenProjects(t *testing.T) {
+	t.Parallel()
+	s := newStack(t)
+	_, keyA := s.project(t)
+	_, keyB := s.project(t)
+
+	code, body := s.do(t, http.MethodPost, "/v1/emails", keyA, sendBody)
+	if code != http.StatusAccepted {
+		t.Fatalf("POST = %d", code)
+	}
+	id := body["id"].(string)
+
+	code, own := s.do(t, http.MethodGet, "/v1/emails/"+id, keyA, "")
+	if code != http.StatusOK || own["id"] != id || own["status"] != "queued" || own["to"] != "customer@example.test" {
+		t.Fatalf("own GET = %d %v", code, own)
+	}
+
+	foreignCode, foreign := s.do(t, http.MethodGet, "/v1/emails/"+id, keyB, "")
+	unknownCode, unknown := s.do(t, http.MethodGet, "/v1/emails/"+uuid.NewString(), keyB, "")
+	if foreignCode != http.StatusNotFound || unknownCode != http.StatusNotFound {
+		t.Fatalf("foreign = %d, unknown = %d, want 404 both", foreignCode, unknownCode)
+	}
+	fj, _ := json.Marshal(foreign)
+	uj, _ := json.Marshal(unknown)
+	if string(fj) != string(uj) {
+		t.Fatalf("foreign 404 differs from unknown 404: %s vs %s", fj, uj)
+	}
+	if strings.Contains(string(fj), "customer@example.test") || strings.Contains(string(fj), id) {
+		t.Fatalf("foreign response leaks metadata: %s", fj)
+	}
+}
