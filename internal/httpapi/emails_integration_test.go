@@ -5,6 +5,7 @@ package httpapi_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -185,5 +186,34 @@ func TestGetEmailIsolationBetweenProjects(t *testing.T) {
 	}
 	if strings.Contains(string(fj), "customer@example.test") || strings.Contains(string(fj), id) {
 		t.Fatalf("foreign response leaks metadata: %s", fj)
+	}
+}
+
+func TestGetEmailShowsAttemptsAndErrorCode(t *testing.T) {
+	t.Parallel()
+	s := newStack(t)
+	_, token := s.project(t)
+	code, body := s.do(t, http.MethodPost, "/v1/emails", token, sendBody)
+	if code != http.StatusAccepted {
+		t.Fatalf("POST = %d", code)
+	}
+	id := body["id"].(string)
+
+	_, fresh := s.do(t, http.MethodGet, "/v1/emails/"+id, token, "")
+	if v, ok := fresh["error_code"]; !ok || v != nil || fresh["attempts"] != float64(0) {
+		t.Fatalf("fresh email = %v, want attempts 0 and error_code null", fresh)
+	}
+
+	if _, err := s.pool.Exec(context.Background(), `UPDATE emails SET status = 'failed', attempts = 3,
+		error_code = 'provider_rejected', last_error = 'delivery failed: rejected (smtp 550)', finished_at = now()
+		WHERE id = $1`, id); err != nil {
+		t.Fatal(err)
+	}
+	_, failed := s.do(t, http.MethodGet, "/v1/emails/"+id, token, "")
+	if failed["status"] != "failed" || failed["error_code"] != "provider_rejected" || failed["attempts"] != float64(3) {
+		t.Fatalf("failed email = %v", failed)
+	}
+	if strings.Contains(fmt.Sprint(failed), "smtp 550") {
+		t.Fatal("internal detail exposed")
 	}
 }

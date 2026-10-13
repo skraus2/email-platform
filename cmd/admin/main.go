@@ -8,6 +8,7 @@
 //	admin key create -project <uuid> [-scopes emails:send,emails:read]
 //	admin key list -project <uuid>
 //	admin key revoke -prefix <prefix>
+//	admin email list -project <uuid> [-status failed] [-limit 50]
 package main
 
 import (
@@ -28,6 +29,7 @@ import (
 	"github.com/skraus2/email-platform/internal/auth"
 	"github.com/skraus2/email-platform/internal/config"
 	"github.com/skraus2/email-platform/internal/database"
+	"github.com/skraus2/email-platform/internal/emails"
 	"github.com/skraus2/email-platform/internal/store"
 )
 
@@ -38,7 +40,8 @@ const usage = `usage:
   admin project enable -id <uuid>
   admin key create -project <uuid> [-scopes emails:send,emails:read]
   admin key list -project <uuid>
-  admin key revoke -prefix <prefix>`
+  admin key revoke -prefix <prefix>
+  admin email list -project <uuid> [-status failed] [-limit 50]`
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -71,6 +74,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	project := fs.String("project", "", "project id")
 	scopes := fs.String("scopes", "", "comma-separated scopes (default: all)")
 	prefix := fs.String("prefix", "", "key prefix")
+	status := fs.String("status", "", "only emails with this status")
+	limit := fs.Int("limit", emails.DefaultAdminListLimit, "maximum number of emails")
 	if err := fs.Parse(args[2:]); err != nil {
 		return err
 	}
@@ -136,8 +141,31 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return w.Flush()
 	case "key revoke":
 		return auth.RevokeKey(ctx, q, *prefix)
+	case "email list":
+		pid, err := uuid.Parse(*project)
+		if err != nil {
+			return errors.New("-project must be a project uuid")
+		}
+		list, err := emails.ListEmails(ctx, q, pid, *status, *limit)
+		if err != nil {
+			return err
+		}
+		w := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
+		fmt.Fprintln(w, "ID\tSTATUS\tERROR_CODE\tDETAIL\tATTEMPTS\tRECIPIENT\tCREATED\tUPDATED")
+		for _, e := range list {
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\n", e.ID, e.Status, orDash(e.ErrorCode), orDash(e.Detail),
+				e.Attempts, e.Recipient, e.CreatedAt.Format(time.RFC3339), e.UpdatedAt.Format(time.RFC3339))
+		}
+		return w.Flush()
 	default:
 		return errors.New(usage)
 	}
 	return nil
+}
+
+func orDash(s *string) string {
+	if s == nil {
+		return "-"
+	}
+	return *s
 }

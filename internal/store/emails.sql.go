@@ -40,7 +40,7 @@ func (q *Queries) DeleteEmailContent(ctx context.Context, arg DeleteEmailContent
 
 const expireOpenEmails = `-- name: ExpireOpenEmails :execrows
 UPDATE emails
-SET status = 'failed', last_error = 'expired', finished_at = now(), updated_at = now()
+SET status = 'failed', last_error = 'expired', error_code = 'expired', finished_at = now(), updated_at = now()
 WHERE status IN ('queued', 'sending') AND created_at < $1
 `
 
@@ -54,7 +54,7 @@ func (q *Queries) ExpireOpenEmails(ctx context.Context, createdAt time.Time) (in
 }
 
 const getEmail = `-- name: GetEmail :one
-SELECT id, project_id, sender, recipient, subject, status, provider, provider_id, attempts, last_error, created_at, updated_at, finished_at FROM emails WHERE id = $1 AND project_id = $2
+SELECT id, project_id, sender, recipient, subject, status, provider, provider_id, attempts, last_error, created_at, updated_at, finished_at, error_code FROM emails WHERE id = $1 AND project_id = $2
 `
 
 type GetEmailParams struct {
@@ -79,6 +79,7 @@ func (q *Queries) GetEmail(ctx context.Context, arg GetEmailParams) (Email, erro
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.FinishedAt,
+		&i.ErrorCode,
 	)
 	return i, err
 }
@@ -133,7 +134,7 @@ func (q *Queries) GetEmailForDispatch(ctx context.Context, arg GetEmailForDispat
 const insertEmail = `-- name: InsertEmail :one
 INSERT INTO emails (project_id, sender, recipient, subject)
 VALUES ($1, $2, $3, $4)
-RETURNING id, project_id, sender, recipient, subject, status, provider, provider_id, attempts, last_error, created_at, updated_at, finished_at
+RETURNING id, project_id, sender, recipient, subject, status, provider, provider_id, attempts, last_error, created_at, updated_at, finished_at, error_code
 `
 
 type InsertEmailParams struct {
@@ -165,6 +166,7 @@ func (q *Queries) InsertEmail(ctx context.Context, arg InsertEmailParams) (Email
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.FinishedAt,
+		&i.ErrorCode,
 	)
 	return i, err
 }
@@ -191,9 +193,58 @@ func (q *Queries) InsertEmailContent(ctx context.Context, arg InsertEmailContent
 	return err
 }
 
+const listEmails = `-- name: ListEmails :many
+SELECT id, project_id, sender, recipient, subject, status, provider, provider_id, attempts, last_error, created_at, updated_at, finished_at, error_code FROM emails
+WHERE project_id = $1 AND ($3::text IS NULL OR status = $3)
+ORDER BY created_at DESC, id DESC
+LIMIT $2
+`
+
+type ListEmailsParams struct {
+	ProjectID uuid.UUID
+	Limit     int32
+	Status    *string
+}
+
+// Admin failure inspection: newest first, optionally one status only.
+func (q *Queries) ListEmails(ctx context.Context, arg ListEmailsParams) ([]Email, error) {
+	rows, err := q.db.Query(ctx, listEmails, arg.ProjectID, arg.Limit, arg.Status)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Email{}
+	for rows.Next() {
+		var i Email
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProjectID,
+			&i.Sender,
+			&i.Recipient,
+			&i.Subject,
+			&i.Status,
+			&i.Provider,
+			&i.ProviderID,
+			&i.Attempts,
+			&i.LastError,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.FinishedAt,
+			&i.ErrorCode,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const markDispatched = `-- name: MarkDispatched :execrows
 UPDATE emails
-SET status = $3, provider = $4, provider_id = $5, last_error = NULL,
+SET status = $3, provider = $4, provider_id = $5, last_error = NULL, error_code = NULL,
     finished_at = now(), updated_at = now()
 WHERE id = $1 AND project_id = $2 AND status = 'sending'
 `
@@ -222,7 +273,7 @@ func (q *Queries) MarkDispatched(ctx context.Context, arg MarkDispatchedParams) 
 
 const markFailed = `-- name: MarkFailed :execrows
 UPDATE emails
-SET status = 'failed', last_error = $3, finished_at = now(), updated_at = now()
+SET status = 'failed', last_error = $3, error_code = $4, finished_at = now(), updated_at = now()
 WHERE id = $1 AND project_id = $2 AND status IN ('queued', 'sending')
 `
 
@@ -230,10 +281,16 @@ type MarkFailedParams struct {
 	ID        uuid.UUID
 	ProjectID uuid.UUID
 	LastError *string
+	ErrorCode *string
 }
 
 func (q *Queries) MarkFailed(ctx context.Context, arg MarkFailedParams) (int64, error) {
-	result, err := q.db.Exec(ctx, markFailed, arg.ID, arg.ProjectID, arg.LastError)
+	result, err := q.db.Exec(ctx, markFailed,
+		arg.ID,
+		arg.ProjectID,
+		arg.LastError,
+		arg.ErrorCode,
+	)
 	if err != nil {
 		return 0, err
 	}
@@ -259,7 +316,7 @@ func (q *Queries) MarkSending(ctx context.Context, arg MarkSendingParams) (int64
 }
 
 const recordAttemptError = `-- name: RecordAttemptError :exec
-UPDATE emails SET last_error = $3, updated_at = now()
+UPDATE emails SET last_error = $3, error_code = $4, updated_at = now()
 WHERE id = $1 AND project_id = $2 AND status = 'sending'
 `
 
@@ -267,17 +324,23 @@ type RecordAttemptErrorParams struct {
 	ID        uuid.UUID
 	ProjectID uuid.UUID
 	LastError *string
+	ErrorCode *string
 }
 
 // Outcome unknown (timeout/protocol error mid-send): stay "sending", so the
 // retry logs a possible duplicate.
 func (q *Queries) RecordAttemptError(ctx context.Context, arg RecordAttemptErrorParams) error {
-	_, err := q.db.Exec(ctx, recordAttemptError, arg.ID, arg.ProjectID, arg.LastError)
+	_, err := q.db.Exec(ctx, recordAttemptError,
+		arg.ID,
+		arg.ProjectID,
+		arg.LastError,
+		arg.ErrorCode,
+	)
 	return err
 }
 
 const requeueAfterError = `-- name: RequeueAfterError :exec
-UPDATE emails SET status = 'queued', last_error = $3, updated_at = now()
+UPDATE emails SET status = 'queued', last_error = $3, error_code = $4, updated_at = now()
 WHERE id = $1 AND project_id = $2 AND status = 'sending'
 `
 
@@ -285,11 +348,17 @@ type RequeueAfterErrorParams struct {
 	ID        uuid.UUID
 	ProjectID uuid.UUID
 	LastError *string
+	ErrorCode *string
 }
 
 // The provider certainly did not accept the message (connect failure or SMTP
 // rejection): back to queued, so the retry is not flagged as a duplicate.
 func (q *Queries) RequeueAfterError(ctx context.Context, arg RequeueAfterErrorParams) error {
-	_, err := q.db.Exec(ctx, requeueAfterError, arg.ID, arg.ProjectID, arg.LastError)
+	_, err := q.db.Exec(ctx, requeueAfterError,
+		arg.ID,
+		arg.ProjectID,
+		arg.LastError,
+		arg.ErrorCode,
+	)
 	return err
 }

@@ -47,6 +47,7 @@ func TestGetEmailReturnsOwnEmail(t *testing.T) {
 	e := emails.Email{
 		ID: uuid.New(), ProjectID: principal.ProjectID, Status: "captured", From: "a@example.test",
 		To: "b@example.test", Subject: "Hi", CreatedAt: created, UpdatedAt: finished, FinishedAt: &finished,
+		Attempts: 2,
 	}
 	svc := &getEmails{email: e}
 	s := New(Deps{Logger: quietLogger(), Authenticate: fixedAuth(principal), Emails: svc})
@@ -59,12 +60,13 @@ func TestGetEmailReturnsOwnEmail(t *testing.T) {
 		"id": e.ID.String(), "status": "captured", "from": "a@example.test", "to": "b@example.test",
 		"subject": "Hi", "created_at": "2026-10-13T12:00:00.000000123Z",
 		"updated_at": "2026-10-13T12:00:01.000000123Z", "finished_at": "2026-10-13T12:00:01.000000123Z",
+		"attempts": float64(2), "error_code": nil,
 	}
 	if len(body) != len(want) {
 		t.Fatalf("body = %v", body)
 	}
 	for k, v := range want {
-		if body[k] != v {
+		if got, ok := body[k]; !ok || got != v {
 			t.Errorf("%s = %v, want %v", k, body[k], v)
 		}
 	}
@@ -76,6 +78,19 @@ func TestGetEmailUnfinishedHasNullFinishedAt(t *testing.T) {
 	body := decode(t, get(t, s, "/v1/emails/"+e.ID.String()))
 	if v, ok := body["finished_at"]; !ok || v != nil {
 		t.Fatalf("finished_at = %v (present %v), want null", v, ok)
+	}
+}
+
+func TestGetEmailShowsErrorCode(t *testing.T) {
+	code := emails.CodeProviderUnreachable
+	e := emails.Email{ID: uuid.New(), ProjectID: principal.ProjectID, Status: "queued", Attempts: 1, ErrorCode: &code}
+	s := New(Deps{Logger: quietLogger(), Authenticate: fixedAuth(principal), Emails: &getEmails{email: e}})
+	body := decode(t, get(t, s, "/v1/emails/"+e.ID.String()))
+	if body["error_code"] != "provider_unreachable" || body["attempts"] != float64(1) {
+		t.Fatalf("body = %v, want error_code provider_unreachable and attempts 1", body)
+	}
+	if _, ok := body["last_error"]; ok {
+		t.Fatal("internal error detail exposed")
 	}
 }
 

@@ -9,6 +9,7 @@ sql:
       - db/migrations/00002_projects_and_api_keys.sql
       - db/migrations/00004_emails.sql
       - db/migrations/00005_idempotency_keys.sql
+      - db/migrations/00006_email_error_codes.sql
     queries: db/queries
     gen:
       go:

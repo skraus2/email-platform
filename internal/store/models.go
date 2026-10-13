@@ -34,6 +34,7 @@ type Email struct {
 	CreatedAt  time.Time
 	UpdatedAt  time.Time
 	FinishedAt *time.Time
+	ErrorCode  *string
 }
 
 type EmailContent struct {

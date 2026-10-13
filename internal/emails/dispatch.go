@@ -53,31 +53,32 @@ func (d *Dispatcher) SendEmail(ctx context.Context, args jobs.SendEmailArgs, at 
 		return nil
 	}
 	if err != nil {
-		return fmt.Errorf("load email: %w", err)
+		return d.internalError(ctx, log, key, at, fmt.Errorf("load email: %w", err))
 	}
 
 	switch e.Status {
-	case "queued":
-	case "sending":
-		// A previous attempt was interrupted after possibly reaching the
-		// provider (worker crash, shutdown, timeout). This send may duplicate.
-		log.WarnContext(ctx, "possible_duplicate_send")
+	case "queued", "sending":
 	default:
 		return nil // already terminal: a retry after the success was recorded
 	}
 	if e.ProjectStatus != "active" {
-		return d.fail(ctx, log, key, "project_disabled")
+		return d.fail(ctx, log, key, CodeProjectDisabled, CodeProjectDisabled)
 	}
 	if !e.HasContent {
-		return d.fail(ctx, log, key, "content_missing")
+		return d.fail(ctx, log, key, CodeContentMissing, CodeContentMissing)
 	}
 
 	n, err := store.New(d.pool).MarkSending(ctx, store.MarkSendingParams(key))
 	if err != nil {
-		return fmt.Errorf("mark sending: %w", err)
+		return d.internalError(ctx, log, key, at, fmt.Errorf("mark sending: %w", err))
 	}
 	if n == 0 {
 		return nil // finalized concurrently (e.g. expired)
+	}
+	if e.Status == "sending" {
+		// A previous attempt was interrupted after possibly reaching the
+		// provider (worker crash, shutdown, timeout). This send may duplicate.
+		log.WarnContext(ctx, "possible_duplicate_send")
 	}
 
 	sendCtx, cancel := context.WithTimeout(ctx, d.timeout)
@@ -91,28 +92,42 @@ func (d *Dispatcher) SendEmail(ctx context.Context, args jobs.SendEmailArgs, at 
 		return d.finish(ctx, log, key, res, e.Recipient)
 	}
 
-	reason := sanitize(sendErr)
-	var de *delivery.Error
-	permanent := errors.As(sendErr, &de) && !de.Temporary()
-	if de != nil && de.Class == delivery.ClassUnsafeTarget {
+	detail := sanitize(sendErr)
+	code, retryable := failureCode(sendErr)
+	if code == CodeUnsafeTarget {
 		log.ErrorContext(ctx, "SMTP target is not Mailpit; refusing to send (check SMTP_ADDR)")
 	}
-	if permanent || at.Final() {
-		return d.fail(ctx, log, key, reason)
+	if !retryable || at.Final() {
+		return d.fail(ctx, log, key, code, detail)
 	}
 	wctx, cancelW := detached(ctx)
 	defer cancelW()
 	q := store.New(d.pool)
 	if notAccepted(sendErr) {
-		err = q.RequeueAfterError(wctx, store.RequeueAfterErrorParams{ID: key.ID, ProjectID: key.ProjectID, LastError: &reason})
+		err = q.RequeueAfterError(wctx, store.RequeueAfterErrorParams{ID: key.ID, ProjectID: key.ProjectID, LastError: &detail, ErrorCode: &code})
 	} else {
-		err = q.RecordAttemptError(wctx, store.RecordAttemptErrorParams{ID: key.ID, ProjectID: key.ProjectID, LastError: &reason})
+		err = q.RecordAttemptError(wctx, store.RecordAttemptErrorParams{ID: key.ID, ProjectID: key.ProjectID, LastError: &detail, ErrorCode: &code})
 	}
 	if err != nil {
 		log.ErrorContext(ctx, "record attempt error", slog.Any("error", err))
 	}
-	log.WarnContext(ctx, "send attempt failed; will retry", slog.String("reason", reason))
-	return errors.New(reason)
+	log.WarnContext(ctx, "send attempt failed; will retry", slog.String("reason", detail), slog.String("error_code", code))
+	return errors.New(detail)
+}
+
+// internalError handles a failure outside the provider call (typically the
+// database). It is retried; on the final attempt the email fails, so it does
+// not stay open until the expiry safety net. Nothing was sent in this
+// attempt, so failing cannot hide a delivered message.
+func (d *Dispatcher) internalError(ctx context.Context, log *slog.Logger, key store.GetEmailForDispatchParams, at jobs.Attempt, err error) error {
+	if !at.Final() {
+		return err
+	}
+	log.ErrorContext(ctx, "dispatch failed on the final attempt", slog.Any("error", err))
+	if ferr := d.fail(ctx, log, key, CodeInternalError, CodeInternalError); ferr != nil {
+		return errors.Join(err, ferr)
+	}
+	return nil
 }
 
 // finish records the provider acceptance and deletes the content in one
@@ -151,13 +166,14 @@ func (d *Dispatcher) finish(ctx context.Context, log *slog.Logger, key store.Get
 	return nil
 }
 
-// fail marks the email failed and deletes its content; the job then ends.
-func (d *Dispatcher) fail(ctx context.Context, log *slog.Logger, key store.GetEmailForDispatchParams, reason string) error {
+// fail marks the email failed with a failure code and a sanitized detail,
+// and deletes its content; the job then ends.
+func (d *Dispatcher) fail(ctx context.Context, log *slog.Logger, key store.GetEmailForDispatchParams, code, detail string) error {
 	dctx, cancel := detached(ctx)
 	defer cancel()
 	err := pgx.BeginFunc(dctx, d.pool, func(tx pgx.Tx) error {
 		q := store.New(tx)
-		if _, err := q.MarkFailed(dctx, store.MarkFailedParams{ID: key.ID, ProjectID: key.ProjectID, LastError: &reason}); err != nil {
+		if _, err := q.MarkFailed(dctx, store.MarkFailedParams{ID: key.ID, ProjectID: key.ProjectID, LastError: &detail, ErrorCode: &code}); err != nil {
 			return err
 		}
 		return q.DeleteEmailContent(dctx, store.DeleteEmailContentParams{EmailID: key.ID, ProjectID: key.ProjectID})
@@ -165,7 +181,7 @@ func (d *Dispatcher) fail(ctx context.Context, log *slog.Logger, key store.GetEm
 	if err != nil {
 		return fmt.Errorf("mark failed: %w", err)
 	}
-	log.WarnContext(ctx, "email failed", slog.String("reason", reason))
+	log.WarnContext(ctx, "email failed", slog.String("error_code", code), slog.String("reason", detail))
 	return nil
 }
 

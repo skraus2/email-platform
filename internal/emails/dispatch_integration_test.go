@@ -42,6 +42,7 @@ type emailState struct {
 	status     string
 	attempts   int
 	lastError  *string
+	errorCode  *string
 	finished   bool
 	hasContent bool
 }
@@ -50,12 +51,19 @@ func state(t *testing.T, pool *pgxpool.Pool, id uuid.UUID) emailState {
 	t.Helper()
 	var s emailState
 	if err := pool.QueryRow(context.Background(), `
-		SELECT e.status, e.attempts, e.last_error, e.finished_at IS NOT NULL,
+		SELECT e.status, e.attempts, e.last_error, e.error_code, e.finished_at IS NOT NULL,
 		       EXISTS (SELECT 1 FROM email_contents c WHERE c.email_id = e.id)
-		FROM emails e WHERE e.id = $1`, id).Scan(&s.status, &s.attempts, &s.lastError, &s.finished, &s.hasContent); err != nil {
+		FROM emails e WHERE e.id = $1`, id).Scan(&s.status, &s.attempts, &s.lastError, &s.errorCode, &s.finished, &s.hasContent); err != nil {
 		t.Fatal(err)
 	}
 	return s
+}
+
+func (s emailState) code() string {
+	if s.errorCode == nil {
+		return ""
+	}
+	return *s.errorCode
 }
 
 // queued creates an email through the real service (job enqueue stubbed).
@@ -161,15 +169,16 @@ func TestDispatchTemporaryErrorRetriesThenFailsOnFinalAttempt(t *testing.T) {
 		t.Fatalf("returned error leaks recipient: %v", err)
 	}
 	s := state(t, pool, e.ID)
-	if s.status != "queued" || !s.hasContent || s.lastError == nil || *s.lastError != "delivery failed: connect" {
-		t.Fatalf("after attempt 1: %+v", s)
+	if s.status != "queued" || !s.hasContent || s.lastError == nil || *s.lastError != "delivery failed: connect" ||
+		s.code() != emails.CodeProviderUnreachable {
+		t.Fatalf("after attempt 1: %+v (code %q)", s, s.code())
 	}
 
 	if err := d.SendEmail(context.Background(), args(e), attempt(jobs.SendEmailMaxAttempts)); err != nil {
 		t.Fatalf("final attempt must end the job, got %v", err)
 	}
-	if s := state(t, pool, e.ID); s.status != "failed" || s.hasContent || !s.finished {
-		t.Fatalf("after final attempt: %+v", s)
+	if s := state(t, pool, e.ID); s.status != "failed" || s.hasContent || !s.finished || s.code() != emails.CodeProviderUnreachable {
+		t.Fatalf("after final attempt: %+v (code %q)", s, s.code())
 	}
 }
 
@@ -184,8 +193,9 @@ func TestDispatchPermanentErrorFailsImmediately(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := state(t, pool, e.ID)
-	if s.status != "failed" || s.hasContent || *s.lastError != "delivery failed: rejected (smtp 550)" {
-		t.Fatalf("state = %+v", s)
+	if s.status != "failed" || s.hasContent || *s.lastError != "delivery failed: rejected (smtp 550)" ||
+		s.code() != emails.CodeProviderRejected {
+		t.Fatalf("state = %+v (code %q)", s, s.code())
 	}
 }
 
@@ -237,7 +247,7 @@ func TestCleanupExpiresStaleEmailsAndContent(t *testing.T) {
 	if err := dispatcher(pool, &fakeProvider{send: captured}, nil).Cleanup(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if s := state(t, pool, stale.ID); s.status != "failed" || s.hasContent || *s.lastError != "expired" {
+	if s := state(t, pool, stale.ID); s.status != "failed" || s.hasContent || *s.lastError != "expired" || s.code() != emails.CodeExpired {
 		t.Fatalf("stale = %+v", s)
 	}
 	if s := state(t, pool, fresh.ID); s.status != "queued" || !s.hasContent {
@@ -257,7 +267,7 @@ func TestDispatchSkipsDisabledProject(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := state(t, pool, e.ID)
-	if p.calls != 0 || s.status != "failed" || s.hasContent || *s.lastError != "project_disabled" {
+	if p.calls != 0 || s.status != "failed" || s.hasContent || *s.lastError != "project_disabled" || s.code() != emails.CodeProjectDisabled {
 		t.Fatalf("disabled project still sent or kept content: calls=%d state=%+v", p.calls, s)
 	}
 }
@@ -321,14 +331,17 @@ func TestTimeoutKeepsSendingAndRetryWarnsAboutDuplicate(t *testing.T) {
 	if err := d.SendEmail(context.Background(), args(e), attempt(1)); err == nil {
 		t.Fatal("timeout must be retried")
 	}
-	if s := state(t, pool, e.ID); s.status != "sending" {
-		t.Fatalf("after timeout status = %q, want sending (outcome unknown)", s.status)
+	if s := state(t, pool, e.ID); s.status != "sending" || s.code() != emails.CodeProviderTimeout {
+		t.Fatalf("after timeout: %+v (code %q), want sending with provider_timeout (outcome unknown)", s, s.code())
 	}
 	if err := d.SendEmail(context.Background(), args(e), attempt(2)); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(logs.String(), "possible_duplicate_send") {
 		t.Fatal("retry after an unknown outcome must warn about a possible duplicate")
+	}
+	if s := state(t, pool, e.ID); s.status != "captured" || s.lastError != nil || s.errorCode != nil {
+		t.Fatalf("success must clear the retry reason: %+v", s)
 	}
 }
 
@@ -352,7 +365,7 @@ func TestCleanupDuringSendWinsOverLateSuccess(t *testing.T) {
 	if err := d.SendEmail(ctx, args(e), attempt(1)); err != nil {
 		t.Fatal(err)
 	}
-	if s := state(t, pool, e.ID); s.status != "failed" || *s.lastError != "expired" {
+	if s := state(t, pool, e.ID); s.status != "failed" || *s.lastError != "expired" || s.code() != emails.CodeExpired {
 		t.Fatalf("late success overwrote the terminal state: %+v", s)
 	}
 }
@@ -368,7 +381,7 @@ func TestMissingContentFailsWithoutSending(t *testing.T) {
 	if err := dispatcher(pool, p, nil).SendEmail(context.Background(), args(e), attempt(1)); err != nil {
 		t.Fatal(err)
 	}
-	if s := state(t, pool, e.ID); p.calls != 0 || s.status != "failed" || *s.lastError != "content_missing" {
+	if s := state(t, pool, e.ID); p.calls != 0 || s.status != "failed" || *s.lastError != "content_missing" || s.code() != emails.CodeContentMissing {
 		t.Fatalf("calls=%d state=%+v", p.calls, s)
 	}
 }
@@ -382,9 +395,9 @@ func TestStateUpdatesNeverLeaveTerminalStates(t *testing.T) {
 		t.Fatal(err)
 	}
 	q := store.New(pool)
-	reason := "late failure"
+	reason, code := "late failure", emails.CodeInternalError
 	key := struct{ id, project uuid.UUID }{e.ID, projectID}
-	if n, _ := q.MarkFailed(ctx, store.MarkFailedParams{ID: key.id, ProjectID: key.project, LastError: &reason}); n != 0 {
+	if n, _ := q.MarkFailed(ctx, store.MarkFailedParams{ID: key.id, ProjectID: key.project, LastError: &reason, ErrorCode: &code}); n != 0 {
 		t.Fatal("MarkFailed changed a captured email")
 	}
 	if n, _ := q.MarkSending(ctx, store.MarkSendingParams{ID: key.id, ProjectID: key.project}); n != 0 {
@@ -392,13 +405,63 @@ func TestStateUpdatesNeverLeaveTerminalStates(t *testing.T) {
 	}
 	// A slow rescued attempt reporting an error after another attempt captured
 	// the email must not reopen it.
-	if err := q.RequeueAfterError(ctx, store.RequeueAfterErrorParams{ID: key.id, ProjectID: key.project, LastError: &reason}); err != nil {
+	if err := q.RequeueAfterError(ctx, store.RequeueAfterErrorParams{ID: key.id, ProjectID: key.project, LastError: &reason, ErrorCode: &code}); err != nil {
 		t.Fatal(err)
 	}
-	if err := q.RecordAttemptError(ctx, store.RecordAttemptErrorParams{ID: key.id, ProjectID: key.project, LastError: &reason}); err != nil {
+	if err := q.RecordAttemptError(ctx, store.RecordAttemptErrorParams{ID: key.id, ProjectID: key.project, LastError: &reason, ErrorCode: &code}); err != nil {
 		t.Fatal(err)
 	}
-	if s := state(t, pool, e.ID); s.status != "captured" || s.lastError != nil {
+	if s := state(t, pool, e.ID); s.status != "captured" || s.lastError != nil || s.errorCode != nil {
 		t.Fatalf("terminal email changed: %+v", s)
+	}
+}
+
+// Errors outside the provider call (here: the database is unreachable for
+// this attempt) are retried, and on the final attempt the email fails with
+// internal_error instead of staying open until the expiry safety net.
+func TestInternalErrorOnFinalAttemptFailsEmail(t *testing.T) {
+	t.Parallel()
+	pool, projectID := setup(t)
+	e := queued(t, pool, projectID)
+	p := &fakeProvider{send: captured}
+	d := dispatcher(pool, p, nil)
+	gone, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if err := d.SendEmail(gone, args(e), attempt(1)); err == nil {
+		t.Fatal("an internal error before the final attempt must be retried")
+	}
+	if s := state(t, pool, e.ID); s.status != "queued" || !s.hasContent {
+		t.Fatalf("after a non-final internal error: %+v", s)
+	}
+
+	if err := d.SendEmail(gone, args(e), attempt(jobs.SendEmailMaxAttempts)); err != nil {
+		t.Fatalf("final attempt must end the job, got %v", err)
+	}
+	if s := state(t, pool, e.ID); p.calls != 0 || s.status != "failed" || s.hasContent || s.code() != emails.CodeInternalError {
+		t.Fatalf("calls=%d state=%+v (code %q), want failed/internal_error", p.calls, s, s.code())
+	}
+}
+
+// The duplicate warning is only for an attempt that actually sends again,
+// not for one that stops before the provider.
+func TestNoDuplicateWarningWhenNothingIsSent(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	pool, projectID := setup(t)
+	e := queued(t, pool, projectID)
+	if _, err := pool.Exec(ctx, "UPDATE emails SET status = 'sending', attempts = 1 WHERE id = $1", e.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, "DELETE FROM email_contents WHERE email_id = $1", e.ID); err != nil {
+		t.Fatal(err)
+	}
+	var logs bytes.Buffer
+	p := &fakeProvider{send: captured}
+	if err := dispatcher(pool, p, &logs).SendEmail(ctx, args(e), attempt(2)); err != nil {
+		t.Fatal(err)
+	}
+	if p.calls != 0 || strings.Contains(logs.String(), "possible_duplicate_send") {
+		t.Fatalf("calls=%d; logs: %s", p.calls, logs.String())
 	}
 }

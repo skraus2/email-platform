@@ -18,6 +18,8 @@ type emailResponse struct {
 	From       string     `json:"from"`
 	To         string     `json:"to"`
 	Subject    string     `json:"subject"`
+	Attempts   int        `json:"attempts"`
+	ErrorCode  *string    `json:"error_code"`
 	CreatedAt  time.Time  `json:"created_at"`
 	UpdatedAt  time.Time  `json:"updated_at"`
 	FinishedAt *time.Time `json:"finished_at"`
@@ -44,6 +46,7 @@ func (s *Server) handleGetEmail(w http.ResponseWriter, r *http.Request) {
 	}
 	resp := emailResponse{
 		ID: e.ID.String(), Status: e.Status, From: e.From, To: e.To, Subject: e.Subject,
+		Attempts: e.Attempts, ErrorCode: e.ErrorCode,
 		CreatedAt: e.CreatedAt.UTC(), UpdatedAt: e.UpdatedAt.UTC(),
 	}
 	if e.FinishedAt != nil {

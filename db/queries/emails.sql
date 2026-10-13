@@ -26,25 +26,25 @@ WHERE id = $1 AND project_id = $2 AND status IN ('queued', 'sending');
 
 -- name: MarkDispatched :execrows
 UPDATE emails
-SET status = $3, provider = $4, provider_id = $5, last_error = NULL,
+SET status = $3, provider = $4, provider_id = $5, last_error = NULL, error_code = NULL,
     finished_at = now(), updated_at = now()
 WHERE id = $1 AND project_id = $2 AND status = 'sending';
 
 -- name: RequeueAfterError :exec
 -- The provider certainly did not accept the message (connect failure or SMTP
 -- rejection): back to queued, so the retry is not flagged as a duplicate.
-UPDATE emails SET status = 'queued', last_error = $3, updated_at = now()
+UPDATE emails SET status = 'queued', last_error = $3, error_code = $4, updated_at = now()
 WHERE id = $1 AND project_id = $2 AND status = 'sending';
 
 -- name: RecordAttemptError :exec
 -- Outcome unknown (timeout/protocol error mid-send): stay "sending", so the
 -- retry logs a possible duplicate.
-UPDATE emails SET last_error = $3, updated_at = now()
+UPDATE emails SET last_error = $3, error_code = $4, updated_at = now()
 WHERE id = $1 AND project_id = $2 AND status = 'sending';
 
 -- name: MarkFailed :execrows
 UPDATE emails
-SET status = 'failed', last_error = $3, finished_at = now(), updated_at = now()
+SET status = 'failed', last_error = $3, error_code = $4, finished_at = now(), updated_at = now()
 WHERE id = $1 AND project_id = $2 AND status IN ('queued', 'sending');
 
 -- name: DeleteEmailContent :exec
@@ -53,8 +53,15 @@ DELETE FROM email_contents WHERE email_id = $1 AND project_id = $2;
 -- name: ExpireOpenEmails :execrows
 -- Safety net: emails stuck before a terminal state past the retention limit.
 UPDATE emails
-SET status = 'failed', last_error = 'expired', finished_at = now(), updated_at = now()
+SET status = 'failed', last_error = 'expired', error_code = 'expired', finished_at = now(), updated_at = now()
 WHERE status IN ('queued', 'sending') AND created_at < $1;
 
 -- name: DeleteContentsBefore :execrows
 DELETE FROM email_contents WHERE created_at < $1;
+
+-- name: ListEmails :many
+-- Admin failure inspection: newest first, optionally one status only.
+SELECT * FROM emails
+WHERE project_id = $1 AND (sqlc.narg(status)::text IS NULL OR status = sqlc.narg(status))
+ORDER BY created_at DESC, id DESC
+LIMIT $2;

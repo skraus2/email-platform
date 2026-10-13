@@ -33,6 +33,11 @@ type Email struct {
 	CreatedAt  time.Time
 	UpdatedAt  time.Time
 	FinishedAt *time.Time
+	// Attempts counts dispatch attempts started so far.
+	Attempts int
+	// ErrorCode is the failure code of the last failed attempt (nil if none
+	// or after a successful send).
+	ErrorCode *string
 	// Replayed is set by Create when the request repeated an earlier one
 	// with the same idempotency key: the email is that earlier one.
 	Replayed bool
@@ -42,6 +47,7 @@ func fromRow(r store.Email) Email {
 	return Email{
 		ID: r.ID, ProjectID: r.ProjectID, Status: r.Status, From: r.Sender, To: r.Recipient,
 		Subject: r.Subject, CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt, FinishedAt: r.FinishedAt,
+		Attempts: int(r.Attempts), ErrorCode: r.ErrorCode,
 	}
 }
 
