@@ -63,7 +63,11 @@ fmt-check: ## Fail if any file is not formatted
 	$(PNPM) run format:check
 
 .PHONY: lint
-lint: lint-go lint-web ## Run all linters
+lint: lint-go lint-web lint-ci ## Run all linters
+
+.PHONY: lint-ci
+lint-ci: ## Lint GitHub Actions workflows (pinned actionlint)
+	go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
 
 .PHONY: lint-go
 lint-go: ## golangci-lint (incl. integration-tagged files)
