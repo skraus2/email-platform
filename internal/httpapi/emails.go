@@ -81,6 +81,10 @@ func (s *Server) handleCreateEmail(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, emails.ErrInvalidIdempotencyKey):
 		writeInvalidIdempotencyKey(w)
 		return
+	case errors.Is(err, emails.ErrRecipientSuppressed):
+		writeError(w, http.StatusUnprocessableEntity, "recipient_suppressed",
+			"the recipient is on this project's suppression list; nothing was sent")
+		return
 	case errors.As(err, &rl):
 		w.Header().Set("Retry-After", strconv.Itoa(int(rl.RetryAfter/time.Second)))
 		writeError(w, http.StatusTooManyRequests, "rate_limited",

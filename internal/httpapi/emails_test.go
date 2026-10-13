@@ -256,3 +256,12 @@ func TestCreateEmailRateLimited(t *testing.T) {
 	}
 	assertErrorCode(t, rec, "rate_limited")
 }
+
+func TestCreateEmailRecipientSuppressed(t *testing.T) {
+	s, _ := emailServer(t, &fakeEmails{err: emails.ErrRecipientSuppressed}, principal)
+	rec := post(t, s, okBody, nil)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("code = %d, want 422", rec.Code)
+	}
+	assertErrorCode(t, rec, "recipient_suppressed")
+}

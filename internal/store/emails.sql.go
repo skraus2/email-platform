@@ -87,7 +87,9 @@ func (q *Queries) GetEmail(ctx context.Context, arg GetEmailParams) (Email, erro
 const getEmailForDispatch = `-- name: GetEmailForDispatch :one
 SELECT e.id, e.project_id, e.sender, e.recipient, e.subject, e.status,
        c.text_body, c.html_body, (c.email_id IS NOT NULL)::boolean AS has_content,
-       p.status AS project_status
+       p.status AS project_status,
+       EXISTS (SELECT 1 FROM suppressions s
+               WHERE s.project_id = e.project_id AND lower(s.recipient) = lower(e.recipient))::boolean AS suppressed
 FROM emails e
 JOIN projects p ON p.id = e.project_id
 LEFT JOIN email_contents c ON c.email_id = e.id AND c.project_id = e.project_id
@@ -110,6 +112,7 @@ type GetEmailForDispatchRow struct {
 	HtmlBody      *string
 	HasContent    bool
 	ProjectStatus string
+	Suppressed    bool
 }
 
 // Content columns are NULL once the content has been deleted.
@@ -127,6 +130,7 @@ func (q *Queries) GetEmailForDispatch(ctx context.Context, arg GetEmailForDispat
 		&i.HtmlBody,
 		&i.HasContent,
 		&i.ProjectStatus,
+		&i.Suppressed,
 	)
 	return i, err
 }

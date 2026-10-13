@@ -9,6 +9,9 @@
 //	admin key list -project <uuid>
 //	admin key revoke -prefix <prefix>
 //	admin email list -project <uuid> [-status failed] [-limit 50]
+//	admin suppression add -project <uuid> -email <addr> [-reason manual]
+//	admin suppression list -project <uuid>
+//	admin suppression remove -project <uuid> -email <addr>
 package main
 
 import (
@@ -41,7 +44,10 @@ const usage = `usage:
   admin key create -project <uuid> [-scopes emails:send,emails:read]
   admin key list -project <uuid>
   admin key revoke -prefix <prefix>
-  admin email list -project <uuid> [-status failed] [-limit 50]`
+  admin email list -project <uuid> [-status failed] [-limit 50]
+  admin suppression add -project <uuid> -email <addr> [-reason manual]
+  admin suppression list -project <uuid>
+  admin suppression remove -project <uuid> -email <addr>`
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -76,6 +82,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	prefix := fs.String("prefix", "", "key prefix")
 	status := fs.String("status", "", "only emails with this status")
 	limit := fs.Int("limit", emails.DefaultAdminListLimit, "maximum number of emails")
+	email := fs.String("email", "", "email address")
+	reason := fs.String("reason", "manual", "suppression reason: "+strings.Join(emails.SuppressionReasons, ", "))
 	if err := fs.Parse(args[2:]); err != nil {
 		return err
 	}
@@ -157,6 +165,12 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 				e.Attempts, e.Recipient, e.CreatedAt.Format(time.RFC3339), e.UpdatedAt.Format(time.RFC3339))
 		}
 		return w.Flush()
+	case "suppression add", "suppression list", "suppression remove":
+		pid, err := uuid.Parse(*project)
+		if err != nil {
+			return errors.New("-project must be a project uuid")
+		}
+		return suppression(ctx, q, args[1], pid, *email, *reason, stdout)
 	default:
 		return errors.New(usage)
 	}
@@ -168,4 +182,38 @@ func orDash(s *string) string {
 		return "-"
 	}
 	return *s
+}
+
+func suppression(ctx context.Context, q *store.Queries, action string, pid uuid.UUID, email, reason string, stdout io.Writer) error {
+	switch action {
+	case "add":
+		added, err := emails.AddSuppression(ctx, q, pid, email, reason)
+		if err != nil {
+			return err
+		}
+		if !added {
+			fmt.Fprintln(stdout, "already suppressed")
+		}
+		return nil
+	case "remove":
+		removed, err := emails.RemoveSuppression(ctx, q, pid, email)
+		if err != nil {
+			return err
+		}
+		if !removed {
+			fmt.Fprintln(stdout, "not suppressed")
+		}
+		return nil
+	default:
+		list, err := emails.ListSuppressions(ctx, q, pid)
+		if err != nil {
+			return err
+		}
+		w := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
+		fmt.Fprintln(w, "RECIPIENT\tREASON\tCREATED")
+		for _, s := range list {
+			fmt.Fprintf(w, "%s\t%s\t%s\n", emails.TerminalSafe(s.Recipient), s.Reason, s.CreatedAt.Format(time.RFC3339))
+		}
+		return w.Flush()
+	}
 }

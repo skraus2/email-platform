@@ -66,3 +66,11 @@ type RateLimitWindow struct {
 	WindowStart time.Time
 	Count       int32
 }
+
+type Suppression struct {
+	ID        uuid.UUID
+	ProjectID uuid.UUID
+	Recipient string
+	Reason    string
+	CreatedAt time.Time
+}

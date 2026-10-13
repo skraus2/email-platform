@@ -74,6 +74,10 @@ func (in CreateInput) Validate() error {
 	return nil
 }
 
+// ValidateAddress checks that v is exactly one bare address, the same rule
+// as for the from/to fields of a send request.
+func ValidateAddress(v string) error { return validateAddress("email", v) }
+
 // validateAddress accepts exactly one bare address (no display name, no
 // surrounding whitespace, no list).
 func validateAddress(field, v string) error {

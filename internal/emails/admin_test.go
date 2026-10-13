@@ -11,8 +11,8 @@ func TestTerminalSafe(t *testing.T) {
 		"ü***@bücher.test":          "ü***@bücher.test",
 		"tab\there":                 `tab\u0009here`,
 	} {
-		if got := terminalSafe(in); got != want {
-			t.Errorf("terminalSafe(%q) = %q, want %q", in, got, want)
+		if got := TerminalSafe(in); got != want {
+			t.Errorf("TerminalSafe(%q) = %q, want %q", in, got, want)
 		}
 	}
 }

@@ -265,3 +265,21 @@ func TestPostEmailRateLimitedOverHTTP(t *testing.T) {
 		t.Fatalf("emails = %d, want 3", n)
 	}
 }
+
+func TestPostEmailToSuppressedRecipientOverHTTP(t *testing.T) {
+	t.Parallel()
+	s := newStack(t)
+	projectID, token := s.project(t)
+	if _, err := emails.AddSuppression(context.Background(), s.q, projectID, "customer@example.test", "bounce"); err != nil {
+		t.Fatal(err)
+	}
+	code, body := s.do(t, http.MethodPost, "/v1/emails", token, sendBody)
+	if e, _ := body["error"].(map[string]any); code != http.StatusUnprocessableEntity || e["code"] != "recipient_suppressed" {
+		t.Fatalf("POST = %d %v, want 422 recipient_suppressed", code, body)
+	}
+	var n int
+	_ = s.pool.QueryRow(context.Background(), "SELECT count(*) FROM emails").Scan(&n)
+	if n != 0 {
+		t.Fatalf("emails = %d, want 0", n)
+	}
+}

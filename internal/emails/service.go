@@ -134,6 +134,15 @@ func (s *Service) Create(ctx context.Context, projectID uuid.UUID, in CreateInpu
 				return errKeyTaken
 			}
 		}
+		// Refusals come after the idempotency key is claimed, so a duplicate
+		// of an accepted request replays instead of being refused.
+		suppressed, err := q.IsSuppressed(ctx, store.IsSuppressedParams{ProjectID: projectID, Recipient: in.To})
+		if err != nil {
+			return fmt.Errorf("check suppression: %w", err)
+		}
+		if suppressed {
+			return ErrRecipientSuppressed
+		}
 		// Counted last: a request is only refused after its idempotency key
 		// is claimed, so a duplicate replays instead of being limited, and
 		// the window row is locked only briefly.

@@ -67,6 +67,11 @@ func (d *Dispatcher) SendEmail(ctx context.Context, args jobs.SendEmailArgs, at 
 	if !e.HasContent {
 		return d.fail(ctx, log, key, CodeContentMissing, CodeContentMissing)
 	}
+	if e.Suppressed {
+		// Suppressed after it was queued. A suppression added during the
+		// provider call below is not seen (accepted race).
+		return d.fail(ctx, log, key, CodeSuppressed, CodeSuppressed)
+	}
 
 	n, err := store.New(d.pool).MarkSending(ctx, store.MarkSendingParams(key))
 	if err != nil {
