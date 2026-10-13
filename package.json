@@ -10,8 +10,8 @@
     }
   },
   "scripts": {
-    "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format": "git ls-files -z --cached --others --exclude-standard | xargs -0 prettier --ignore-unknown --log-level warn --write",
+    "format:check": "git ls-files -z --cached --others --exclude-standard | xargs -0 prettier --ignore-unknown --log-level warn --check"
   },
   "devDependencies": {
     "prettier": "3.9.10"
