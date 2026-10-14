@@ -100,8 +100,9 @@ type WorkerConfig struct {
 	Concurrency     int
 	JobTimeout      time.Duration
 	CleanupInterval time.Duration
-	// RescueStuckJobsAfter: a job still "running" this long after its timeout
-	// (e.g. the worker crashed) is made available again. Zero = River default.
+	// RescueStuckJobsAfter: a job still "running" this long after its attempt
+	// started (e.g. the worker crashed) is made available again. Zero = River
+	// default.
 	RescueStuckJobsAfter time.Duration
 }
 

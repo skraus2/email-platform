@@ -9,13 +9,19 @@
 set -euo pipefail
 
 : "${DATABASE_URL:?DATABASE_URL must be set (make sets a local default)}"
+# shellcheck source=scripts/local-guard.sh
+source "$(dirname "$0")/local-guard.sh"
 ADDR="127.0.0.1:${RESILIENCE_PORT:-18081}"
 MAILPIT_URL="${TEST_MAILPIT_URL:-http://127.0.0.1:8025}"
 TMP="$(mktemp -d)"
 API_PID="" WORKER_PID=""
 
 cleanup() {
+  # The run's key is useless afterwards; revoke it instead of leaving an
+  # active credential behind.
+  [[ -n "${key:-}" ]] && "$TMP/admin" key revoke -prefix "$(cut -d_ -f2 <<<"$key")" >/dev/null 2>&1 || true
   kill "$API_PID" "$WORKER_PID" 2>/dev/null || true
+  wait "$API_PID" "$WORKER_PID" 2>/dev/null || true
   # Never leave the shared infrastructure stopped.
   docker compose start mailpit postgres >/dev/null 2>&1 || true
   rm -rf "$TMP"
@@ -31,7 +37,7 @@ fail() {
 
 # Short retries and rescue so the scenarios finish in minutes.
 export LOG_FORMAT=json SEND_MAX_ATTEMPTS=20 RETRY_BASE_DELAY=1s RETRY_MAX_DELAY=5s \
-  PROVIDER_TIMEOUT=2s JOB_RESCUE_AFTER=35s API_RATE_LIMIT_PER_MINUTE=100000 \
+  PROVIDER_TIMEOUT=2s JOB_RESCUE_AFTER=65s API_RATE_LIMIT_PER_MINUTE=100000 \
   PROVIDER_RATE_PER_SECOND=4
 
 go build -o "$TMP/" ./cmd/api ./cmd/worker ./cmd/admin
@@ -64,7 +70,7 @@ send() {
   local n=$1 prefix=$2 code
   for i in $(seq 1 "$n"); do
     code=$(curl -sS -o "$TMP/post.json" -w '%{http_code}' -X POST "http://$ADDR/v1/emails" \
-      -H @"$TMP/auth.header" -H 'Content-Type: application/json' -H "Idempotency-Key: $prefix-$i-$RANDOM" \
+      -H @"$TMP/auth.header" -H 'Content-Type: application/json' -H "Idempotency-Key: reskey-$prefix-$i-$RANDOM" \
       -d "{\"from\":\"res@example.test\",\"to\":\"res-recipient@example.test\",\"subject\":\"resilience $prefix $i\",\"text\":\"resilience body\"}")
     [[ "$code" == 202 ]] || fail "POST in $prefix: $code $(cat "$TMP/post.json")"
     sed -nE 's/.*"id":"([0-9a-f-]{36})".*/\1/p' "$TMP/post.json" >>"$TMP/ids.$prefix"
@@ -108,7 +114,9 @@ echo "(a) Mailpit outage: 5/5 retried with provider_unreachable and captured onc
 
 # (b) worker SIGKILL mid-batch ------------------------------------------------
 # The provider rate (4/s) keeps jobs running while the batch drains, so the
-# kill hits jobs in flight; those stay "running" until JOB_RESCUE_AFTER.
+# kill hits jobs in flight (mostly waiting for a provider token, sometimes
+# mid-send); they stay "running" until JOB_RESCUE_AFTER. psql runs inside the
+# Compose container: local-guard.sh ensures DATABASE_URL is that database.
 send 30 kill
 running=0
 for _ in $(seq 1 50); do
@@ -119,6 +127,8 @@ for _ in $(seq 1 50); do
 done
 kill -KILL "$WORKER_PID"
 wait "$WORKER_PID" 2>/dev/null || true
+sending=$(docker compose exec -T postgres psql -U email_platform -d email_platform -Atc \
+  "SELECT id FROM emails WHERE status = 'sending'")
 before=$(while read -r id; do status_of "$id"; done <"$TMP/ids.kill" | sort | uniq -c | tr '\n' ' ')
 start_worker 2
 wait_captured kill 240
@@ -126,13 +136,19 @@ dups=0 missing=0
 while read -r id; do
   c=$(copies "$id")
   [[ "$c" -ge 1 ]] || missing=$((missing + 1))
-  [[ "$c" -gt 1 ]] && dups=$((dups + 1))
+  if [[ "$c" -gt 1 ]]; then
+    dups=$((dups + 1))
+    # Every duplicate must have been flagged for exactly this email.
+    grep 'possible_duplicate_send' "$TMP/worker.log" | grep -qF "$id" || fail "kill: duplicate of $id was not flagged"
+  fi
 done <"$TMP/ids.kill"
 [[ $missing -eq 0 ]] || fail "kill: $missing emails missing in Mailpit"
+for id in $sending; do
+  grep 'possible_duplicate_send' "$TMP/worker.log" | grep -qF "$id" || fail "kill: $id was mid-send at the kill but its retry was not flagged"
+done
 warned=$(grep -c 'possible_duplicate_send' "$TMP/worker.log" || true)
 [[ "$running" -ge 1 ]] || fail "kill: no job was running at the kill; the scenario did not test rescue"
-echo "(b) worker SIGKILL: $running jobs running at kill, email states [$before], 30/30 captured after restart; duplicates in Mailpit: $dups, possible_duplicate_send warnings: $warned"
-[[ $dups -le $warned ]] || fail "kill: $dups duplicates but only $warned warnings (a duplicate went unflagged)"
+echo "(b) worker SIGKILL: $running jobs running at kill ($(wc -w <<<"$sending" | tr -d ' ') emails mid-send), email states [$before], 30/30 captured after restart; duplicates in Mailpit: $dups, possible_duplicate_send warnings: $warned"
 
 # (c) PostgreSQL restart ------------------------------------------------------
 send 5 prerestart
@@ -157,7 +173,7 @@ wait_captured prerestart 120
 wait_captured postrestart 120
 echo "(c) PostgreSQL restart: readyz 503 seen: $saw503; POST codes during restart: $(printf '%s\n' "${codes[@]}" | sort | uniq -c | awk '{printf "%s×%s ", $1, $2}'); 10/10 captured afterwards without restarting api/worker"
 
-for leak in "$key" "res-recipient@example.test" "resilience body"; do
-  if grep -qF "$leak" "$TMP/api.log" "$TMP/worker.log"; then fail "logs contain a secret or personal data"; fi
-done
+# Needles from a file: the key must not appear in grep's command line.
+printf '%s\n' "$key" "res-recipient@example.test" "resilience body" "reskey-" "email_platform:email_platform@" >"$TMP/needles"
+if grep -qFf "$TMP/needles" "$TMP/api.log" "$TMP/worker.log"; then fail "logs contain a secret, password, idempotency key or personal data"; fi
 echo "RESILIENCE OK"

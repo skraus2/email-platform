@@ -345,6 +345,12 @@ components:
             $ref: "#/components/schemas/Error"
     ServiceUnavailable:
       description: "`service_unavailable`: a dependency (e.g. the database) is temporarily unavailable; retry later."
+      headers:
+        Retry-After:
+          description: Seconds to wait before retrying.
+          schema:
+            type: integer
+            minimum: 1
       content:
         application/json:
           schema:

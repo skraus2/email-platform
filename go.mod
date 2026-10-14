@@ -7,6 +7,7 @@ toolchain go1.27.2
 require (
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.11.0
+	github.com/jackc/puddle/v2 v2.2.3
 	github.com/pressly/goose/v3 v3.29.0
 	github.com/riverqueue/river v0.49.0
 	github.com/riverqueue/river/riverdriver/riverpgxv5 v0.49.0
@@ -15,7 +16,6 @@ require (
 require (
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
-	github.com/jackc/puddle/v2 v2.2.3 // indirect
 	github.com/mfridman/interpolate v0.0.2 // indirect
 	github.com/riverqueue/river/riverdriver v0.49.0 // indirect
 	github.com/riverqueue/river/rivershared v0.49.0 // indirect

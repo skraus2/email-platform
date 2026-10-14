@@ -40,11 +40,11 @@ func (s *Server) requireScope(scope string, next http.HandlerFunc) http.HandlerF
 		case err != nil && r.Context().Err() != nil:
 			// The client went away during the lookup; not a backend outage.
 			s.logger.DebugContext(r.Context(), "request cancelled during authentication")
-			writeError(w, http.StatusServiceUnavailable, "service_unavailable", "service temporarily unavailable")
+			writeUnavailable(w)
 			return
 		case err != nil:
 			s.logger.ErrorContext(r.Context(), "authentication backend failed", slog.Any("error", err))
-			writeError(w, http.StatusServiceUnavailable, "service_unavailable", "service temporarily unavailable")
+			writeUnavailable(w)
 			return
 		}
 		setLogProject(r.Context(), p.ProjectID.String())

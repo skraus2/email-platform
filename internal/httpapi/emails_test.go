@@ -273,8 +273,8 @@ func TestEmailsDatabaseUnavailable(t *testing.T) {
 	down := &pgconn.PgError{Code: "57P03"}
 	s, _ := emailServer(t, &fakeEmails{err: fmt.Errorf("insert email: %w", down)}, principal)
 	rec := post(t, s, okBody, nil)
-	if rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("POST code = %d, want 503", rec.Code)
+	if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Retry-After") != "2" {
+		t.Fatalf("POST code = %d, Retry-After %q; want 503 with Retry-After", rec.Code, rec.Header().Get("Retry-After"))
 	}
 	assertErrorCode(t, rec, "service_unavailable")
 

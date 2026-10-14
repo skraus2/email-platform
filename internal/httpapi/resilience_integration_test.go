@@ -5,6 +5,7 @@ package httpapi_test
 import (
 	"context"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -40,14 +41,31 @@ func TestDroppedConnectionsGive503AndRecover(t *testing.T) {
 		}
 	})
 
+	// Plain requests: t.Fatal must not run outside the test goroutine.
+	call := func(method, path, body string) int {
+		req, err := http.NewRequestWithContext(ctx, method, s.srv.URL+path, strings.NewReader(body))
+		if err != nil {
+			return -1
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		if body != "" {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return -1
+		}
+		_ = resp.Body.Close()
+		return resp.StatusCode
+	}
 	var mu sync.Mutex
 	codes := map[int]int{}
 	var clients sync.WaitGroup
 	for range 4 {
 		clients.Go(func() {
 			for range 25 {
-				post, _ := s.do(t, http.MethodPost, "/v1/emails", token, sendBody)
-				get, _ := s.do(t, http.MethodGet, "/v1/emails/"+id, token, "")
+				post := call(http.MethodPost, "/v1/emails", sendBody)
+				get := call(http.MethodGet, "/v1/emails/"+id, "")
 				mu.Lock()
 				codes[post]++
 				codes[get]++
@@ -70,15 +88,12 @@ func TestDroppedConnectionsGive503AndRecover(t *testing.T) {
 		}
 	}
 	if codes[http.StatusServiceUnavailable] == 0 {
-		t.Logf("no request hit a dropped connection (codes %v); the test did not exercise the outage", codes)
+		t.Fatalf("no request hit a dropped connection (codes %v); the outage was not exercised", codes)
 	}
 
-	// Recovery without restart.
+	// Recovery without restart, for sending and reading.
 	deadline := time.Now().Add(5 * time.Second)
-	for {
-		if code, _ := s.do(t, http.MethodPost, "/v1/emails", token, sendBody); code == http.StatusAccepted {
-			break
-		}
+	for call(http.MethodPost, "/v1/emails", sendBody) != http.StatusAccepted || call(http.MethodGet, "/v1/emails/"+id, "") != http.StatusOK {
 		if time.Now().After(deadline) {
 			t.Fatal("API did not recover after the connections were dropped")
 		}

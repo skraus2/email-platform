@@ -98,9 +98,9 @@ func (s *Server) handleCreateEmail(w http.ResponseWriter, r *http.Request) {
 	case database.Unavailable(err):
 		// The outcome is unknown if the connection broke during commit; the
 		// contract tells clients to retry with the same Idempotency-Key.
-		s.logger.WarnContext(r.Context(), "create email: database unavailable",
+		s.logger.ErrorContext(r.Context(), "create email: database unavailable",
 			slog.String("project_id", p.ProjectID.String()), slog.Any("error", err))
-		writeError(w, http.StatusServiceUnavailable, "service_unavailable", "service temporarily unavailable; retry later")
+		writeUnavailable(w)
 		return
 	case err != nil:
 		s.logger.ErrorContext(r.Context(), "create email failed",

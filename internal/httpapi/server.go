@@ -138,3 +138,10 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v) // client gone; nothing useful to do
 }
+
+// writeUnavailable answers "dependency down, retry later" with a short
+// Retry-After, so clients do not hammer a recovering database.
+func writeUnavailable(w http.ResponseWriter) {
+	w.Header().Set("Retry-After", "2")
+	writeError(w, http.StatusServiceUnavailable, "service_unavailable", "service temporarily unavailable; retry later")
+}

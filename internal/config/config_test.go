@@ -75,6 +75,7 @@ func TestLoadRejectsInvalid(t *testing.T) {
 		{"max delay below base", map[string]string{"DATABASE_URL": devURL, "RETRY_BASE_DELAY": "1m", "RETRY_MAX_DELAY": "30s"}, "RETRY_MAX_DELAY"},
 		{"bad max delay", map[string]string{"DATABASE_URL": devURL, "RETRY_MAX_DELAY": "later"}, "RETRY_MAX_DELAY"},
 		{"rescue before job timeout", map[string]string{"DATABASE_URL": devURL, "JOB_RESCUE_AFTER": "30s"}, "JOB_RESCUE_AFTER"},
+		{"rescue without margin", map[string]string{"DATABASE_URL": devURL, "JOB_RESCUE_AFTER": "40s"}, "JOB_RESCUE_AFTER"},
 		{"bad rescue", map[string]string{"DATABASE_URL": devURL, "JOB_RESCUE_AFTER": "soon"}, "JOB_RESCUE_AFTER"},
 		{"provider rate zero", map[string]string{"DATABASE_URL": devURL, "PROVIDER_RATE_PER_SECOND": "0"}, "PROVIDER_RATE_PER_SECOND"},
 		{"provider rate NaN", map[string]string{"DATABASE_URL": devURL, "PROVIDER_RATE_PER_SECOND": "NaN"}, "PROVIDER_RATE_PER_SECOND"},

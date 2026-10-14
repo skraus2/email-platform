@@ -3,7 +3,6 @@
 package emails_test
 
 import (
-	"bytes"
 	"context"
 	"log/slog"
 	"strings"
@@ -19,26 +18,8 @@ import (
 	"github.com/skraus2/email-platform/internal/jobs"
 )
 
-// lockedBuffer is a log sink safe for concurrent workers.
-type lockedBuffer struct {
-	mu sync.Mutex
-	b  bytes.Buffer
-}
-
-func (l *lockedBuffer) Write(p []byte) (int, error) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.b.Write(p)
-}
-
-func (l *lockedBuffer) String() string {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.b.String()
-}
-
 // runWorker starts a real worker with fast retries for the given provider.
-func runWorker(t *testing.T, pool *pgxpool.Pool, p delivery.Provider, logs *lockedBuffer) {
+func runWorker(t *testing.T, pool *pgxpool.Pool, p delivery.Provider, logs *safeBuffer) {
 	t.Helper()
 	logger := slog.New(slog.NewJSONHandler(logs, nil))
 	d := emails.NewDispatcher(pool, p, logger, 2*time.Second, 168*time.Hour)
@@ -110,7 +91,7 @@ func TestProviderOutageRecovers(t *testing.T) {
 	pool, projectID := setup(t)
 	ids := enqueue(t, pool, projectID, 5)
 	p := &flakyProvider{n: 3, class: delivery.ClassConnect, seen: map[uuid.UUID]int{}}
-	logs := &lockedBuffer{}
+	logs := &safeBuffer{}
 	runWorker(t, pool, p, logs)
 	waitCaptured(t, pool, len(ids), 30*time.Second)
 
@@ -132,12 +113,17 @@ func TestProviderTimeoutRetriesWarnAndRecover(t *testing.T) {
 	ids := enqueue(t, pool, projectID, 1)
 	gate := make(chan struct{})
 	p := &timeoutThenAccept{fails: 2, gate: gate, failed: make(chan struct{})}
-	logs := &lockedBuffer{}
+	logs := &safeBuffer{}
 	runWorker(t, pool, p, logs)
 
 	// After the first timeout, before the retry is let through, observe the
 	// intermediate state.
-	<-p.failed
+	select {
+	case <-p.failed:
+	case <-time.After(15 * time.Second):
+		close(gate)
+		t.Fatal("first attempt never reached the provider")
+	}
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		var status string
@@ -149,6 +135,7 @@ func TestProviderTimeoutRetriesWarnAndRecover(t *testing.T) {
 			break
 		}
 		if time.Now().After(deadline) {
+			close(gate)
 			t.Fatalf("while retrying: status %s code %v, want sending/provider_timeout", status, code)
 		}
 		time.Sleep(20 * time.Millisecond)
@@ -172,13 +159,17 @@ type timeoutThenAccept struct {
 	failed chan struct{}
 }
 
-func (p *timeoutThenAccept) Send(_ context.Context, m delivery.Message) (delivery.Result, error) {
+func (p *timeoutThenAccept) Send(ctx context.Context, m delivery.Message) (delivery.Result, error) {
 	p.mu.Lock()
 	p.calls++
 	call := p.calls
 	p.mu.Unlock()
 	if call == 2 {
-		<-p.gate // hold the retry until the test has seen the state
+		select { // hold the retry until the test has seen the state
+		case <-p.gate:
+		case <-ctx.Done():
+			return delivery.Result{}, &delivery.Error{Class: delivery.ClassTimeout}
+		}
 	}
 	if call <= p.fails {
 		if call == 1 {
@@ -197,8 +188,11 @@ func TestWorkerSurvivesDroppedConnections(t *testing.T) {
 	pool, projectID := setup(t)
 	ids := enqueue(t, pool, projectID, 20)
 	p := &flakyProvider{seen: map[uuid.UUID]int{}}
-	logs := &lockedBuffer{}
+	logs := &safeBuffer{}
 
+	// The worker starts on a healthy database; the connections drop while
+	// it runs.
+	runWorker(t, pool, p, logs)
 	killer, cancel := context.WithCancel(ctx)
 	var wg sync.WaitGroup
 	wg.Go(func() {
@@ -208,7 +202,6 @@ func TestWorkerSurvivesDroppedConnections(t *testing.T) {
 			time.Sleep(30 * time.Millisecond)
 		}
 	})
-	runWorker(t, pool, p, logs)
 	time.Sleep(time.Second)
 	cancel()
 	wg.Wait()

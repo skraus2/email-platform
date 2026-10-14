@@ -6,6 +6,8 @@
 set -euo pipefail
 
 : "${DATABASE_URL:?DATABASE_URL must be set (make sets a local default)}"
+# shellcheck source=scripts/local-guard.sh
+source "$(dirname "$0")/local-guard.sh"
 ADDR="127.0.0.1:${SMOKE_PORT:-18080}"
 TMP="$(mktemp -d)"
 trap 'kill "${API_PID:-}" "${WORKER_PID:-}" 2>/dev/null || true; rm -rf "$TMP"' EXIT
@@ -68,9 +70,9 @@ for _ in $(seq 1 30); do
 done
 [[ "$count" == 1 ]] || fail "Mailpit holds $count copies, want 1"
 echo "worker -> Mailpit captured exactly 1 message"
-for leak in "$key" "smoke-recipient@example.test" "smoke body"; do
-  if grep -qF "$leak" "$TMP/api.log" "$TMP/worker.log"; then fail "logs contain a secret or personal data"; fi
-done
+# Needles from a file: the key must not appear in grep's command line.
+printf '%s\n' "$key" "smoke-recipient@example.test" "smoke body" >"$TMP/needles"
+if grep -qFf "$TMP/needles" "$TMP/api.log" "$TMP/worker.log"; then fail "logs contain a secret or personal data"; fi
 echo "logs contain no API key, recipient or body"
 
 kill -TERM "$API_PID" "$WORKER_PID"

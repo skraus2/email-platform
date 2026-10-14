@@ -122,8 +122,12 @@ func Load(lookup LookupFunc) (Config, error) {
 	}
 
 	cfg.JobRescueAfter, errs = positiveDuration(get, "JOB_RESCUE_AFTER", "5m", errs)
-	if cfg.JobRescueAfter > 0 && cfg.ProviderTimeout > 0 && cfg.JobRescueAfter < jobs.AttemptBudget(cfg.ProviderTimeout) {
-		errs = append(errs, fmt.Errorf("JOB_RESCUE_AFTER must be at least %v (PROVIDER_TIMEOUT + 30s), or running sends would be rescued", jobs.AttemptBudget(cfg.ProviderTimeout)))
+	// A job is rescued this long after its attempt started. Leave a margin
+	// beyond the attempt budget for the detached result write and the
+	// queue's own bookkeeping, or a send that already reached the provider
+	// could be rescued and sent again.
+	if minRescue := jobs.AttemptBudget(cfg.ProviderTimeout) + 30*time.Second; cfg.JobRescueAfter > 0 && cfg.ProviderTimeout > 0 && cfg.JobRescueAfter < minRescue {
+		errs = append(errs, fmt.Errorf("JOB_RESCUE_AFTER must be at least %v (PROVIDER_TIMEOUT + 60s), or running sends could be rescued and sent twice", minRescue))
 	}
 	cfg.ProviderRatePerSecond, errs = rateInRange(get, "PROVIDER_RATE_PER_SECOND", "10", errs)
 	cfg.APIRateLimitPerMinute, errs = intInRange(get, "API_RATE_LIMIT_PER_MINUTE", "600", 1, 1_000_000, errs)

@@ -40,9 +40,9 @@ func (s *Server) handleGetEmail(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "resource not found")
 		return
 	case database.Unavailable(err):
-		s.logger.WarnContext(r.Context(), "get email: database unavailable",
+		s.logger.ErrorContext(r.Context(), "get email: database unavailable",
 			slog.String("project_id", p.ProjectID.String()), slog.Any("error", err))
-		writeError(w, http.StatusServiceUnavailable, "service_unavailable", "service temporarily unavailable; retry later")
+		writeUnavailable(w)
 		return
 	case err != nil:
 		s.logger.ErrorContext(r.Context(), "get email failed",

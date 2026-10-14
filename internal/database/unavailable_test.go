@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/puddle/v2"
 )
 
 func TestUnavailable(t *testing.T) {
@@ -18,6 +19,8 @@ func TestUnavailable(t *testing.T) {
 		"admin shutdown":       &pgconn.PgError{Code: "57P01"},
 		"crash shutdown":       &pgconn.PgError{Code: "57P02"},
 		"cannot connect now":   &pgconn.PgError{Code: "57P03"},
+		"too many connections": &pgconn.PgError{Code: "53300"},
+		"pool closed":          fmt.Errorf("acquire: %w", puddle.ErrClosedPool),
 		"network error":        &net.OpError{Op: "read", Err: errors.New("connection reset by peer")},
 		"unexpected EOF":       io.ErrUnexpectedEOF,
 		"EOF":                  io.EOF,
