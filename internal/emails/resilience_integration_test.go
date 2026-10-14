@@ -58,10 +58,20 @@ func enqueue(t *testing.T, pool *pgxpool.Pool, projectID uuid.UUID, n int) []uui
 func waitCaptured(t *testing.T, pool *pgxpool.Pool, n int, within time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(within)
-	for count(t, pool, "SELECT count(*) FROM emails WHERE status = 'captured'") < n {
+	captured := func() (int, error) {
+		var c int
+		err := pool.QueryRow(context.Background(), "SELECT count(*) FROM emails WHERE status = 'captured'").Scan(&c)
+		return c, err
+	}
+	for {
+		// Errors are tolerated: the pool may still hold connections that
+		// a test killed on purpose; the next query gets a fresh one.
+		c, err := captured()
+		if err == nil && c >= n {
+			return
+		}
 		if time.Now().After(deadline) {
-			t.Fatalf("only %d/%d emails captured; states: %d failed", count(t, pool, "SELECT count(*) FROM emails WHERE status = 'captured'"),
-				n, count(t, pool, "SELECT count(*) FROM emails WHERE status = 'failed'"))
+			t.Fatalf("only %d/%d emails captured within %v (last error: %v)", c, n, within, err)
 		}
 		time.Sleep(50 * time.Millisecond)
 	}

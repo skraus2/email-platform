@@ -4,6 +4,7 @@ version: "2"
 run:
   build-tags:
     - integration # lint integration tests too
+    - load # and the load test program
 
 linters:
   default: standard # errcheck, govet, ineffassign, staticcheck, unused

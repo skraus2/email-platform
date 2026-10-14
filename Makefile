@@ -115,6 +115,10 @@ ci: check test-integration smoke ## Local superset of CI gates (needs `make up m
 smoke: ## Start API + worker binaries, probe health endpoints, stop them
 	./scripts/smoke.sh
 
+.PHONY: load
+load: ## Load measurement against real binaries (needs `make up migrate`; LOAD_ARGS="-c 20 -n 2000")
+	./scripts/load.sh
+
 .PHONY: resilience
 resilience: ## Mailpit outage, worker SIGKILL and PostgreSQL restart against real binaries (needs `make up migrate`, minutes)
 	./scripts/resilience.sh
