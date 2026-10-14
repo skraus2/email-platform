@@ -38,19 +38,37 @@ func (q *Queries) DeleteEmailContent(ctx context.Context, arg DeleteEmailContent
 	return err
 }
 
-const expireOpenEmails = `-- name: ExpireOpenEmails :execrows
+const expireOpenEmails = `-- name: ExpireOpenEmails :many
 UPDATE emails
 SET status = 'failed', last_error = 'expired', error_code = 'expired', finished_at = now(), updated_at = now()
 WHERE status IN ('queued', 'sending') AND created_at < $1
+RETURNING id, project_id
 `
 
+type ExpireOpenEmailsRow struct {
+	ID        uuid.UUID
+	ProjectID uuid.UUID
+}
+
 // Safety net: emails stuck before a terminal state past the retention limit.
-func (q *Queries) ExpireOpenEmails(ctx context.Context, createdAt time.Time) (int64, error) {
-	result, err := q.db.Exec(ctx, expireOpenEmails, createdAt)
+func (q *Queries) ExpireOpenEmails(ctx context.Context, createdAt time.Time) ([]ExpireOpenEmailsRow, error) {
+	rows, err := q.db.Query(ctx, expireOpenEmails, createdAt)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	return result.RowsAffected(), nil
+	defer rows.Close()
+	items := []ExpireOpenEmailsRow{}
+	for rows.Next() {
+		var i ExpireOpenEmailsRow
+		if err := rows.Scan(&i.ID, &i.ProjectID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const getEmail = `-- name: GetEmail :one

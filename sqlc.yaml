@@ -13,6 +13,7 @@ sql:
       - db/migrations/00007_rate_limit_windows.sql
       - db/migrations/00008_suppressions.sql
       - db/migrations/00009_sender_identities.sql
+      - db/migrations/00010_email_events.sql
     queries: db/queries
     gen:
       go:

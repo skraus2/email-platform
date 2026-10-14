@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/skraus2/email-platform/internal/delivery"
+	"github.com/skraus2/email-platform/internal/events"
 	"github.com/skraus2/email-platform/internal/jobs"
 	"github.com/skraus2/email-platform/internal/logging"
 	"github.com/skraus2/email-platform/internal/store"
@@ -25,6 +26,7 @@ import (
 // "sending" when an attempt starts) and are logged, not hidden.
 type Dispatcher struct {
 	limiter    *bucket // nil: no provider rate limit
+	events     *events.Recorder
 	pool       *pgxpool.Pool
 	provider   delivery.Provider
 	logger     *slog.Logger
@@ -35,8 +37,15 @@ type Dispatcher struct {
 // NewDispatcher builds a Dispatcher. timeout bounds one provider call;
 // bodyMaxAge is the safety-net retention for undelivered content.
 func NewDispatcher(pool *pgxpool.Pool, p delivery.Provider, logger *slog.Logger, timeout, bodyMaxAge time.Duration) *Dispatcher {
-	return &Dispatcher{pool: pool, provider: p, logger: logger, timeout: timeout, bodyMaxAge: bodyMaxAge}
+	return &Dispatcher{
+		pool: pool, provider: p, logger: logger, timeout: timeout, bodyMaxAge: bodyMaxAge,
+		events: events.NewRecorder(pool, logger),
+	}
 }
+
+// Events returns the recorder every status change of this dispatcher goes
+// through (set its status-change hook before the worker starts).
+func (d *Dispatcher) Events() *events.Recorder { return d.events }
 
 // LimitProviderRate caps how many messages per second this process hands to
 // the provider (0.01 to 10000). Jobs over the budget are snoozed, not failed.
@@ -189,6 +198,9 @@ func (d *Dispatcher) internalError(ctx context.Context, log *slog.Logger, key st
 		if n, err = q.MarkQueuedFailed(dctx, store.MarkQueuedFailedParams{ID: key.ID, ProjectID: key.ProjectID, LastError: &code, ErrorCode: &code}); err != nil || n == 0 {
 			return err
 		}
+		if err := d.events.Transition(dctx, tx, key.ProjectID, key.ID, events.TypeFailed, "", code); err != nil {
+			return err
+		}
 		return q.DeleteEmailContent(dctx, store.DeleteEmailContentParams{EmailID: key.ID, ProjectID: key.ProjectID})
 	})
 	if ferr != nil {
@@ -214,7 +226,10 @@ func (d *Dispatcher) finish(ctx context.Context, log *slog.Logger, key store.Get
 			ID: key.ID, ProjectID: key.ProjectID, Status: res.Status,
 			Provider: &res.Provider, ProviderID: &res.ProviderID,
 		})
-		if err != nil {
+		if err != nil || n == 0 {
+			return err
+		}
+		if err := d.events.Dispatched(dctx, tx, key.ProjectID, key.ID, res.Status, res.Provider); err != nil {
 			return err
 		}
 		return q.DeleteEmailContent(dctx, store.DeleteEmailContentParams{EmailID: key.ID, ProjectID: key.ProjectID})
@@ -248,6 +263,11 @@ func (d *Dispatcher) fail(ctx context.Context, log *slog.Logger, key store.GetEm
 		if n, err = q.MarkFailed(dctx, store.MarkFailedParams{ID: key.ID, ProjectID: key.ProjectID, LastError: &detail, ErrorCode: &code}); err != nil {
 			return err
 		}
+		if n > 0 {
+			if err := d.events.Transition(dctx, tx, key.ProjectID, key.ID, events.TypeFailed, "", code); err != nil {
+				return err
+			}
+		}
 		return q.DeleteEmailContent(dctx, store.DeleteEmailContentParams{EmailID: key.ID, ProjectID: key.ProjectID})
 	})
 	if err != nil {
@@ -268,10 +288,16 @@ func (d *Dispatcher) Cleanup(ctx context.Context) error {
 	var expired, deleted int64
 	err := pgx.BeginFunc(ctx, d.pool, func(tx pgx.Tx) error {
 		q := store.New(tx)
-		var err error
-		if expired, err = q.ExpireOpenEmails(ctx, cutoff); err != nil {
+		rows, err := q.ExpireOpenEmails(ctx, cutoff)
+		if err != nil {
 			return err
 		}
+		for _, r := range rows {
+			if err := d.events.Transition(ctx, tx, r.ProjectID, r.ID, events.TypeFailed, "", CodeExpired); err != nil {
+				return err
+			}
+		}
+		expired = int64(len(rows))
 		deleted, err = q.DeleteContentsBefore(ctx, cutoff)
 		return err
 	})

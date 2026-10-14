@@ -441,7 +441,7 @@ components:
           enum: [platform, ses]
         provider:
           type: [string, "null"]
-          description: Provider involved (`mailpit`, `ses`), `null` for failures before a provider was called.
+          description: Provider involved (`mailpit`, `ses`); `null` for `failed` events.
         occurred_at:
           type: string
           format: date-time

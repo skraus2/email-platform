@@ -64,11 +64,12 @@ WHERE id = $1 AND project_id = $2 AND status = 'queued';
 -- name: DeleteEmailContent :exec
 DELETE FROM email_contents WHERE email_id = $1 AND project_id = $2;
 
--- name: ExpireOpenEmails :execrows
+-- name: ExpireOpenEmails :many
 -- Safety net: emails stuck before a terminal state past the retention limit.
 UPDATE emails
 SET status = 'failed', last_error = 'expired', error_code = 'expired', finished_at = now(), updated_at = now()
-WHERE status IN ('queued', 'sending') AND created_at < $1;
+WHERE status IN ('queued', 'sending') AND created_at < $1
+RETURNING id, project_id;
 
 -- name: DeleteContentsBefore :execrows
 DELETE FROM email_contents WHERE created_at < $1;

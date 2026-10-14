@@ -20,7 +20,7 @@ const (
 	MaxAdminListLimit     = 500
 )
 
-var statuses = []string{"queued", "sending", "captured", "submitted", "failed"}
+var statuses = []string{"queued", "sending", "captured", "submitted", "delivered", "bounced", "complained", "failed"}
 
 // AdminEmail is an email as operators see it: with the internal failure
 // detail, but with the recipient masked.

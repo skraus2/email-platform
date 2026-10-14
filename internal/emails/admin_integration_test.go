@@ -69,7 +69,7 @@ func TestListEmailsForAdmin(t *testing.T) {
 	for _, bad := range []struct {
 		status string
 		limit  int
-	}{{"delivered", 10}, {"", -1}, {"", emails.MaxAdminListLimit + 1}} {
+	}{{"opened", 10}, {"", -1}, {"", emails.MaxAdminListLimit + 1}} {
 		if _, err := emails.ListEmails(ctx, q, projectID, bad.status, bad.limit); err == nil {
 			t.Errorf("status %q limit %d accepted", bad.status, bad.limit)
 		}

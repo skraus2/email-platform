@@ -45,6 +45,20 @@ type EmailContent struct {
 	CreatedAt time.Time
 }
 
+type EmailEvent struct {
+	ID                uuid.UUID
+	ProjectID         uuid.UUID
+	EmailID           uuid.UUID
+	Origin            string
+	Type              string
+	Provider          *string
+	ProviderEventID   *string
+	ProviderMessageID *string
+	OccurredAt        time.Time
+	ReceivedAt        time.Time
+	Details           []byte
+}
+
 type IdempotencyKey struct {
 	ProjectID   uuid.UUID
 	Operation   string
