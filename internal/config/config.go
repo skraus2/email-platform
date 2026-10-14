@@ -197,6 +197,11 @@ func Load(lookup LookupFunc) (Config, error) {
 	if cfg.RetryMaxDelay > maxRetryDelay {
 		errs = append(errs, errors.New("RETRY_MAX_DELAY must be at most 24h"))
 	}
+	// A webhook job runs up to WEBHOOK_TIMEOUT plus 10s of database work and
+	// a detached 10s result write; it must not be rescued while running.
+	if minRescue := cfg.WebhookTimeout + 50*time.Second; cfg.JobRescueAfter > 0 && cfg.WebhookTimeout > 0 && cfg.JobRescueAfter < minRescue {
+		errs = append(errs, fmt.Errorf("JOB_RESCUE_AFTER must be at least %v (WEBHOOK_TIMEOUT + 50s), or running webhook deliveries could be rescued and sent twice", minRescue))
+	}
 	if len(errs) == 0 {
 		// Sanity check, not a hard bound (snoozes, queue lag and crash rescue
 		// add time; the expiry job is the real safety net): a full retry

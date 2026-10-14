@@ -11,7 +11,8 @@ UPDATE webhook_endpoints SET status = $3, updated_at = now()
 WHERE id = $1 AND project_id = $2 AND status <> $3;
 
 -- name: LockWebhookEndpoint :one
-SELECT * FROM webhook_endpoints WHERE id = $1 AND project_id = $2 FOR UPDATE;
+-- NO KEY UPDATE: does not block the key-share lock that new deliveries take.
+SELECT * FROM webhook_endpoints WHERE id = $1 AND project_id = $2 FOR NO KEY UPDATE;
 
 -- name: UpdateWebhookSecret :exec
 UPDATE webhook_endpoints SET secret_ciphertext = $3, secret_key_id = $4, updated_at = now()
@@ -19,7 +20,7 @@ WHERE id = $1 AND project_id = $2;
 
 -- name: LockEndpointsNotUnderKey :many
 -- Maintenance across projects: secrets still encrypted under another key.
-SELECT * FROM webhook_endpoints WHERE secret_key_id <> $1 ORDER BY id FOR UPDATE;
+SELECT * FROM webhook_endpoints WHERE secret_key_id <> $1 ORDER BY id FOR NO KEY UPDATE;
 
 -- name: InsertWebhookDeliveries :many
 -- One delivery per active endpoint of the project subscribed to the type.
@@ -46,12 +47,15 @@ SET status = 'delivered', attempts = attempts + 1, last_status_code = $3, last_e
 WHERE id = $1 AND project_id = $2 AND status = 'pending';
 
 -- name: RecordDeliveryRetry :one
--- A failed attempt that will be retried at next_attempt_at; returns the
--- attempts made so far.
+-- A failed, retryable attempt: retried at next_attempt_at, or failed in the
+-- same statement when it was the last allowed one.
 UPDATE webhook_deliveries
-SET attempts = attempts + 1, last_status_code = $3, last_error_code = $4, next_attempt_at = $5, updated_at = now()
+SET attempts = attempts + 1, last_status_code = $3, last_error_code = $4,
+    status = CASE WHEN attempts + 1 >= sqlc.arg(max_attempts)::integer THEN 'failed' ELSE status END,
+    next_attempt_at = CASE WHEN attempts + 1 >= sqlc.arg(max_attempts)::integer THEN NULL ELSE sqlc.arg(next_attempt_at)::timestamptz END,
+    updated_at = now()
 WHERE id = $1 AND project_id = $2 AND status = 'pending'
-RETURNING attempts;
+RETURNING attempts, status;
 
 -- name: MarkDeliveryFailed :execrows
 -- counted: whether this call ends an attempt (false when no request was made
@@ -63,10 +67,11 @@ SET status = 'failed', attempts = attempts + CASE WHEN sqlc.arg(counted)::boolea
 WHERE id = $1 AND project_id = $2 AND status = 'pending';
 
 -- name: ExpireStaleDeliveries :execrows
--- Safety net for deliveries whose job ended without a final state.
+-- Safety net for deliveries whose job ended without a final state: no
+-- activity (creation or attempt) since the cutoff.
 UPDATE webhook_deliveries
 SET status = 'failed', last_error_code = 'expired', next_attempt_at = NULL, updated_at = now()
-WHERE status = 'pending' AND created_at < $1;
+WHERE status = 'pending' AND updated_at < $1;
 
 -- name: ListWebhookDeliveries :many
 SELECT d.*, ev.email_id, ev.type AS event_type FROM webhook_deliveries d

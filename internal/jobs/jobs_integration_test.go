@@ -317,3 +317,79 @@ func TestEnqueueRequiresAttempts(t *testing.T) {
 		t.Fatal("zero attempts accepted")
 	}
 }
+
+// Webhook deliveries run in their own queue with their own timeout; a
+// snooze reruns the job without using an attempt or recording an error.
+func TestWorkerRunsWebhookQueue(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	pool := testdb.NewMigrated(t)
+	var mu sync.Mutex
+	var attempts []jobs.Attempt
+	var remaining []time.Duration
+	done := make(chan struct{})
+	h := newRecorder().handlers()
+	h.DeliverWebhook = func(ctx context.Context, _ jobs.DeliverWebhookArgs, a jobs.Attempt) error {
+		deadline, _ := ctx.Deadline()
+		mu.Lock()
+		defer mu.Unlock()
+		attempts = append(attempts, a)
+		remaining = append(remaining, time.Until(deadline))
+		if len(attempts) == 1 {
+			return jobs.Snooze(100 * time.Millisecond)
+		}
+		close(done)
+		return nil
+	}
+	w, err := jobs.NewWorker(jobs.WorkerConfig{
+		Pool: pool, Logger: quiet, Handlers: h, Concurrency: 1, Retry: testRetry,
+		JobTimeout: 500 * time.Millisecond, WebhookConcurrency: 1, WebhookTimeout: 2 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = w.Stop(5 * time.Second) })
+
+	enq, _ := jobs.NewEnqueuer(pool, quiet, testMaxAttempts)
+	tx, _ := pool.Begin(ctx)
+	if err := enq.EnqueueWebhooks(ctx, tx, []jobs.DeliverWebhookArgs{{DeliveryID: uuid.New(), ProjectID: uuid.New()}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-done:
+	case <-time.After(20 * time.Second):
+		t.Fatal("webhook job not run twice")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if attempts[0].Number != 1 || attempts[1].Number != 1 || attempts[1].Final() {
+		t.Fatalf("attempts = %+v, want the snooze not to use an attempt", attempts)
+	}
+	// 2 s request budget + 10 s database margin, not the 500 ms send budget.
+	for _, r := range remaining {
+		if r < 11*time.Second || r > 12*time.Second {
+			t.Fatalf("job deadline in %v, want ≈ 12 s", r)
+		}
+	}
+	var queue string
+	var errs int
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if err := pool.QueryRow(ctx, "SELECT queue, coalesce(array_length(errors, 1), 0) FROM river_job WHERE kind = 'deliver_webhook' AND state = 'completed'").Scan(&queue, &errs); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("webhook job not completed")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if queue != jobs.QueueWebhooks || errs != 0 {
+		t.Fatalf("queue %q, %d errors; want webhooks and none", queue, errs)
+	}
+}

@@ -176,13 +176,14 @@ func (p TargetPolicy) Client(timeout time.Duration) *http.Client {
 	return &http.Client{
 		Timeout: timeout,
 		Transport: &http.Transport{
-			Proxy:                 nil,
-			DialContext:           dialer.DialContext,
-			ForceAttemptHTTP2:     true,
-			TLSHandshakeTimeout:   10 * time.Second,
-			ResponseHeaderTimeout: timeout,
-			MaxIdleConnsPerHost:   2,
-			IdleConnTimeout:       90 * time.Second,
+			Proxy:                  nil,
+			DialContext:            dialer.DialContext,
+			ForceAttemptHTTP2:      true,
+			TLSHandshakeTimeout:    10 * time.Second,
+			ResponseHeaderTimeout:  timeout,
+			MaxIdleConnsPerHost:    2,
+			MaxResponseHeaderBytes: 16 << 10,
+			IdleConnTimeout:        90 * time.Second,
 		},
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}

@@ -15,12 +15,13 @@ import (
 const expireStaleDeliveries = `-- name: ExpireStaleDeliveries :execrows
 UPDATE webhook_deliveries
 SET status = 'failed', last_error_code = 'expired', next_attempt_at = NULL, updated_at = now()
-WHERE status = 'pending' AND created_at < $1
+WHERE status = 'pending' AND updated_at < $1
 `
 
-// Safety net for deliveries whose job ended without a final state.
-func (q *Queries) ExpireStaleDeliveries(ctx context.Context, createdAt time.Time) (int64, error) {
-	result, err := q.db.Exec(ctx, expireStaleDeliveries, createdAt)
+// Safety net for deliveries whose job ended without a final state: no
+// activity (creation or attempt) since the cutoff.
+func (q *Queries) ExpireStaleDeliveries(ctx context.Context, updatedAt time.Time) (int64, error) {
+	result, err := q.db.Exec(ctx, expireStaleDeliveries, updatedAt)
 	if err != nil {
 		return 0, err
 	}
@@ -261,7 +262,7 @@ func (q *Queries) LoadWebhookDelivery(ctx context.Context, arg LoadWebhookDelive
 }
 
 const lockEndpointsNotUnderKey = `-- name: LockEndpointsNotUnderKey :many
-SELECT id, project_id, url, event_types, secret_ciphertext, secret_key_id, status, created_at, updated_at FROM webhook_endpoints WHERE secret_key_id <> $1 ORDER BY id FOR UPDATE
+SELECT id, project_id, url, event_types, secret_ciphertext, secret_key_id, status, created_at, updated_at FROM webhook_endpoints WHERE secret_key_id <> $1 ORDER BY id FOR NO KEY UPDATE
 `
 
 // Maintenance across projects: secrets still encrypted under another key.
@@ -296,7 +297,7 @@ func (q *Queries) LockEndpointsNotUnderKey(ctx context.Context, secretKeyID stri
 }
 
 const lockWebhookEndpoint = `-- name: LockWebhookEndpoint :one
-SELECT id, project_id, url, event_types, secret_ciphertext, secret_key_id, status, created_at, updated_at FROM webhook_endpoints WHERE id = $1 AND project_id = $2 FOR UPDATE
+SELECT id, project_id, url, event_types, secret_ciphertext, secret_key_id, status, created_at, updated_at FROM webhook_endpoints WHERE id = $1 AND project_id = $2 FOR NO KEY UPDATE
 `
 
 type LockWebhookEndpointParams struct {
@@ -304,6 +305,7 @@ type LockWebhookEndpointParams struct {
 	ProjectID uuid.UUID
 }
 
+// NO KEY UPDATE: does not block the key-share lock that new deliveries take.
 func (q *Queries) LockWebhookEndpoint(ctx context.Context, arg LockWebhookEndpointParams) (WebhookEndpoint, error) {
 	row := q.db.QueryRow(ctx, lockWebhookEndpoint, arg.ID, arg.ProjectID)
 	var i WebhookEndpoint
@@ -376,9 +378,12 @@ func (q *Queries) MarkDeliveryFailed(ctx context.Context, arg MarkDeliveryFailed
 
 const recordDeliveryRetry = `-- name: RecordDeliveryRetry :one
 UPDATE webhook_deliveries
-SET attempts = attempts + 1, last_status_code = $3, last_error_code = $4, next_attempt_at = $5, updated_at = now()
+SET attempts = attempts + 1, last_status_code = $3, last_error_code = $4,
+    status = CASE WHEN attempts + 1 >= $5::integer THEN 'failed' ELSE status END,
+    next_attempt_at = CASE WHEN attempts + 1 >= $5::integer THEN NULL ELSE $6::timestamptz END,
+    updated_at = now()
 WHERE id = $1 AND project_id = $2 AND status = 'pending'
-RETURNING attempts
+RETURNING attempts, status
 `
 
 type RecordDeliveryRetryParams struct {
@@ -386,22 +391,29 @@ type RecordDeliveryRetryParams struct {
 	ProjectID      uuid.UUID
 	LastStatusCode *int32
 	LastErrorCode  *string
-	NextAttemptAt  *time.Time
+	MaxAttempts    int32
+	NextAttemptAt  time.Time
 }
 
-// A failed attempt that will be retried at next_attempt_at; returns the
-// attempts made so far.
-func (q *Queries) RecordDeliveryRetry(ctx context.Context, arg RecordDeliveryRetryParams) (int32, error) {
+type RecordDeliveryRetryRow struct {
+	Attempts int32
+	Status   string
+}
+
+// A failed, retryable attempt: retried at next_attempt_at, or failed in the
+// same statement when it was the last allowed one.
+func (q *Queries) RecordDeliveryRetry(ctx context.Context, arg RecordDeliveryRetryParams) (RecordDeliveryRetryRow, error) {
 	row := q.db.QueryRow(ctx, recordDeliveryRetry,
 		arg.ID,
 		arg.ProjectID,
 		arg.LastStatusCode,
 		arg.LastErrorCode,
+		arg.MaxAttempts,
 		arg.NextAttemptAt,
 	)
-	var attempts int32
-	err := row.Scan(&attempts)
-	return attempts, err
+	var i RecordDeliveryRetryRow
+	err := row.Scan(&i.Attempts, &i.Status)
+	return i, err
 }
 
 const setWebhookEndpointStatus = `-- name: SetWebhookEndpointStatus :execrows

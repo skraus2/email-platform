@@ -23,16 +23,11 @@ import (
 	"github.com/skraus2/email-platform/internal/store"
 )
 
-// Enqueuer inserts delivery jobs inside the caller's transaction.
-type Enqueuer interface {
-	EnqueueWebhooks(ctx context.Context, tx pgx.Tx, args []jobs.DeliverWebhookArgs) error
-}
-
 // Outbox turns status changes into webhook deliveries.
-type Outbox struct{ enq Enqueuer }
+type Outbox struct{ enq *jobs.Enqueuer }
 
 // NewOutbox builds an Outbox that enqueues through enq.
-func NewOutbox(enq Enqueuer) *Outbox { return &Outbox{enq: enq} }
+func NewOutbox(enq *jobs.Enqueuer) *Outbox { return &Outbox{enq: enq} }
 
 // OnStatusChange is an events.Hook: in the transaction that changed the
 // status it creates one delivery (and its job) per active endpoint of the
@@ -91,6 +86,7 @@ const (
 	CodeSecret           = "secret_unavailable"
 	CodeInternal         = "internal_error"
 	CodeExpired          = "expired"
+	CodeInvalidStatus    = "http_invalid"
 )
 
 func httpCode(status int) string { return "http_" + strconv.Itoa(status) }
@@ -135,7 +131,7 @@ func (d *Deliverer) Deliver(ctx context.Context, args jobs.DeliverWebhookArgs, a
 		ID: row.EndpointID, ProjectID: row.ProjectID, SecretCiphertext: row.SecretCiphertext, SecretKeyID: row.SecretKeyID,
 	})
 	if err != nil {
-		return d.internal(ctx, log, args, at, errors.New(CodeSecret))
+		return d.internalCode(ctx, log, args, at, errors.New(CodeSecret), CodeSecret)
 	}
 	body, err := Payload(row.EventID, row.EventType, row.ReceivedAt, row.EmailID, row.ProjectID)
 	if err != nil {
@@ -145,7 +141,7 @@ func (d *Deliverer) Deliver(ctx context.Context, args jobs.DeliverWebhookArgs, a
 	status, code := d.send(ctx, target, row.EventID, secret, body)
 	wctx, cancel := detached(ctx)
 	defer cancel()
-	if ctx.Err() != nil && errors.Is(ctx.Err(), context.Canceled) {
+	if status == 0 && errors.Is(ctx.Err(), context.Canceled) {
 		// Shutdown interrupted the attempt: not counted, the queue retries.
 		return errors.New(CodeInternal)
 	}
@@ -160,6 +156,9 @@ func (d *Deliverer) Deliver(ctx context.Context, args jobs.DeliverWebhookArgs, a
 		return nil
 	case code == CodeForbiddenTarget:
 		return d.fail(ctx, log, args, code, nil, false)
+	case status != 0 && (status < 100 || status > 599):
+		// Not a real HTTP status: never retried, not stored as one.
+		return d.fail(ctx, log, args, CodeInvalidStatus, nil, true)
 	case status != 0 && !retryableStatus(status):
 		return d.fail(ctx, log, args, code, int32ptr(status), true)
 	}
@@ -170,8 +169,9 @@ func (d *Deliverer) Deliver(ctx context.Context, args jobs.DeliverWebhookArgs, a
 	if status != 0 {
 		sc = int32ptr(status)
 	}
-	n, err := q.RecordDeliveryRetry(wctx, store.RecordDeliveryRetryParams{
-		ID: args.DeliveryID, ProjectID: args.ProjectID, LastStatusCode: sc, LastErrorCode: &code, NextAttemptAt: &next,
+	res, err := q.RecordDeliveryRetry(wctx, store.RecordDeliveryRetryParams{
+		ID: args.DeliveryID, ProjectID: args.ProjectID, LastStatusCode: sc, LastErrorCode: &code, NextAttemptAt: next,
+		MaxAttempts: int32(d.cfg.MaxAttempts), //nolint:gosec // bounded by config (≤ 25)
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil
@@ -179,10 +179,11 @@ func (d *Deliverer) Deliver(ctx context.Context, args jobs.DeliverWebhookArgs, a
 	if err != nil {
 		return d.internal(ctx, log, args, at, fmt.Errorf("record attempt: %w", err))
 	}
-	if int(n) >= d.cfg.MaxAttempts {
-		return d.fail(ctx, log, args, code, sc, false)
+	if res.Status == "failed" {
+		log.WarnContext(ctx, "webhook delivery failed", slog.String("error_code", code), slog.Int("attempts", int(res.Attempts)))
+		return nil
 	}
-	log.WarnContext(ctx, "webhook attempt failed; will retry", slog.String("error_code", code), slog.Int("attempts", int(n)))
+	log.WarnContext(ctx, "webhook attempt failed; will retry", slog.String("error_code", code), slog.Int("attempts", int(res.Attempts)))
 	return jobs.Snooze(delay)
 }
 
@@ -237,9 +238,13 @@ func (d *Deliverer) fail(ctx context.Context, log *slog.Logger, args jobs.Delive
 // internal handles errors outside the HTTP exchange: retried by the queue;
 // on its last attempt the delivery fails, so it never stays pending.
 func (d *Deliverer) internal(ctx context.Context, log *slog.Logger, args jobs.DeliverWebhookArgs, at jobs.Attempt, err error) error {
+	return d.internalCode(ctx, log, args, at, err, CodeInternal)
+}
+
+func (d *Deliverer) internalCode(ctx context.Context, log *slog.Logger, args jobs.DeliverWebhookArgs, at jobs.Attempt, err error, code string) error {
 	log.ErrorContext(ctx, "webhook delivery error", slog.Any("error", err))
 	if at.Final() {
-		return d.fail(ctx, log, args, CodeInternal, nil, false)
+		return d.fail(ctx, log, args, code, nil, false)
 	}
 	return errors.New(CodeInternal)
 }

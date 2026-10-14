@@ -302,7 +302,7 @@ func TestDeliverRetriesThenFails(t *testing.T) {
 func TestDeliverFailsWithoutRetry(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	for _, status := range []int{http.StatusBadRequest, http.StatusGone, http.StatusFound} {
+	for _, status := range []int{http.StatusBadRequest, http.StatusGone, http.StatusFound, 600} {
 		f := newDeliveryFixture(t)
 		r := newReceiver(t, status)
 		f.endpoint(t, r.srv.URL+"/hook")
@@ -311,6 +311,12 @@ func TestDeliverFailsWithoutRetry(t *testing.T) {
 			t.Fatalf("%d: %v", status, err)
 		}
 		s := f.state(t, deliveries[0].DeliveryID)
+		if status == 600 {
+			if s.status != "failed" || s.attempts != 1 || s.code != nil || *s.errCode != CodeInvalidStatus {
+				t.Fatalf("600: state %+v", s)
+			}
+			continue
+		}
 		if s.status != "failed" || s.attempts != 1 || *s.code != int32(status) || r.count() != 1 {
 			t.Fatalf("%d: state %+v, %d requests (redirect must not be followed)", status, s, r.count())
 		}
@@ -364,9 +370,16 @@ func TestDeliverRefusals(t *testing.T) {
 		t.Fatalf("forbidden: %+v, %d requests", s, r2.count())
 	}
 
-	// Another project's id never reaches the delivery.
-	if err := f.deliverer(t, lax, 3, time.Second).Deliver(ctx, jobs.DeliverWebhookArgs{DeliveryID: deliveries[0].DeliveryID, ProjectID: uuid.New()}, attempt(1)); err != nil {
+	// Another project's id never reaches a pending delivery.
+	f3 := newDeliveryFixture(t)
+	r3 := newReceiver(t)
+	f3.endpoint(t, r3.srv.URL+"/hook")
+	_, d3 := f3.change(t, "captured")
+	if err := f3.deliverer(t, lax, 3, time.Second).Deliver(ctx, jobs.DeliverWebhookArgs{DeliveryID: d3[0].DeliveryID, ProjectID: uuid.New()}, attempt(1)); err != nil {
 		t.Fatal(err)
+	}
+	if s := f3.state(t, d3[0].DeliveryID); s.status != "pending" || s.attempts != 0 || r3.count() != 0 {
+		t.Fatalf("foreign project: %+v, %d requests", s, r3.count())
 	}
 }
 
@@ -414,7 +427,7 @@ func TestDeliverInternalErrors(t *testing.T) {
 	if err := d.Deliver(ctx, deliveries[0], jobs.Attempt{JobID: 1, Number: 25, MaxAttempts: 25}); err != nil {
 		t.Fatal(err)
 	}
-	if s := f.state(t, deliveries[0].DeliveryID); s.status != "failed" || *s.errCode != CodeInternal || r.count() != 0 {
+	if s := f.state(t, deliveries[0].DeliveryID); s.status != "failed" || *s.errCode != CodeSecret || r.count() != 0 {
 		t.Fatalf("final: %+v", s)
 	}
 }
@@ -426,7 +439,12 @@ func TestCleanupExpiresStalePending(t *testing.T) {
 	f.endpoint(t, "https://hooks.example.test/")
 	_, stale := f.change(t, "captured")
 	_, fresh := f.change(t, "failed")
-	if _, err := f.pool.Exec(ctx, "UPDATE webhook_deliveries SET created_at = now() - interval '30 days' WHERE id = $1", stale[0].DeliveryID); err != nil {
+	// Stale: no activity for 30 days. Retried: created long ago but attempted
+	// recently (a backlog), so it is kept.
+	if _, err := f.pool.Exec(ctx, "UPDATE webhook_deliveries SET created_at = now() - interval '30 days', updated_at = now() - interval '30 days' WHERE id = $1", stale[0].DeliveryID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.pool.Exec(ctx, "UPDATE webhook_deliveries SET created_at = now() - interval '30 days' WHERE id = $1", fresh[0].DeliveryID); err != nil {
 		t.Fatal(err)
 	}
 	if err := f.deliverer(t, lax, 12, 10*time.Second).Cleanup(ctx); err != nil {

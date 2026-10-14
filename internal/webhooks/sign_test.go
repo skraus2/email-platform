@@ -57,9 +57,21 @@ func TestVerify(t *testing.T) {
 		"missing":         ok("", ts, vectorBody, vectorSecret, now),
 		"only v2":         ok("v2="+strings.TrimPrefix(vectorSignature, "v1="), ts, vectorBody, vectorSecret, now),
 		"not hex":         ok("v1=zz", ts, vectorBody, vectorSecret, now),
+		"empty secret":    ok(Sign("", vectorTimestamp, []byte(vectorBody)), ts, vectorBody, "", now),
 	} {
 		if !errors.Is(err, ErrInvalidSignature) {
 			t.Errorf("%s: err = %v, want ErrInvalidSignature", name, err)
+		}
+	}
+}
+
+func TestRetryableStatus(t *testing.T) {
+	for status, want := range map[int]bool{
+		408: true, 429: true, 500: true, 502: true, 503: true, 504: true,
+		400: false, 401: false, 403: false, 404: false, 410: false, 301: false, 302: false, 307: false,
+	} {
+		if got := retryableStatus(status); got != want {
+			t.Errorf("retryableStatus(%d) = %v, want %v", status, got, want)
 		}
 	}
 }

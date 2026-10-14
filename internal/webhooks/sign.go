@@ -68,7 +68,7 @@ var ErrInvalidSignature = errors.New("webhook signature invalid")
 // should additionally drop repeated Webhook-Id values.
 func Verify(secret, timestamp, signature string, body []byte, tolerance time.Duration, now time.Time) error {
 	ts, err := strconv.ParseInt(timestamp, 10, 64)
-	if err != nil {
+	if err != nil || secret == "" {
 		return ErrInvalidSignature
 	}
 	if d := now.Sub(time.Unix(ts, 0)); d > tolerance || d < -tolerance {

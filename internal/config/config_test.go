@@ -303,4 +303,8 @@ func TestLoadWebhookDelivery(t *testing.T) {
 	if _, err := Load(env(map[string]string{"DATABASE_URL": devURL, "WEBHOOK_RETRY_BASE_DELAY": "2h"})); err == nil {
 		t.Error("base delay above max delay accepted")
 	}
+	_, err = Load(env(map[string]string{"DATABASE_URL": devURL, "PROVIDER_TIMEOUT": "1s", "WEBHOOK_TIMEOUT": "60s", "JOB_RESCUE_AFTER": "100s"}))
+	if err == nil || !strings.Contains(err.Error(), "WEBHOOK_TIMEOUT + 50s") {
+		t.Errorf("rescue window shorter than a webhook job: err = %v", err)
+	}
 }
