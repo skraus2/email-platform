@@ -28,6 +28,9 @@ import (
 
 const recipient = "Customer@Example.test"
 
+// eventTime is a fixed provider event time safely in the past.
+var eventTime = time.Now().Add(-time.Hour).Truncate(time.Second).UTC()
+
 type fixture struct {
 	pool      *pgxpool.Pool
 	projectID uuid.UUID
@@ -104,7 +107,7 @@ func (f *fixture) ev(emailID uuid.UUID, typ, eventID string, details map[string]
 	return events.ProviderEvent{
 		Provider: "ses", ProviderEventID: eventID, ProviderMessageID: "msg-1",
 		EmailID: emailID, ProjectID: f.projectID, Type: typ,
-		OccurredAt: time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC), Details: details,
+		OccurredAt: eventTime, Details: details,
 	}
 }
 
@@ -347,6 +350,7 @@ func TestIngestRejectsInvalidEvents(t *testing.T) {
 		"detail value":      func(e *events.ProviderEvent) { e.Details = map[string]string{"bounce_type": long} },
 		"detail control ch": func(e *events.ProviderEvent) { e.Details = map[string]string{"bounce_type": "a\nb"} },
 		"nil email":         func(e *events.ProviderEvent) { e.EmailID = uuid.Nil },
+		"future time":       func(e *events.ProviderEvent) { e.OccurredAt = time.Now().Add(2 * time.Hour) },
 	} {
 		e := delivery(f, id)
 		mutate(&e)
@@ -473,6 +477,7 @@ func TestIngestWaitsForFinish(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after commit
 	if _, err := store.New(tx).MarkDispatched(ctx, store.MarkDispatchedParams{
 		ID: id, ProjectID: f.projectID, Status: "submitted", Provider: new("ses"), ProviderID: new("msg-1"),
 	}); err != nil {
@@ -510,6 +515,9 @@ func TestFinishWaitsForIngest(t *testing.T) {
 	id := f.email(t, "sending", "")
 
 	inserted, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(release) }) }
+	t.Cleanup(unblock) // never leave the ingest parked on a failed test
 	events.SetAfterInsert(f.rec, func() {
 		close(inserted)
 		<-release
@@ -519,11 +527,15 @@ func TestFinishWaitsForIngest(t *testing.T) {
 		_, err := f.rec.Ingest(ctx, permanent(f, id))
 		done <- err
 	}()
-	<-inserted
+	select {
+	case <-inserted:
+	case err := <-done:
+		t.Fatalf("ingest ended before inserting: %v", err)
+	}
 	finished := make(chan error, 1)
 	go func() { finished <- finish(ctx, f, id, "submitted", "ses") }()
 	waitForLockWait(t, f.pool)
-	close(release)
+	unblock()
 	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
@@ -571,5 +583,39 @@ func TestBounceRefusesNextSend(t *testing.T) {
 	})
 	if !errors.Is(err, emails.ErrRecipientSuppressed) {
 		t.Fatalf("err = %v, want ErrRecipientSuppressed", err)
+	}
+}
+
+// Stored events of SES are never projected onto an email another provider
+// reports as submitted; the finish still commits.
+func TestDispatchedIgnoresEventsOfAnotherProvider(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	id := f.email(t, "sending", "")
+	f.ingest(t, delivery(f, id))
+	if err := finish(context.Background(), f, id, "submitted", "other"); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+	if got := f.status(t, id); got != "submitted" {
+		t.Fatalf("status = %s, want submitted", got)
+	}
+}
+
+// A provider event id reused for another email is reported, not silently
+// treated as a duplicate.
+func TestReusedEventIDIsReported(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	a := f.email(t, "submitted", "ses")
+	b := f.email(t, "submitted", "ses")
+	f.ingest(t, permanent(f, a))
+	if out := f.ingest(t, permanent(f, b)); out != events.Duplicate {
+		t.Fatalf("outcome = %v", out)
+	}
+	if !strings.Contains(f.logs.String(), "provider event id already used by another email") {
+		t.Fatal("no warning for a reused event id")
+	}
+	if got := f.status(t, b); got != "submitted" {
+		t.Fatalf("other email status = %s", got)
 	}
 }

@@ -39,3 +39,6 @@ SELECT * FROM email_events
 WHERE project_id = $1 AND email_id = $2 AND id > sqlc.arg(after)
 ORDER BY id
 LIMIT $3;
+
+-- name: ProviderEventOwner :one
+SELECT project_id, email_id FROM email_events WHERE provider = $1 AND provider_event_id = $2;

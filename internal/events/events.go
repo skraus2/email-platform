@@ -104,7 +104,9 @@ func (r *Recorder) Dispatched(ctx context.Context, tx pgx.Tx, projectID, emailID
 	if err := r.Transition(ctx, tx, projectID, emailID, status, provider, ""); err != nil {
 		return err
 	}
-	if status != TypeSubmitted {
+	// Only events of the provider that sent the email can be projected
+	// (the database refuses provider statuses for any other).
+	if status != TypeSubmitted || provider != "ses" {
 		return nil
 	}
 	q := store.New(tx)
@@ -182,6 +184,8 @@ var detailKeys = map[string]bool{
 const (
 	maxIDLen     = 512
 	maxDetailLen = 64
+	// maxClockSkew is how far a provider's event time may lie ahead of ours.
+	maxClockSkew = time.Hour
 )
 
 func (e ProviderEvent) validate() error {
@@ -196,15 +200,17 @@ func (e ProviderEvent) validate() error {
 		return fmt.Errorf("%w: message id longer than %d bytes", ErrInvalidEvent, maxIDLen)
 	case e.OccurredAt.IsZero():
 		return fmt.Errorf("%w: no event time", ErrInvalidEvent)
+	case e.OccurredAt.After(time.Now().Add(maxClockSkew)):
+		return fmt.Errorf("%w: event time in the future", ErrInvalidEvent)
 	case e.EmailID == uuid.Nil || e.ProjectID == uuid.Nil:
 		return fmt.Errorf("%w: email or project id missing", ErrInvalidEvent)
 	}
 	for k, v := range e.Details {
 		if !detailKeys[k] {
-			return fmt.Errorf("%w: detail %q not allowed", ErrInvalidEvent, k)
+			return fmt.Errorf("%w: detail key not allowed", ErrInvalidEvent)
 		}
 		if len(v) == 0 || len(v) > maxDetailLen || !printable(v) {
-			return fmt.Errorf("%w: detail %q must be 1 to %d printable characters", ErrInvalidEvent, k, maxDetailLen)
+			return fmt.Errorf("%w: detail %s must be 1 to %d printable characters", ErrInvalidEvent, k, maxDetailLen)
 		}
 	}
 	return nil
@@ -278,6 +284,15 @@ func (r *Recorder) Ingest(ctx context.Context, e ProviderEvent) (Outcome, error)
 		})
 		if errors.Is(err, pgx.ErrNoRows) {
 			out = Duplicate
+			owner, err := q.ProviderEventOwner(ctx, store.ProviderEventOwnerParams{Provider: &e.Provider, ProviderEventID: &e.ProviderEventID})
+			if err != nil {
+				return fmt.Errorf("load duplicate event: %w", err)
+			}
+			if owner.ProjectID != e.ProjectID || owner.EmailID != e.EmailID {
+				// The provider reused an event id for another email (or a
+				// parser derived it wrongly): it must not vanish silently.
+				warn = "provider event id already used by another email"
+			}
 			return nil
 		}
 		if err != nil {
@@ -313,7 +328,7 @@ func (r *Recorder) Ingest(ctx context.Context, e ProviderEvent) (Outcome, error)
 		return r.changed(ctx, tx, Change{ProjectID: e.ProjectID, EmailID: e.EmailID, EventID: eventID, Status: e.Type})
 	})
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("ingest event: %w", err)
 	}
 	if warn != "" {
 		// The recipient is never logged unmasked; the email id identifies it.

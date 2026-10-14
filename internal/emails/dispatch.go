@@ -226,12 +226,15 @@ func (d *Dispatcher) finish(ctx context.Context, log *slog.Logger, key store.Get
 			ID: key.ID, ProjectID: key.ProjectID, Status: res.Status,
 			Provider: &res.Provider, ProviderID: &res.ProviderID,
 		})
-		if err != nil || n == 0 {
+		if err != nil {
 			return err
 		}
-		if err := d.events.Dispatched(dctx, tx, key.ProjectID, key.ID, res.Status, res.Provider); err != nil {
-			return err
+		if n > 0 {
+			if err := d.events.Dispatched(dctx, tx, key.ProjectID, key.ID, res.Status, res.Provider); err != nil {
+				return err
+			}
 		}
+		// Deleted in any case: the message is out, whoever finalized it.
 		return q.DeleteEmailContent(dctx, store.DeleteEmailContentParams{EmailID: key.ID, ProjectID: key.ProjectID})
 	})
 	if err != nil {

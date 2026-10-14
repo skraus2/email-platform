@@ -185,6 +185,27 @@ func (q *Queries) ProjectEmailStatus(ctx context.Context, arg ProjectEmailStatus
 	return result.RowsAffected(), nil
 }
 
+const providerEventOwner = `-- name: ProviderEventOwner :one
+SELECT project_id, email_id FROM email_events WHERE provider = $1 AND provider_event_id = $2
+`
+
+type ProviderEventOwnerParams struct {
+	Provider        *string
+	ProviderEventID *string
+}
+
+type ProviderEventOwnerRow struct {
+	ProjectID uuid.UUID
+	EmailID   uuid.UUID
+}
+
+func (q *Queries) ProviderEventOwner(ctx context.Context, arg ProviderEventOwnerParams) (ProviderEventOwnerRow, error) {
+	row := q.db.QueryRow(ctx, providerEventOwner, arg.Provider, arg.ProviderEventID)
+	var i ProviderEventOwnerRow
+	err := row.Scan(&i.ProjectID, &i.EmailID)
+	return i, err
+}
+
 const topProviderEvent = `-- name: TopProviderEvent :one
 SELECT id, type FROM email_events
 WHERE project_id = $1 AND email_id = $2 AND type IN ('delivered', 'bounced', 'complained')

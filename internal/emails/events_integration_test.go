@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -168,6 +169,46 @@ func TestExpiryRecordsFailedEvents(t *testing.T) {
 	}
 	if got := log.statuses(); len(got) != 3 {
 		t.Fatalf("second cleanup added changes: %v", got)
+	}
+}
+
+// The worker's finish applies provider events that arrived while the email
+// was still being sent.
+func TestFinishProjectsEventsStoredDuringSend(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	pool, projectID := setup(t)
+	e := queued(t, pool, projectID)
+	p := &fakeProvider{}
+	d := dispatcher(pool, p, nil)
+	var log changeLog
+	d.Events().OnStatusChange(log.hook)
+	p.send = func(c context.Context, _ delivery.Message) (delivery.Result, error) {
+		out, err := d.Events().Ingest(c, events.ProviderEvent{
+			Provider: "ses", ProviderEventID: "fb-1", ProviderMessageID: "msg-1",
+			EmailID: e.ID, ProjectID: projectID, Type: "bounced", OccurredAt: time.Now(),
+			Details: map[string]string{"bounce_type": "Permanent"},
+		})
+		if err != nil || out != events.Stored {
+			t.Errorf("ingest during send = %v, %v", out, err)
+		}
+		return delivery.Result{Provider: "ses", ProviderID: "msg-1", Status: delivery.StatusSubmitted}, nil
+	}
+	if err := d.SendEmail(ctx, args(e), attempt(1)); err != nil {
+		t.Fatal(err)
+	}
+	if s := state(t, pool, e.ID); s.status != "bounced" || s.hasContent {
+		t.Fatalf("state = %+v, want bounced without content", s)
+	}
+	log.mu.Lock()
+	changes := append([]events.Change(nil), log.changes...)
+	log.mu.Unlock()
+	var bounceID uuid.UUID
+	if err := pool.QueryRow(ctx, "SELECT id FROM email_events WHERE email_id = $1 AND type = 'bounced'", e.ID).Scan(&bounceID); err != nil {
+		t.Fatal(err)
+	}
+	if len(changes) != 2 || changes[0].Status != "submitted" || changes[1].Status != "bounced" || changes[1].EventID != bounceID {
+		t.Fatalf("changes = %+v, want submitted then the stored bounce %s", changes, bounceID)
 	}
 }
 

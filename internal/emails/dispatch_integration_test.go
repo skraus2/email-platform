@@ -365,8 +365,45 @@ func TestCleanupDuringSendWinsOverLateSuccess(t *testing.T) {
 	if err := d.SendEmail(ctx, args(e), attempt(1)); err != nil {
 		t.Fatal(err)
 	}
-	if s := state(t, pool, e.ID); s.status != "failed" || *s.lastError != "expired" || s.code() != emails.CodeExpired {
+	if s := state(t, pool, e.ID); s.status != "failed" || *s.lastError != "expired" || s.code() != emails.CodeExpired || s.hasContent {
 		t.Fatalf("late success overwrote the terminal state: %+v", s)
+	}
+	// Only the expiry is a status change: the late success records nothing.
+	if ev := eventsOf(t, pool, e.ID); len(ev) != 1 || ev[0].typ != "failed" || ev[0].details["error_code"] != emails.CodeExpired {
+		t.Fatalf("events = %+v, want only the expiry", ev)
+	}
+}
+
+// The same for a late permanent failure: the expiry stays the only event.
+func TestCleanupDuringSendWinsOverLateFailure(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	pool, projectID := setup(t)
+	e := queued(t, pool, projectID)
+	p := &fakeProvider{}
+	d := dispatcher(pool, p, nil)
+	var log changeLog
+	d.Events().OnStatusChange(log.hook)
+	p.send = func(context.Context, delivery.Message) (delivery.Result, error) {
+		if _, err := pool.Exec(ctx, "UPDATE emails SET created_at = now() - interval '8 days' WHERE id = $1", e.ID); err != nil {
+			t.Error(err)
+		}
+		if err := d.Cleanup(ctx); err != nil {
+			t.Error(err)
+		}
+		return delivery.Result{}, &delivery.Error{Class: delivery.ClassRejected, Code: 550}
+	}
+	if err := d.SendEmail(ctx, args(e), attempt(1)); err != nil {
+		t.Fatal(err)
+	}
+	if s := state(t, pool, e.ID); s.status != "failed" || s.code() != emails.CodeExpired {
+		t.Fatalf("late failure overwrote the expiry: %+v", s)
+	}
+	if ev := eventsOf(t, pool, e.ID); len(ev) != 1 || ev[0].details["error_code"] != emails.CodeExpired {
+		t.Fatalf("events = %+v, want only the expiry", ev)
+	}
+	if got := log.statuses(); len(got) != 1 || got[0] != "failed" {
+		t.Fatalf("status changes = %v, want [failed]", got)
 	}
 }
 
