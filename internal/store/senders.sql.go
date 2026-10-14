@@ -101,11 +101,16 @@ func (q *Queries) ListSenderIdentities(ctx context.Context, arg ListSenderIdenti
 }
 
 const removeSenderIdentity = `-- name: RemoveSenderIdentity :execrows
-DELETE FROM sender_identities WHERE id = $1
+DELETE FROM sender_identities WHERE id = $1 AND project_id = $2
 `
 
-func (q *Queries) RemoveSenderIdentity(ctx context.Context, id uuid.UUID) (int64, error) {
-	result, err := q.db.Exec(ctx, removeSenderIdentity, id)
+type RemoveSenderIdentityParams struct {
+	ID        uuid.UUID
+	ProjectID uuid.UUID
+}
+
+func (q *Queries) RemoveSenderIdentity(ctx context.Context, arg RemoveSenderIdentityParams) (int64, error) {
+	result, err := q.db.Exec(ctx, removeSenderIdentity, arg.ID, arg.ProjectID)
 	if err != nil {
 		return 0, err
 	}
@@ -114,11 +119,16 @@ func (q *Queries) RemoveSenderIdentity(ctx context.Context, id uuid.UUID) (int64
 
 const verifySenderIdentity = `-- name: VerifySenderIdentity :execrows
 UPDATE sender_identities SET status = 'verified', verified_at = now()
-WHERE id = $1 AND status = 'pending'
+WHERE id = $1 AND project_id = $2 AND status = 'pending'
 `
 
-func (q *Queries) VerifySenderIdentity(ctx context.Context, id uuid.UUID) (int64, error) {
-	result, err := q.db.Exec(ctx, verifySenderIdentity, id)
+type VerifySenderIdentityParams struct {
+	ID        uuid.UUID
+	ProjectID uuid.UUID
+}
+
+func (q *Queries) VerifySenderIdentity(ctx context.Context, arg VerifySenderIdentityParams) (int64, error) {
+	result, err := q.db.Exec(ctx, verifySenderIdentity, arg.ID, arg.ProjectID)
 	if err != nil {
 		return 0, err
 	}

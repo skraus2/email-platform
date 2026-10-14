@@ -6,10 +6,10 @@ RETURNING *;
 
 -- name: VerifySenderIdentity :execrows
 UPDATE sender_identities SET status = 'verified', verified_at = now()
-WHERE id = $1 AND status = 'pending';
+WHERE id = $1 AND project_id = $2 AND status = 'pending';
 
 -- name: RemoveSenderIdentity :execrows
-DELETE FROM sender_identities WHERE id = $1;
+DELETE FROM sender_identities WHERE id = $1 AND project_id = $2;
 
 -- name: ListSenderIdentities :many
 SELECT * FROM sender_identities WHERE project_id = $1 ORDER BY value LIMIT $2;

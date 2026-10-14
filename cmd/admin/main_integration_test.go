@@ -43,18 +43,19 @@ func TestSenderCommands(t *testing.T) {
 		"no kind":        {"sender", "add", "-project", project},
 		"bad project":    {"sender", "add", "-project", "nope", "-domain", "a.test"},
 		"duplicate":      {"sender", "add", "-project", project, "-domain", "EXAMPLE.test"},
-		"bad id":         {"sender", "verify", "-id", "nope"},
-		"unknown remove": {"sender", "remove", "-id", "00000000-0000-0000-0000-000000000000"},
+		"bad id":         {"sender", "verify", "-project", project, "-id", "nope"},
+		"unknown remove": {"sender", "remove", "-project", project, "-id", "00000000-0000-0000-0000-000000000000"},
+		"no project":     {"sender", "verify", "-id", "00000000-0000-0000-0000-000000000000"},
 	} {
 		if _, err := admin(t, args...); err == nil {
 			t.Errorf("%s: accepted", name)
 		}
 	}
 
-	if _, err := admin(t, "sender", "verify", "-id", id); err != nil {
+	if _, err := admin(t, "sender", "verify", "-project", project, "-id", id); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := admin(t, "sender", "verify", "-id", id); err == nil {
+	if _, err := admin(t, "sender", "verify", "-project", project, "-id", id); err == nil {
 		t.Error("second verify accepted; want an error for an already verified identity")
 	}
 	out, err = admin(t, "sender", "list", "-project", project)
@@ -64,7 +65,7 @@ func TestSenderCommands(t *testing.T) {
 	if !strings.Contains(out, id) || !strings.Contains(out, "verified") {
 		t.Fatalf("list = %q", out)
 	}
-	if _, err := admin(t, "sender", "remove", "-id", id); err != nil {
+	if _, err := admin(t, "sender", "remove", "-project", project, "-id", id); err != nil {
 		t.Fatal(err)
 	}
 	if out, err := admin(t, "sender", "list", "-project", project); err != nil || strings.Contains(out, id) {

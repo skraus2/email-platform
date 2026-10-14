@@ -78,19 +78,20 @@ func AddSender(ctx context.Context, q *store.Queries, projectID uuid.UUID, kind 
 
 // VerifySender marks a pending identity verified. It is the operator's
 // assertion that the provider has verified the identity; ok is false if the
-// identity does not exist or is already verified.
-func VerifySender(ctx context.Context, q *store.Queries, id uuid.UUID) (bool, error) {
-	n, err := q.VerifySenderIdentity(ctx, id)
+// project has no such identity or it is already verified.
+func VerifySender(ctx context.Context, q *store.Queries, projectID, id uuid.UUID) (bool, error) {
+	n, err := q.VerifySenderIdentity(ctx, store.VerifySenderIdentityParams{ID: id, ProjectID: projectID})
 	if err != nil {
 		return false, fmt.Errorf("verify sender identity: %w", err)
 	}
 	return n > 0, nil
 }
 
-// RemoveSender deletes an identity; removed is false if it did not exist.
+// RemoveSender deletes an identity of the project; removed is false if the
+// project has no such identity.
 // Emails already accepted from it are not affected.
-func RemoveSender(ctx context.Context, q *store.Queries, id uuid.UUID) (bool, error) {
-	n, err := q.RemoveSenderIdentity(ctx, id)
+func RemoveSender(ctx context.Context, q *store.Queries, projectID, id uuid.UUID) (bool, error) {
+	n, err := q.RemoveSenderIdentity(ctx, store.RemoveSenderIdentityParams{ID: id, ProjectID: projectID})
 	if err != nil {
 		return false, fmt.Errorf("remove sender identity: %w", err)
 	}

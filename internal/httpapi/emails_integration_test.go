@@ -310,7 +310,7 @@ func TestPostEmailUnverifiedSenderOverHTTP(t *testing.T) {
 	if code, _ := s.do(t, http.MethodPost, "/v1/emails", token, sendBody); code != http.StatusUnprocessableEntity {
 		t.Fatalf("pending identity: POST = %d, want 422", code)
 	}
-	if _, err := emails.VerifySender(ctx, s.q, id.ID); err != nil {
+	if _, err := emails.VerifySender(ctx, s.q, projectID, id.ID); err != nil {
 		t.Fatal(err)
 	}
 	if code, body := s.do(t, http.MethodPost, "/v1/emails", token, sendBody); code != http.StatusAccepted {

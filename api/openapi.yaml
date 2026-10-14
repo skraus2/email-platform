@@ -163,6 +163,7 @@ paths:
         - name: limit
           in: query
           required: false
+          description: Page size; values outside 1–100 give `400 invalid_limit`.
           schema:
             type: integer
             minimum: 1
@@ -209,17 +210,21 @@ webhooks:
         secret exactly as shown (the full `whsec_…` string as UTF-8 bytes)
         over `<Webhook-Timestamp>.<raw request body>` and compare it in
         constant time with each hex value after `v1=` in
-        `Webhook-Signature` (space-separated; more than one during a secret
-        rotation); reject timestamps more than 5 minutes away from your
-        clock; use `Webhook-Id` (equal to the body `id`) to drop replays and
-        duplicates. A retry repeats the identical body with a new timestamp
+        `Webhook-Signature`. Accept the request if any `v1=` value matches,
+        ignore values of other versions, reject it if none matches. The
+        header currently always carries one value (rotating a secret
+        replaces it immediately); accept several for forward compatibility.
+        Reject timestamps more than 5 minutes away from your clock, and use
+        `Webhook-Id` (equal to the body `id`) to drop replays and
+        duplicates: keep seen ids at least for the timestamp tolerance,
+        better for the maximum retry duration (about 5 hours). A retry repeats the identical body with a new timestamp
         and signature. Events carry no ordering guarantee; fetch
         `GET /v1/emails/{id}` for the current status.
 
         Respond with any `2xx` to acknowledge receipt (not processing).
-        Timeouts (10 s), connection errors, `408`, `429` and `5xx` are
-        retried with exponential backoff and jitter (12 attempts within
-        at most about 5 hours by default); any other status, including redirects,
+        Timeouts (10 s by default), connection errors, `408`, `429` and
+        `5xx` are retried with exponential backoff and jitter (12 attempts
+        within about 5 hours by default); any other status, including redirects,
         ends the delivery as failed.
       parameters:
         - name: Webhook-Id
@@ -335,7 +340,9 @@ components:
 
         `provider_timeout` and `provider_protocol_error` mean the outcome of
         that attempt is unknown: a `failed` email with one of these codes may
-        still have been delivered. The same holds for `suppressed` and
+        still have been delivered. With a real provider, the same holds for
+        `provider_unreachable` when the provider answered with a server error
+        (5xx) rather than refusing the connection. The same holds for `suppressed` and
         `project_disabled` on an email with `attempts` > 0 whose earlier
         attempt ended with an unknown outcome: no further attempt is made.
       enum:
@@ -483,7 +490,7 @@ components:
         created_at:
           type: string
           format: date-time
-          description: When the platform recorded the status change.
+          description: When the platform received and stored the event.
         data:
           type: object
           required: [email_id, project_id]
@@ -510,7 +517,7 @@ components:
               description: Human-readable explanation; never contains internals.
   responses:
     BadRequest:
-      description: "Malformed request: `invalid_json`, `invalid_idempotency_key` or `invalid_cursor`."
+      description: "Malformed request: `invalid_json`, `invalid_idempotency_key`, `invalid_cursor` or `invalid_limit`."
       content:
         application/json:
           schema:

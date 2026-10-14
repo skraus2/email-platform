@@ -14,8 +14,8 @@
 //	admin suppression remove -project <uuid> -email <addr>
 //	admin sender add -project <uuid> (-address <addr> | -domain <domain>)
 //	admin sender list -project <uuid> [-limit 50]
-//	admin sender verify -id <uuid>
-//	admin sender remove -id <uuid>
+//	admin sender verify -project <uuid> -id <uuid>
+//	admin sender remove -project <uuid> -id <uuid>
 package main
 
 import (
@@ -54,8 +54,8 @@ const usage = `usage:
   admin suppression remove -project <uuid> -email <addr>
   admin sender add -project <uuid> (-address <addr> | -domain <domain>)
   admin sender list -project <uuid> [-limit 50]
-  admin sender verify -id <uuid>
-  admin sender remove -id <uuid>`
+  admin sender verify -project <uuid> -id <uuid>
+  admin sender remove -project <uuid> -id <uuid>`
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -205,26 +205,30 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		}
 		fmt.Fprintf(stdout, "%s\t%s\t%s\t%s\n", s.ID, s.Kind, emails.TerminalSafe(s.Value), s.Status)
 	case "sender verify", "sender remove":
+		pid, err := uuid.Parse(*project)
+		if err != nil {
+			return errors.New("-project must be a project uuid")
+		}
 		sid, err := uuid.Parse(*id)
 		if err != nil {
 			return errors.New("-id must be a sender identity uuid")
 		}
 		if args[1] == "verify" {
-			ok, err := emails.VerifySender(ctx, q, sid)
+			ok, err := emails.VerifySender(ctx, q, pid, sid)
 			if err != nil {
 				return err
 			}
 			if !ok {
-				return errors.New("no pending sender identity with this id")
+				return errors.New("no pending sender identity with this id in this project")
 			}
 			return nil
 		}
-		ok, err := emails.RemoveSender(ctx, q, sid)
+		ok, err := emails.RemoveSender(ctx, q, pid, sid)
 		if err != nil {
 			return err
 		}
 		if !ok {
-			return errors.New("no sender identity with this id")
+			return errors.New("no sender identity with this id in this project")
 		}
 	default:
 		return errors.New(usage)

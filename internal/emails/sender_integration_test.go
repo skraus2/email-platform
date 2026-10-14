@@ -58,11 +58,24 @@ func TestSenderAdmin(t *testing.T) {
 		}
 	}
 
-	ok, err := emails.VerifySender(ctx, q, addr.ID)
+	// Verify and remove are scoped by project: another project's id is
+	// unknown there.
+	other, err := auth.CreateProject(ctx, q, "other")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := emails.VerifySender(ctx, q, other.ID, addr.ID); err != nil || ok {
+		t.Fatalf("verify via another project = %v, %v; want refused", ok, err)
+	}
+	if ok, err := emails.RemoveSender(ctx, q, other.ID, addr.ID); err != nil || ok {
+		t.Fatalf("remove via another project = %v, %v; want refused", ok, err)
+	}
+
+	ok, err := emails.VerifySender(ctx, q, projectID, addr.ID)
 	if err != nil || !ok {
 		t.Fatalf("verify = %v, %v", ok, err)
 	}
-	if ok, err := emails.VerifySender(ctx, q, addr.ID); err != nil || ok {
+	if ok, err := emails.VerifySender(ctx, q, projectID, addr.ID); err != nil || ok {
 		t.Fatalf("second verify = %v, %v; want already verified", ok, err)
 	}
 	list, err := emails.ListSenders(ctx, q, projectID, 0)
@@ -74,19 +87,15 @@ func TestSenderAdmin(t *testing.T) {
 	}
 
 	// The same identity may exist in another project independently.
-	other, err := auth.CreateProject(ctx, q, "other")
-	if err != nil {
-		t.Fatal(err)
-	}
 	if _, err := emails.AddSender(ctx, q, other.ID, emails.SenderAddress, "noreply@example.test"); err != nil {
 		t.Fatalf("other project: %v", err)
 	}
 
-	removed, err := emails.RemoveSender(ctx, q, dom.ID)
+	removed, err := emails.RemoveSender(ctx, q, projectID, dom.ID)
 	if err != nil || !removed {
 		t.Fatalf("remove = %v, %v", removed, err)
 	}
-	if removed, err := emails.RemoveSender(ctx, q, dom.ID); err != nil || removed {
+	if removed, err := emails.RemoveSender(ctx, q, projectID, dom.ID); err != nil || removed {
 		t.Fatalf("second remove = %v, %v", removed, err)
 	}
 	if list, err := emails.ListSenders(ctx, q, other.ID, 0); err != nil || len(list) != 1 {
@@ -101,7 +110,7 @@ func verifiedSender(t *testing.T, q *store.Queries, projectID uuid.UUID, kind em
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ok, err := emails.VerifySender(ctx, q, id.ID); err != nil || !ok {
+	if ok, err := emails.VerifySender(ctx, q, projectID, id.ID); err != nil || !ok {
 		t.Fatalf("verify = %v, %v", ok, err)
 	}
 	return id
@@ -205,7 +214,7 @@ func TestReplayAfterSenderRemoved(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := emails.RemoveSender(ctx, q, id.ID); err != nil {
+	if _, err := emails.RemoveSender(ctx, q, projectID, id.ID); err != nil {
 		t.Fatal(err)
 	}
 	again, err := svc.Create(ctx, projectID, keyed("k1"))
@@ -214,5 +223,40 @@ func TestReplayAfterSenderRemoved(t *testing.T) {
 	}
 	if _, err := svc.Create(ctx, projectID, keyed("k2")); !errors.Is(err, emails.ErrSenderNotVerified) {
 		t.Fatalf("new key: err = %v, want ErrSenderNotVerified", err)
+	}
+	// The refusal stored no key: the same key works once the sender is
+	// verified again.
+	verifiedSender(t, q, projectID, emails.SenderDomain, "example.test")
+	retry, err := svc.Create(ctx, projectID, keyed("k2"))
+	if err != nil || retry.Replayed || retry.ID == first.ID {
+		t.Fatalf("retry after verification = %+v, %v; want a new email", retry, err)
+	}
+}
+
+// The sender check comes before the rate limit: an exhausted window does not
+// hide the more specific refusal.
+func TestSenderCheckedBeforeRateLimit(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	pool, projectID := setup(t)
+	q := store.New(pool)
+	enq, err := jobs.NewEnqueuer(pool, slog.New(slog.DiscardHandler), testMaxAttempts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := emails.NewService(pool, enq, slog.New(slog.DiscardHandler), 1)
+	svc.RequireVerifiedSenders()
+	verifiedSender(t, q, projectID, emails.SenderAddress, "billing@corp.test")
+	ok := input
+	ok.From = "billing@corp.test"
+	if _, err := svc.Create(ctx, projectID, ok); err != nil {
+		t.Fatal(err)
+	}
+	var limited *emails.RateLimitError
+	if _, err := svc.Create(ctx, projectID, ok); !errors.As(err, &limited) {
+		t.Fatalf("second verified send: err = %v, want RateLimitError", err)
+	}
+	if _, err := svc.Create(ctx, projectID, input); !errors.Is(err, emails.ErrSenderNotVerified) {
+		t.Fatalf("unverified sender in an exhausted window: err = %v, want ErrSenderNotVerified", err)
 	}
 }
