@@ -91,18 +91,22 @@ func TestParseRejectsInvalid(t *testing.T) {
 	send := fixture(t, "send")
 	bounce := fixture(t, "bounce_permanent")
 	for name, msg := range map[string]string{
-		"not json":           "{",
-		"no event type":      strings.Replace(send, `"eventType":"Send",`, ``, 1),
-		"no tags":            strings.Replace(send, `"email_id":["0199e3a0-1c2d-7e3f-8a4b-5c6d7e8f9a0b"],`, ``, 1),
-		"tag not uuid":       strings.Replace(send, `"0199e3a0-1c2d-7e3f-8a4b-5c6d7e8f9a0b"`, `"x"`, 1),
-		"two email tags":     strings.Replace(send, `["0199e3a0-1c2d-7e3f-8a4b-5c6d7e8f9a0b"]`, `["0199e3a0-1c2d-7e3f-8a4b-5c6d7e8f9a0b","0199e3a0-1c2d-7e3f-8a4b-5c6d7e8f9a0c"]`, 1),
-		"nil uuid tag":       strings.Replace(send, `"0199e39f-0000-7000-8000-000000000001"`, `"00000000-0000-0000-0000-000000000000"`, 1),
-		"no message id":      strings.Replace(send, `"messageId":"0107019a-1111-2222-3333-444444444444-000000",`, ``, 1),
-		"bad timestamp":      strings.Replace(send, `"timestamp":"2026-10-14T07:00:00.000Z"`, `"timestamp":"yesterday"`, 1),
-		"bounce no feedback": strings.Replace(bounce, `"feedbackId":"0107019a-bounce-feedback-0001",`, ``, 1),
-		"bounce bad type":    strings.Replace(bounce, `"bounceType":"Permanent"`, `"bounceType":"permanent"`, 1),
-		"bounce no section":  `{"eventType":"Bounce",` + send[strings.Index(send, `"mail"`):strings.Index(send, `,"send"`)] + `}`,
-		"long feedback id":   strings.Replace(bounce, `0107019a-bounce-feedback-0001`, strings.Repeat("f", 600), 1),
+		"not json":              "{",
+		"no event type":         strings.Replace(send, `"eventType":"Send",`, ``, 1),
+		"no tags":               strings.Replace(send, `"email_id":["0199e3a0-1c2d-7e3f-8a4b-5c6d7e8f9a0b"],`, ``, 1),
+		"tag not uuid":          strings.Replace(send, `"0199e3a0-1c2d-7e3f-8a4b-5c6d7e8f9a0b"`, `"x"`, 1),
+		"two email tags":        strings.Replace(send, `["0199e3a0-1c2d-7e3f-8a4b-5c6d7e8f9a0b"]`, `["0199e3a0-1c2d-7e3f-8a4b-5c6d7e8f9a0b","0199e3a0-1c2d-7e3f-8a4b-5c6d7e8f9a0c"]`, 1),
+		"nil uuid tag":          strings.Replace(send, `"0199e39f-0000-7000-8000-000000000001"`, `"00000000-0000-0000-0000-000000000000"`, 1),
+		"no message id":         strings.Replace(send, `"messageId":"0107019a-1111-2222-3333-444444444444-000000",`, ``, 1),
+		"bad timestamp":         strings.Replace(send, `"timestamp":"2026-10-14T07:00:00.000Z"`, `"timestamp":"yesterday"`, 1),
+		"bounce no feedback":    strings.Replace(bounce, `"feedbackId":"0107019a-bounce-feedback-0001",`, ``, 1),
+		"bounce bad type":       strings.Replace(bounce, `"bounceType":"Permanent"`, `"bounceType":"permanent"`, 1),
+		"bounce no section":     `{"eventType":"Bounce",` + send[strings.Index(send, `"mail"`):strings.Index(send, `,"send"`)] + `}`,
+		"long feedback id":      strings.Replace(bounce, `0107019a-bounce-feedback-0001`, strings.Repeat("f", 600), 1),
+		"zero time":             strings.Replace(send, `"timestamp":"2026-10-14T07:00:00.000Z"`, `"timestamp":"0001-01-01T00:00:00Z"`, 1),
+		"delivery no section":   strings.Replace(fixture(t, "delivery"), `"delivery":{`, `"x":{`, 1),
+		"delay no section":      strings.Replace(fixture(t, "delivery_delay"), `"deliveryDelay":{`, `"x":{`, 1),
+		"complaint no feedback": strings.Replace(fixture(t, "complaint"), `"feedbackId":"0107019a-complaint-feedback-0001",`, ``, 1),
 	} {
 		if _, err := Parse(msg); !errors.Is(err, ErrInvalid) {
 			t.Errorf("%s: err = %v, want ErrInvalid", name, err)
@@ -110,15 +114,22 @@ func TestParseRejectsInvalid(t *testing.T) {
 	}
 }
 
-// Optional details that are not plain short values are dropped, never stored.
+// Optional details that are not documented SES values are dropped, never
+// stored or forwarded.
 func TestParseDropsOddDetails(t *testing.T) {
-	msg := strings.Replace(fixture(t, "bounce_permanent"), `"bounceSubType":"General"`, `"bounceSubType":"line\nbreak"`, 1)
-	ev, err := Parse(msg)
-	if err != nil {
-		t.Fatal(err)
+	for _, odd := range []string{`line\nbreak`, `mx.example.test`, `Unknown`} {
+		msg := strings.Replace(fixture(t, "bounce_permanent"), `"bounceSubType":"General"`, `"bounceSubType":"`+odd+`"`, 1)
+		ev, err := Parse(msg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := ev.Details["bounce_subtype"]; ok || ev.Details["bounce_type"] != "Permanent" {
+			t.Fatalf("%s: details = %v", odd, ev.Details)
+		}
 	}
-	if _, ok := ev.Details["bounce_subtype"]; ok || ev.Details["bounce_type"] != "Permanent" {
-		t.Fatalf("details = %v", ev.Details)
+	msg := strings.Replace(fixture(t, "complaint"), `"complaintFeedbackType":"abuse"`, `"complaintFeedbackType":"spam from a@b"`, 1)
+	if ev, err := Parse(msg); err != nil || len(ev.Details) != 0 {
+		t.Fatalf("complaint details = %v, %v", ev.Details, err)
 	}
 }
 

@@ -116,7 +116,7 @@ func Parse(message string) (events.ProviderEvent, error) {
 		}
 		ev.Type, ev.ProviderEventID = "bounced", b.FeedbackID
 		ev.Details["bounce_type"] = b.BounceType
-		optional(ev.Details, "bounce_subtype", b.BounceSubType)
+		optional(ev.Details, "bounce_subtype", b.BounceSubType, bounceSubTypes)
 		if ev.OccurredAt, err = timestamp(b.Timestamp); err != nil {
 			return events.ProviderEvent{}, err
 		}
@@ -126,7 +126,7 @@ func Parse(message string) (events.ProviderEvent, error) {
 			return events.ProviderEvent{}, invalid("complaint without a usable feedback id")
 		}
 		ev.Type, ev.ProviderEventID = "complained", c.FeedbackID
-		optional(ev.Details, "complaint_feedback_type", c.ComplaintFeedbackType)
+		optional(ev.Details, "complaint_feedback_type", c.ComplaintFeedbackType, feedbackTypes)
 		if ev.OccurredAt, err = timestamp(c.Timestamp); err != nil {
 			return events.ProviderEvent{}, err
 		}
@@ -140,7 +140,7 @@ func Parse(message string) (events.ProviderEvent, error) {
 		}
 		ev.Type = "delivery_delayed"
 		ev.ProviderEventID = "delay:" + msgID + ":" + ev.OccurredAt.UTC().Format(time.RFC3339)
-		optional(ev.Details, "delay_type", d.DelayType)
+		optional(ev.Details, "delay_type", d.DelayType, delayTypes)
 	}
 	return ev, nil
 }
@@ -160,22 +160,33 @@ func tag(tags map[string][]string, name string) (uuid.UUID, error) {
 
 func timestamp(s string) (time.Time, error) {
 	t, err := time.Parse(time.RFC3339Nano, s)
-	if err != nil {
+	if err != nil || t.IsZero() {
 		return time.Time{}, invalid("bad timestamp")
 	}
 	return t.UTC(), nil
 }
 
-// optional keeps a detail only if it is a short printable value without
-// characters that could carry an address.
-func optional(details map[string]string, key, v string) {
-	if v == "" || len(v) > 64 {
-		return
+// Documented SES values; anything else (a future value, free text) is
+// dropped rather than stored and forwarded.
+var (
+	bounceSubTypes = set("Undetermined", "General", "NoEmail", "Suppressed", "OnAccountSuppressionList",
+		"MailboxFull", "MessageTooLarge", "ContentRejected", "AttachmentRejected")
+	feedbackTypes = set("abuse", "auth-failure", "fraud", "not-spam", "other", "virus") // RFC 5965
+	delayTypes    = set("InternalFailure", "General", "MailboxFull", "SpamDetected", "RecipientServerError",
+		"IPFailure", "TransientCommunicationFailure", "BYOIPHostNameLookupUnavailable", "Undetermined", "SendingDeferral")
+)
+
+func set(values ...string) map[string]bool {
+	m := make(map[string]bool, len(values))
+	for _, v := range values {
+		m[v] = true
 	}
-	for i := range len(v) {
-		if v[i] < 0x20 || v[i] > 0x7e || v[i] == '@' {
-			return
-		}
+	return m
+}
+
+// optional keeps a detail only if it is one of the documented values.
+func optional(details map[string]string, key, v string, allowed map[string]bool) {
+	if allowed[v] {
+		details[key] = v
 	}
-	details[key] = v
 }

@@ -80,7 +80,7 @@ func (s *signer) envelope(t *testing.T, message string, mutate, tamper func(map[
 }
 
 func (s *signer) verifier(fetches *atomic.Int32) *Verifier {
-	return NewVerifier(region, topicARN, func(_ context.Context, url string) ([]byte, error) {
+	v, err := newVerifier(region, topicARN, func(_ context.Context, url string) ([]byte, error) {
 		if fetches != nil {
 			fetches.Add(1)
 		}
@@ -89,6 +89,46 @@ func (s *signer) verifier(fetches *atomic.Int32) *Verifier {
 		}
 		return s.certPEM, nil
 	})
+	if err != nil {
+		panic(err)
+	}
+	return v
+}
+
+// The signed string, written out by hand from the documented SNS format for
+// Notification messages: fields in this order, each "Name\nValue\n",
+// Subject only when present.
+func TestStringToSignFormat(t *testing.T) {
+	base := map[string]string{
+		"Type": "Notification", "MessageId": "m-1", "TopicArn": "arn:t", "Message": "hello\nworld",
+		"Timestamp": "2026-10-14T08:00:00.000Z", "SignatureVersion": "2", "SigningCertURL": "https://x/y.pem",
+	}
+	want := "Message\nhello\nworld\nMessageId\nm-1\nTimestamp\n2026-10-14T08:00:00.000Z\nTopicArn\narn:t\nType\nNotification\n"
+	if got := stringToSign(base); got != want {
+		t.Fatalf("without subject:\n%q\nwant\n%q", got, want)
+	}
+	base["Subject"] = "Amazon SES"
+	want = "Message\nhello\nworld\nMessageId\nm-1\nSubject\nAmazon SES\nTimestamp\n2026-10-14T08:00:00.000Z\nTopicArn\narn:t\nType\nNotification\n"
+	if got := stringToSign(base); got != want {
+		t.Fatalf("with subject:\n%q\nwant\n%q", got, want)
+	}
+}
+
+func TestNewVerifierValidatesConfig(t *testing.T) {
+	if _, err := NewVerifier(region, topicARN); err != nil {
+		t.Fatal(err)
+	}
+	for name, tc := range map[string][2]string{
+		"empty region":          {"", topicARN},
+		"bad region":            {"EU-central-1", topicARN},
+		"topic in other region": {"us-east-1", topicARN},
+		"not a topic":           {region, "arn:aws:sqs:eu-central-1:123456789012:q"},
+		"short account":         {region, "arn:aws:sns:eu-central-1:1234:t"},
+	} {
+		if _, err := NewVerifier(tc[0], tc[1]); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
 }
 
 func TestVerifyAcceptsValidNotification(t *testing.T) {
@@ -148,6 +188,12 @@ func TestVerifyRejects(t *testing.T) {
 		"subscription confirmation": {s.envelope(t, "{}", func(e map[string]string) { e["Type"] = "SubscriptionConfirmation" }, nil), s.verifier(nil), ErrNotNotification},
 		"not json":                  {[]byte("not json"), s.verifier(nil), ErrMalformed},
 		"missing message":           {s.envelope(t, "", nil, func(e map[string]string) { delete(e, "Message") }), s.verifier(nil), ErrMalformed},
+		"message id not uuid":       {s.envelope(t, "{}", func(e map[string]string) { e["MessageId"] = "x\nMessageId\ny" }, nil), s.verifier(nil), ErrMalformed},
+		"bad timestamp":             {s.envelope(t, "{}", func(e map[string]string) { e["Timestamp"] = "yesterday" }, nil), s.verifier(nil), ErrMalformed},
+		"subject line break":        {s.envelope(t, "{}", func(e map[string]string) { e["Subject"] = "a\nTimestamp" }, nil), s.verifier(nil), ErrMalformed},
+		"china host": {s.envelope(t, "{}", func(e map[string]string) {
+			e["SigningCertURL"] = "https://sns.eu-central-1.amazonaws.com.cn/x.pem"
+		}, nil), s.verifier(nil), ErrCertURL},
 	} {
 		if _, err := tc.v.Verify(context.Background(), tc.body); !errors.Is(err, tc.want) {
 			t.Errorf("%s: err = %v, want %v", name, err, tc.want)
@@ -165,6 +211,10 @@ func TestVerifyRejectsBadCertificates(t *testing.T) {
 			t.Errorf("%s: err = %v, want ErrCertificate", name, err)
 		}
 	}
+	missing := &Verifier{region: region, topicARN: topicARN, fetch: func(context.Context, string) ([]byte, error) { return nil, errCertMissing }, certs: map[string]*x509.Certificate{}}
+	if _, err := missing.Verify(context.Background(), validSigner(t).envelope(t, "{}", nil, nil)); !errors.Is(err, ErrCertificate) {
+		t.Errorf("4xx from the pinned host: err = %v, want final ErrCertificate", err)
+	}
 	garbage := &Verifier{region: region, topicARN: topicARN, fetch: func(context.Context, string) ([]byte, error) { return []byte("no pem"), nil }, certs: map[string]*x509.Certificate{}}
 	s := validSigner(t)
 	if _, err := garbage.Verify(context.Background(), s.envelope(t, "{}", nil, nil)); !errors.Is(err, ErrCertificate) {
@@ -179,7 +229,10 @@ func TestVerifyRejectsBadCertificates(t *testing.T) {
 // The real fetcher refuses anything but the pinned host, even when called
 // directly, and never contacts AWS in this test.
 func TestDefaultFetcherRefusesOtherHosts(t *testing.T) {
-	v := NewVerifier(region, topicARN, nil)
+	v, err := NewVerifier(region, topicARN)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := v.fetch(context.Background(), "https://example.test/x.pem"); err == nil {
 		t.Fatal("fetched from a foreign host")
 	}

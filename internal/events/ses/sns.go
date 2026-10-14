@@ -16,10 +16,12 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"slices"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // Rejection reasons. All except ErrCertFetch are final: the message can
@@ -35,6 +37,9 @@ var (
 	ErrCertFetch        = errors.New("sns: signing certificate could not be fetched")
 	ErrBadSignature     = errors.New("sns: signature does not verify")
 )
+
+// errCertMissing: the pinned host answered 4xx for the certificate URL.
+var errCertMissing = errors.New("certificate not found")
 
 // Fetcher loads a signing certificate (PEM) from an already checked URL.
 type Fetcher func(ctx context.Context, url string) ([]byte, error)
@@ -57,14 +62,32 @@ const (
 	certName     = "sns.amazonaws.com"
 )
 
-// NewVerifier builds a Verifier. fetch nil means fetching over HTTPS from the
-// pinned SNS host; tests pass their own.
-func NewVerifier(region, topicARN string, fetch Fetcher) *Verifier {
-	v := &Verifier{region: region, topicARN: topicARN, fetch: fetch, certs: map[string]*x509.Certificate{}}
-	if v.fetch == nil {
-		v.fetch = v.fetchHTTPS
+var (
+	regionPattern = regexp.MustCompile(`^[a-z]{2}(-gov|-iso[a-z]?)?-[a-z]+-[0-9]+$`)
+	topicPattern  = regexp.MustCompile(`^arn:aws[a-z-]*:sns:([a-z0-9-]+):[0-9]{12}:[A-Za-z0-9_-]{1,256}$`)
+)
+
+// NewVerifier builds a Verifier for one topic. Signing certificates are only
+// ever fetched over HTTPS from the pinned SNS host of the region.
+func NewVerifier(region, topicARN string) (*Verifier, error) {
+	v, err := newVerifier(region, topicARN, nil)
+	if err != nil {
+		return nil, err
 	}
-	return v
+	v.fetch = v.fetchHTTPS
+	return v, nil
+}
+
+// newVerifier lets tests replace the certificate fetch.
+func newVerifier(region, topicARN string, fetch Fetcher) (*Verifier, error) {
+	if !regionPattern.MatchString(region) {
+		return nil, fmt.Errorf("invalid AWS region %q", region)
+	}
+	m := topicPattern.FindStringSubmatch(topicARN)
+	if m == nil || m[1] != region {
+		return nil, errors.New("topic ARN must be an SNS topic ARN in the configured region")
+	}
+	return &Verifier{region: region, topicARN: topicARN, fetch: fetch, certs: map[string]*x509.Certificate{}}, nil
 }
 
 type envelope struct {
@@ -85,7 +108,23 @@ func (v *Verifier) Verify(ctx context.Context, body []byte) (string, error) {
 		return "", ErrMalformed
 	}
 	var env envelope
-	if err := json.Unmarshal(body, &env); err != nil || env.Message == nil || env.MessageID == "" || env.Timestamp == "" || env.Signature == "" {
+	if err := json.Unmarshal(body, &env); err != nil || env.Message == nil || env.Signature == "" {
+		return "", ErrMalformed
+	}
+	// Every signed field but Message is a plain value: no line breaks can
+	// shift the "Name\nValue\n" framing of the signed string.
+	if _, err := uuid.Parse(env.MessageID); err != nil || len(env.MessageID) != 36 {
+		return "", ErrMalformed
+	}
+	if _, err := time.Parse(time.RFC3339Nano, env.Timestamp); err != nil {
+		return "", ErrMalformed
+	}
+	for _, f := range []string{env.Type, env.TopicArn, env.SignatureVersion, env.SigningCertURL} {
+		if hasControl(f) {
+			return "", ErrMalformed
+		}
+	}
+	if env.Subject != nil && hasControl(*env.Subject) {
 		return "", ErrMalformed
 	}
 	switch {
@@ -138,15 +177,23 @@ func stringToSign(f map[string]string) string {
 	return b.String()
 }
 
-// allowedCertURL accepts only https://sns.<region>.amazonaws.com/….pem (or
-// the .com.cn domain for China regions), without userinfo or port.
+func hasControl(s string) bool {
+	for i := range len(s) {
+		if s[i] < 0x20 || s[i] == 0x7f {
+			return true
+		}
+	}
+	return false
+}
+
+// allowedCertURL accepts only https://sns.<region>.amazonaws.com/….pem,
+// without userinfo, port, query or fragment.
 func (v *Verifier) allowedCertURL(raw string) bool {
 	u, err := url.Parse(raw)
 	if err != nil || u.Scheme != "https" || u.User != nil || u.Port() != "" || u.RawQuery != "" || u.Fragment != "" {
 		return false
 	}
-	hosts := []string{"sns." + v.region + ".amazonaws.com", "sns." + v.region + ".amazonaws.com.cn"}
-	return slices.Contains(hosts, u.Host) && strings.HasSuffix(u.Path, ".pem")
+	return u.Host == "sns."+v.region+".amazonaws.com" && strings.HasSuffix(u.Path, ".pem")
 }
 
 func (v *Verifier) certificate(ctx context.Context, certURL string) (*x509.Certificate, error) {
@@ -155,6 +202,9 @@ func (v *Verifier) certificate(ctx context.Context, certURL string) (*x509.Certi
 	v.mu.Unlock()
 	if cert == nil {
 		raw, err := v.fetch(ctx, certURL)
+		if errors.Is(err, errCertMissing) {
+			return nil, ErrCertificate
+		}
 		if err != nil {
 			return nil, fmt.Errorf("%w: %w", ErrCertFetch, err)
 		}
@@ -204,6 +254,10 @@ func (v *Verifier) fetchHTTPS(ctx context.Context, certURL string) ([]byte, erro
 		return nil, errors.New("request failed")
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode >= 400 && resp.StatusCode < 500 {
+		// The pinned host says there is no such certificate: final.
+		return nil, errCertMissing
+	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("status %d", resp.StatusCode)
 	}
