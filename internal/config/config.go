@@ -50,6 +50,9 @@ type Config struct {
 	// ProviderRatePerSecond caps messages per second the worker process
 	// hands to the provider.
 	ProviderRatePerSecond float64
+	// JobRescueAfter: a dispatch job still running this long (its worker
+	// died) is handed to another attempt. At least one attempt budget.
+	JobRescueAfter time.Duration
 }
 
 // LookupFunc matches os.LookupEnv so tests can inject an environment.
@@ -118,6 +121,10 @@ func Load(lookup LookupFunc) (Config, error) {
 		errs = append(errs, errors.New("BODY_MAX_AGE must be at most 720h (message content is deleted by then at the latest)"))
 	}
 
+	cfg.JobRescueAfter, errs = positiveDuration(get, "JOB_RESCUE_AFTER", "5m", errs)
+	if cfg.JobRescueAfter > 0 && cfg.ProviderTimeout > 0 && cfg.JobRescueAfter < jobs.AttemptBudget(cfg.ProviderTimeout) {
+		errs = append(errs, fmt.Errorf("JOB_RESCUE_AFTER must be at least %v (PROVIDER_TIMEOUT + 30s), or running sends would be rescued", jobs.AttemptBudget(cfg.ProviderTimeout)))
+	}
 	cfg.ProviderRatePerSecond, errs = rateInRange(get, "PROVIDER_RATE_PER_SECOND", "10", errs)
 	cfg.APIRateLimitPerMinute, errs = intInRange(get, "API_RATE_LIMIT_PER_MINUTE", "600", 1, 1_000_000, errs)
 	cfg.SendMaxAttempts, errs = intInRange(get, "SEND_MAX_ATTEMPTS", "8", 1, maxSendAttempts, errs)

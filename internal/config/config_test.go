@@ -74,6 +74,8 @@ func TestLoadRejectsInvalid(t *testing.T) {
 		{"base delay below 1s", map[string]string{"DATABASE_URL": devURL, "RETRY_BASE_DELAY": "500ms"}, "RETRY_BASE_DELAY"},
 		{"max delay below base", map[string]string{"DATABASE_URL": devURL, "RETRY_BASE_DELAY": "1m", "RETRY_MAX_DELAY": "30s"}, "RETRY_MAX_DELAY"},
 		{"bad max delay", map[string]string{"DATABASE_URL": devURL, "RETRY_MAX_DELAY": "later"}, "RETRY_MAX_DELAY"},
+		{"rescue before job timeout", map[string]string{"DATABASE_URL": devURL, "JOB_RESCUE_AFTER": "30s"}, "JOB_RESCUE_AFTER"},
+		{"bad rescue", map[string]string{"DATABASE_URL": devURL, "JOB_RESCUE_AFTER": "soon"}, "JOB_RESCUE_AFTER"},
 		{"provider rate zero", map[string]string{"DATABASE_URL": devURL, "PROVIDER_RATE_PER_SECOND": "0"}, "PROVIDER_RATE_PER_SECOND"},
 		{"provider rate NaN", map[string]string{"DATABASE_URL": devURL, "PROVIDER_RATE_PER_SECOND": "NaN"}, "PROVIDER_RATE_PER_SECOND"},
 		{"provider rate below minimum", map[string]string{"DATABASE_URL": devURL, "PROVIDER_RATE_PER_SECOND": "0.005"}, "PROVIDER_RATE_PER_SECOND"},
@@ -161,6 +163,9 @@ func TestLoadRetryDefaults(t *testing.T) {
 	cfg, err := Load(env(map[string]string{"DATABASE_URL": devURL}))
 	if err != nil {
 		t.Fatal(err)
+	}
+	if cfg.JobRescueAfter != 5*time.Minute {
+		t.Errorf("JobRescueAfter = %v, want 5m", cfg.JobRescueAfter)
 	}
 	if cfg.ProviderRatePerSecond != 10 {
 		t.Errorf("ProviderRatePerSecond = %v, want 10", cfg.ProviderRatePerSecond)

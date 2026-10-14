@@ -74,7 +74,7 @@ func run() error {
 		// A job may run for one provider call plus a few DB round trips; a job
 		// still "running" well past that belongs to a dead worker.
 		JobTimeout:           jobs.AttemptBudget(cfg.ProviderTimeout),
-		RescueStuckJobsAfter: 5 * time.Minute,
+		RescueStuckJobsAfter: cfg.JobRescueAfter,
 	})
 	if err != nil {
 		return err

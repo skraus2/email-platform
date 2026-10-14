@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/skraus2/email-platform/internal/auth"
 	"github.com/skraus2/email-platform/internal/emails"
@@ -264,4 +266,22 @@ func TestCreateEmailRecipientSuppressed(t *testing.T) {
 		t.Fatalf("code = %d, want 422", rec.Code)
 	}
 	assertErrorCode(t, rec, "recipient_suppressed")
+}
+
+// A database outage is "retry later" (503), not an internal error (500).
+func TestEmailsDatabaseUnavailable(t *testing.T) {
+	down := &pgconn.PgError{Code: "57P03"}
+	s, _ := emailServer(t, &fakeEmails{err: fmt.Errorf("insert email: %w", down)}, principal)
+	rec := post(t, s, okBody, nil)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("POST code = %d, want 503", rec.Code)
+	}
+	assertErrorCode(t, rec, "service_unavailable")
+
+	g := New(Deps{Logger: quietLogger(), Authenticate: fixedAuth(principal), Emails: &getEmails{err: down}})
+	rec = get(t, g, "/v1/emails/"+uuid.NewString())
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("GET code = %d, want 503", rec.Code)
+	}
+	assertErrorCode(t, rec, "service_unavailable")
 }

@@ -14,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/skraus2/email-platform/internal/database"
 	"github.com/skraus2/email-platform/internal/emails"
 )
 
@@ -93,6 +94,13 @@ func (s *Server) handleCreateEmail(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, emails.ErrIdempotencyKeyReused):
 		writeError(w, http.StatusConflict, "idempotency_key_reused",
 			"this Idempotency-Key was already used with a different request; use a new key for a new email")
+		return
+	case database.Unavailable(err):
+		// The outcome is unknown if the connection broke during commit; the
+		// contract tells clients to retry with the same Idempotency-Key.
+		s.logger.WarnContext(r.Context(), "create email: database unavailable",
+			slog.String("project_id", p.ProjectID.String()), slog.Any("error", err))
+		writeError(w, http.StatusServiceUnavailable, "service_unavailable", "service temporarily unavailable; retry later")
 		return
 	case err != nil:
 		s.logger.ErrorContext(r.Context(), "create email failed",
