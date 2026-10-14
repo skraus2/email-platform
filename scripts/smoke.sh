@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # Process-level smoke test: builds the binaries, starts API and worker against
 # the local Compose database and Mailpit, probes /healthz and /readyz, sends
-# one email end to end (admin CLI -> POST -> worker -> Mailpit), then sends
-# SIGTERM and requires a clean shutdown. Needs `make up migrate` first.
+# one email end to end (admin CLI -> POST -> worker -> Mailpit), checks that
+# parallel requests with one idempotency key produce one message, that a
+# suppressed recipient is refused and that the project rate limit answers
+# 429, then sends SIGTERM and requires a clean shutdown. Needs `make up
+# migrate` first.
 set -euo pipefail
 
 : "${DATABASE_URL:?DATABASE_URL must be set (make sets a local default)}"
@@ -10,12 +13,18 @@ set -euo pipefail
 source "$(dirname "$0")/local-guard.sh"
 ADDR="127.0.0.1:${SMOKE_PORT:-18080}"
 TMP="$(mktemp -d)"
-trap 'kill "${API_PID:-}" "${WORKER_PID:-}" 2>/dev/null || true; rm -rf "$TMP"' EXIT
+cleanup() {
+  [[ -n "${key:-}" ]] && "$TMP/admin" key revoke -prefix "$(cut -d_ -f2 <<<"$key")" >/dev/null 2>&1 || true
+  kill "${API_PID:-}" "${WORKER_PID:-}" 2>/dev/null || true
+  rm -rf "$TMP"
+}
+trap cleanup EXIT
 
 MAILPIT_URL="${TEST_MAILPIT_URL:-http://127.0.0.1:8025}"
 go build -o "$TMP/" ./cmd/api ./cmd/worker ./cmd/admin
 
-HTTP_ADDR="$ADDR" LOG_FORMAT=json "$TMP/api" >"$TMP/api.log" 2>&1 &
+# A low rate limit so that the smoke run can reach it.
+HTTP_ADDR="$ADDR" LOG_FORMAT=json API_RATE_LIMIT_PER_MINUTE=20 "$TMP/api" >"$TMP/api.log" 2>&1 &
 API_PID=$!
 LOG_FORMAT=json "$TMP/worker" >"$TMP/worker.log" 2>&1 &
 WORKER_PID=$!
@@ -70,10 +79,56 @@ for _ in $(seq 1 30); do
 done
 [[ "$count" == 1 ]] || fail "Mailpit holds $count copies, want 1"
 echo "worker -> Mailpit captured exactly 1 message"
+
+# Parallel requests with one idempotency key: one email, one message.
+post_keyed() {
+  curl -sS -o "$TMP/par.$1.json" -w '%{http_code}' -X POST "http://$ADDR/v1/emails" \
+    -H @"$TMP/auth.header" -H 'Content-Type: application/json' -H "Idempotency-Key: smoke-par-$run" \
+    -d "{\"from\":\"smoke@example.test\",\"to\":\"smoke-recipient@example.test\",\"subject\":\"parallel $run\",\"text\":\"smoke body\"}" >"$TMP/par.$1.code"
+}
+run="$(date +%s)-$RANDOM"
+par_pids=()
+for i in $(seq 1 8); do post_keyed "$i" & par_pids+=($!); done
+wait "${par_pids[@]}"
+par_ids=$(for i in $(seq 1 8); do
+  [[ $(cat "$TMP/par.$i.code") == 202 ]] || fail "parallel POST $i: $(cat "$TMP/par.$i.code")"
+  sed -nE 's/.*"id":"([0-9a-f-]{36})".*/\1/p' "$TMP/par.$i.json"
+done | sort -u)
+[[ $(wc -l <<<"$par_ids" | tr -d ' ') == 1 ]] || fail "parallel same-key requests produced several emails: $par_ids"
+count=0
+for _ in $(seq 1 50); do
+  count=$(curl -sS "$MAILPIT_URL/api/v1/search?query=message-id:%22$par_ids@email-platform.local%22" | sed -E 's/.*"messages_count":([0-9]+).*/\1/')
+  [[ "$count" -ge 1 ]] && break
+  sleep 0.1
+done
+sleep 0.5
+count=$(curl -sS "$MAILPIT_URL/api/v1/search?query=message-id:%22$par_ids@email-platform.local%22" | sed -E 's/.*"messages_count":([0-9]+).*/\1/')
+[[ "$count" == 1 ]] || fail "parallel same-key requests: Mailpit holds $count copies, want 1"
+echo "8 parallel POSTs with one Idempotency-Key -> 1 email, 1 message in Mailpit"
+
+# A suppressed recipient is refused.
+"$TMP/admin" suppression add -project "$project" -email blocked@example.test -reason manual >/dev/null || fail "admin suppression add"
+code=$(curl -sS -o "$TMP/supp.json" -w '%{http_code}' -X POST "http://$ADDR/v1/emails" -H @"$TMP/auth.header" \
+  -H 'Content-Type: application/json' -d '{"from":"smoke@example.test","to":"Blocked@Example.test","subject":"s","text":"t"}')
+[[ "$code" == 422 ]] && grep -q '"recipient_suppressed"' "$TMP/supp.json" || fail "suppressed recipient: $code $(cat "$TMP/supp.json")"
+echo "suppressed recipient -> 422 recipient_suppressed"
+
+# The project rate limit (20/min for this run) answers 429 with Retry-After.
+limited=""
+for _ in $(seq 1 40); do
+  code=$(curl -sS -D "$TMP/rl.headers" -o /dev/null -w '%{http_code}' -X POST "http://$ADDR/v1/emails" -H @"$TMP/auth.header" \
+    -H 'Content-Type: application/json' -d '{"from":"smoke@example.test","to":"smoke-recipient@example.test","subject":"rate","text":"smoke body"}')
+  if [[ "$code" == 429 ]]; then limited=1; break; fi
+  [[ "$code" == 202 ]] || fail "rate limit loop: $code"
+done
+[[ -n "$limited" ]] || fail "no 429 within 40 sends at a limit of 20/min"
+grep -qiE '^retry-after: [0-9]+' "$TMP/rl.headers" || fail "429 without Retry-After"
+echo "project rate limit -> 429 with $(grep -i '^retry-after' "$TMP/rl.headers" | tr -d '\r')"
+
 # Needles from a file: the key must not appear in grep's command line.
-printf '%s\n' "$key" "smoke-recipient@example.test" "smoke body" >"$TMP/needles"
-if grep -qFf "$TMP/needles" "$TMP/api.log" "$TMP/worker.log"; then fail "logs contain a secret or personal data"; fi
-echo "logs contain no API key, recipient or body"
+printf '%s\n' "$key" "smoke-recipient@example.test" "blocked@example.test" "smoke body" "smoke-par-" >"$TMP/needles"
+if grep -qiFf "$TMP/needles" "$TMP/api.log" "$TMP/worker.log"; then fail "logs contain a secret, idempotency key or personal data"; fi
+echo "logs contain no API key, idempotency key, recipient or body"
 
 kill -TERM "$API_PID" "$WORKER_PID"
 wait "$API_PID" || fail "api exited non-zero after SIGTERM"
