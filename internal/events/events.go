@@ -345,3 +345,38 @@ func nonNil(m map[string]string) map[string]string {
 	}
 	return m
 }
+
+// Event is a stored event as clients see it.
+type Event struct {
+	ID         uuid.UUID
+	Type       string
+	Origin     string // platform or the provider
+	Provider   *string
+	OccurredAt time.Time
+	ReceivedAt time.Time
+	Details    map[string]string
+}
+
+// List returns up to limit events of an email received after the event
+// after (uuid.Nil: from the start), oldest first. The caller has checked
+// that the email belongs to the project.
+func List(ctx context.Context, q *store.Queries, projectID, emailID, after uuid.UUID, limit int) ([]Event, error) {
+	rows, err := q.ListEmailEvents(ctx, store.ListEmailEventsParams{
+		ProjectID: projectID, EmailID: emailID, After: after, Limit: int32(limit), //nolint:gosec // callers bound limit
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list email events: %w", err)
+	}
+	out := make([]Event, 0, len(rows))
+	for _, r := range rows {
+		details := map[string]string{}
+		if err := json.Unmarshal(r.Details, &details); err != nil {
+			return nil, fmt.Errorf("decode event details: %w", err)
+		}
+		out = append(out, Event{
+			ID: r.ID, Type: r.Type, Origin: r.Origin, Provider: r.Provider,
+			OccurredAt: r.OccurredAt, ReceivedAt: r.ReceivedAt, Details: details,
+		})
+	}
+	return out, nil
+}

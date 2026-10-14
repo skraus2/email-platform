@@ -17,6 +17,7 @@ import (
 
 	"github.com/skraus2/email-platform/internal/auth"
 	"github.com/skraus2/email-platform/internal/emails"
+	"github.com/skraus2/email-platform/internal/events"
 )
 
 type fakeEmails struct {
@@ -45,6 +46,10 @@ func (f *fakeEmails) Create(_ context.Context, projectID uuid.UUID, in emails.Cr
 
 func (f *fakeEmails) Get(context.Context, uuid.UUID, uuid.UUID) (emails.Email, error) {
 	return emails.Email{}, emails.ErrNotFound
+}
+
+func (f *fakeEmails) Events(context.Context, uuid.UUID, uuid.UUID, uuid.UUID, int) ([]events.Event, bool, error) {
+	return nil, false, emails.ErrNotFound
 }
 
 var principal = auth.Principal{ProjectID: uuid.New(), Scopes: []string{auth.ScopeEmailsSend, auth.ScopeEmailsRead}}

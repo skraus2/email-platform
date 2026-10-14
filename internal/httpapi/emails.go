@@ -16,6 +16,7 @@ import (
 
 	"github.com/skraus2/email-platform/internal/database"
 	"github.com/skraus2/email-platform/internal/emails"
+	"github.com/skraus2/email-platform/internal/events"
 )
 
 // maxRequestBytes caps a send request; bodies are limited to 512 KiB each.
@@ -25,6 +26,7 @@ const maxRequestBytes = 1 << 20
 type EmailService interface {
 	Create(ctx context.Context, projectID uuid.UUID, in emails.CreateInput) (emails.Email, error)
 	Get(ctx context.Context, projectID, id uuid.UUID) (emails.Email, error)
+	Events(ctx context.Context, projectID, id, after uuid.UUID, limit int) ([]events.Event, bool, error)
 }
 
 // createEmailRequest mirrors CreateEmailRequest in api/openapi.yaml. The

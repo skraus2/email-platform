@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/skraus2/email-platform/internal/events"
 	"github.com/skraus2/email-platform/internal/jobs"
 	"github.com/skraus2/email-platform/internal/logging"
 	"github.com/skraus2/email-platform/internal/store"
@@ -279,4 +280,35 @@ func (s *Service) Get(ctx context.Context, projectID, id uuid.UUID) (Email, erro
 		return Email{}, fmt.Errorf("get email: %w", err)
 	}
 	return fromRow(row), nil
+}
+
+// MaxEventPage bounds one page of an email's event history.
+const MaxEventPage = 100
+
+// Events returns up to limit (1–MaxEventPage) events of an email of the
+// project after the event after (uuid.Nil: from the start). more reports
+// whether further events follow. Emails of other projects are ErrNotFound.
+func (s *Service) Events(ctx context.Context, projectID, id, after uuid.UUID, limit int) (page []events.Event, more bool, err error) {
+	if limit < 1 || limit > MaxEventPage {
+		return nil, false, fmt.Errorf("event page size must be between 1 and %d", MaxEventPage)
+	}
+	err = pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly, IsoLevel: pgx.RepeatableRead}, func(tx pgx.Tx) error {
+		q := store.New(tx)
+		if _, err := q.GetEmail(ctx, store.GetEmailParams{ID: id, ProjectID: projectID}); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return ErrNotFound
+			}
+			return fmt.Errorf("get email: %w", err)
+		}
+		var err error
+		page, err = events.List(ctx, q, projectID, id, after, limit+1)
+		return err
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	if len(page) > limit {
+		return page[:limit], true, nil
+	}
+	return page, false, nil
 }
