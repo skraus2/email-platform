@@ -37,6 +37,8 @@ func New(t testing.TB) *pgxpool.Pool {
 	return pool
 }
 
+const dropTimeout = time.Minute
+
 // NewURL creates an empty database and returns its connection URL.
 func NewURL(t testing.TB) string {
 	t.Helper()
@@ -62,7 +64,9 @@ func NewURL(t testing.TB) string {
 	}
 
 	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		// DROP DATABASE forces a checkpoint; with many test packages writing
+		// in parallel that can take well over 10 s.
+		ctx, cancel := context.WithTimeout(context.Background(), dropTimeout)
 		defer cancel()
 		conn, err := pgx.Connect(ctx, adminURL)
 		if err != nil {
