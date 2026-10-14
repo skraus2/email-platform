@@ -98,3 +98,15 @@ type Suppression struct {
 	Reason    string
 	CreatedAt time.Time
 }
+
+type WebhookEndpoint struct {
+	ID               uuid.UUID
+	ProjectID        uuid.UUID
+	Url              string
+	EventTypes       []string
+	SecretCiphertext []byte
+	SecretKeyID      string
+	Status           string
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+}

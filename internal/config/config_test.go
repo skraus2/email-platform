@@ -236,3 +236,44 @@ func TestLoadRequireVerifiedSender(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadWebhookSettings(t *testing.T) {
+	kek := "k1:" + strings.Repeat("A", 43) + "="
+	cfg, err := Load(env(map[string]string{"DATABASE_URL": devURL}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.WebhookKeys != nil || !cfg.WebhookTargets.AllowHTTP || !cfg.WebhookTargets.AllowPrivate {
+		t.Fatalf("development defaults = keys %v, %+v; want no keys, http and private allowed", cfg.WebhookKeys, cfg.WebhookTargets)
+	}
+	cfg, err = Load(env(map[string]string{"DATABASE_URL": devURL, "WEBHOOK_KEKS": kek, "WEBHOOK_ALLOW_PRIVATE": "false"}))
+	if err != nil || cfg.WebhookKeys == nil || cfg.WebhookKeys.ActiveKeyID() != "k1" || cfg.WebhookTargets.AllowPrivate {
+		t.Fatalf("explicit = %+v, %v", cfg.WebhookTargets, err)
+	}
+
+	prod := map[string]string{"APP_ENV": "production", "DATABASE_URL": devURL + "&sslmode=require"}
+	prod["DATABASE_URL"] = "postgres://ep:s3cret@db.internal:5432/ep?sslmode=require"
+	cfg, err = Load(env(prod))
+	if err != nil || cfg.WebhookTargets.AllowHTTP || cfg.WebhookTargets.AllowPrivate {
+		t.Fatalf("production defaults = %+v, %v; want both off", cfg.WebhookTargets, err)
+	}
+	prod["WEBHOOK_ALLOW_PRIVATE"] = "true"
+	if cfg, err := Load(env(prod)); err != nil || !cfg.WebhookTargets.AllowPrivate {
+		t.Fatalf("production private opt-in = %+v, %v", cfg.WebhookTargets, err)
+	}
+	prod["WEBHOOK_ALLOW_HTTP"] = "true"
+	if _, err := Load(env(prod)); err == nil || !strings.Contains(err.Error(), "WEBHOOK_ALLOW_HTTP") {
+		t.Fatalf("plain http in production: err = %v", err)
+	}
+
+	secret := strings.Repeat("B", 43) + "="
+	for _, bad := range []string{"k1:short", "k1:" + secret + ",k1:" + secret, "nokey"} {
+		_, err := Load(env(map[string]string{"DATABASE_URL": devURL, "WEBHOOK_KEKS": bad}))
+		if err == nil || !strings.Contains(err.Error(), "WEBHOOK_KEKS") {
+			t.Errorf("%q: err = %v", bad, err)
+		}
+		if err != nil && strings.Contains(err.Error(), secret) {
+			t.Errorf("error leaks the key: %v", err)
+		}
+	}
+}

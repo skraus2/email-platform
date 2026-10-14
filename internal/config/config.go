@@ -14,6 +14,7 @@ import (
 
 	"github.com/skraus2/email-platform/internal/delivery"
 	"github.com/skraus2/email-platform/internal/jobs"
+	"github.com/skraus2/email-platform/internal/webhooks"
 )
 
 // Environment names. Production enables stricter validation.
@@ -53,6 +54,12 @@ type Config struct {
 	// RequireVerifiedSender makes the API accept only from addresses that
 	// match a verified sender identity of the project.
 	RequireVerifiedSender bool
+
+	// WebhookKeys encrypt and decrypt webhook endpoint secrets (nil when
+	// WEBHOOK_KEKS is unset; processes that need it refuse to start).
+	WebhookKeys *webhooks.Keyring
+	// WebhookTargets limits which webhook URLs and addresses may be called.
+	WebhookTargets webhooks.TargetPolicy
 
 	// JobRescueAfter: a dispatch job still running this long (its worker
 	// died) is handed to another attempt. At least one attempt budget.
@@ -126,6 +133,22 @@ func Load(lookup LookupFunc) (Config, error) {
 	}
 
 	cfg.RequireVerifiedSender, errs = boolSetting(get, "REQUIRE_VERIFIED_SENDER", "false", errs)
+
+	if spec := get("WEBHOOK_KEKS", ""); spec != "" {
+		keys, err := webhooks.ParseKeyring(spec)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("WEBHOOK_KEKS: %w", err))
+		}
+		cfg.WebhookKeys = keys
+	}
+	// Plain http and private targets are local conveniences; production
+	// needs https, and private targets only by explicit choice.
+	devDefault := strconv.FormatBool(cfg.Env != EnvProduction)
+	cfg.WebhookTargets.AllowHTTP, errs = boolSetting(get, "WEBHOOK_ALLOW_HTTP", devDefault, errs)
+	if cfg.WebhookTargets.AllowHTTP && cfg.Env == EnvProduction {
+		errs = append(errs, errors.New("WEBHOOK_ALLOW_HTTP must not be true in production (webhooks need TLS)"))
+	}
+	cfg.WebhookTargets.AllowPrivate, errs = boolSetting(get, "WEBHOOK_ALLOW_PRIVATE", devDefault, errs)
 
 	cfg.JobRescueAfter, errs = positiveDuration(get, "JOB_RESCUE_AFTER", "5m", errs)
 	// A job is rescued this long after its attempt started. Leave a margin

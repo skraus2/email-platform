@@ -72,3 +72,59 @@ func TestSenderCommands(t *testing.T) {
 		t.Fatalf("list after remove = %q, %v", out, err)
 	}
 }
+
+func TestWebhookCommands(t *testing.T) {
+	dbURL, _ := testdb.NewMigratedURL(t)
+	t.Setenv("DATABASE_URL", dbURL)
+	t.Setenv("WEBHOOK_KEKS", "k1:"+strings.Repeat("A", 43)+"=")
+
+	out, err := admin(t, "project", "create", "-name", "app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	project := strings.Fields(out)[0]
+
+	out, err = admin(t, "webhook", "create", "-project", project, "-url", "http://127.0.0.1:9/hook?token=s3cret", "-events", "email.bounced,email.complained")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) != 2 || !strings.Contains(lines[0], "email.bounced,email.complained") || !strings.Contains(lines[1], "whsec_") {
+		t.Fatalf("create output = %q", out)
+	}
+	id := strings.Fields(lines[0])[0]
+	secret := lines[1][strings.Index(lines[1], "whsec_"):]
+
+	out, err = admin(t, "webhook", "list", "-project", project)
+	if err != nil || !strings.Contains(out, id) || !strings.Contains(out, "active") || strings.Contains(out, secret) {
+		t.Fatalf("list = %q, %v (must not show the secret)", out, err)
+	}
+	if _, err := admin(t, "webhook", "disable", "-project", project, "-id", id); err != nil {
+		t.Fatal(err)
+	}
+	if out, _ := admin(t, "webhook", "list", "-project", project); !strings.Contains(out, "disabled") {
+		t.Fatalf("after disable: %q", out)
+	}
+	out, err = admin(t, "webhook", "rotate-secret", "-project", project, "-id", id)
+	if err != nil || !strings.Contains(out, "whsec_") || strings.Contains(out, secret) {
+		t.Fatalf("rotate = %q, %v", out, err)
+	}
+	if out, err := admin(t, "webhook", "reencrypt"); err != nil || !strings.Contains(out, "re-encrypted 0") {
+		t.Fatalf("reencrypt = %q, %v", out, err)
+	}
+	for name, args := range map[string][]string{
+		"unknown event": {"webhook", "create", "-project", project, "-url", "https://h.example.test/", "-events", "email.opened"},
+		"metadata url":  {"webhook", "create", "-project", project, "-url", "https://169.254.169.254/"},
+		"bad id":        {"webhook", "enable", "-project", project, "-id", "nope"},
+		"foreign id":    {"webhook", "enable", "-project", project, "-id", "00000000-0000-0000-0000-000000000000"},
+	} {
+		if _, err := admin(t, args...); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+
+	t.Setenv("WEBHOOK_KEKS", "")
+	if _, err := admin(t, "webhook", "create", "-project", project, "-url", "https://h.example.test/"); err == nil || !strings.Contains(err.Error(), "WEBHOOK_KEKS") {
+		t.Fatalf("without keys: err = %v", err)
+	}
+}

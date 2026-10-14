@@ -16,6 +16,11 @@
 //	admin sender list -project <uuid> [-limit 50]
 //	admin sender verify -project <uuid> -id <uuid>
 //	admin sender remove -project <uuid> -id <uuid>
+//	admin webhook create -project <uuid> -url <url> [-events email.bounced,…]
+//	admin webhook list -project <uuid>
+//	admin webhook disable|enable -project <uuid> -id <uuid>
+//	admin webhook rotate-secret -project <uuid> -id <uuid>
+//	admin webhook reencrypt
 package main
 
 import (
@@ -32,12 +37,14 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/skraus2/email-platform/internal/auth"
 	"github.com/skraus2/email-platform/internal/config"
 	"github.com/skraus2/email-platform/internal/database"
 	"github.com/skraus2/email-platform/internal/emails"
 	"github.com/skraus2/email-platform/internal/store"
+	"github.com/skraus2/email-platform/internal/webhooks"
 )
 
 const usage = `usage:
@@ -55,7 +62,12 @@ const usage = `usage:
   admin sender add -project <uuid> (-address <addr> | -domain <domain>)
   admin sender list -project <uuid> [-limit 50]
   admin sender verify -project <uuid> -id <uuid>
-  admin sender remove -project <uuid> -id <uuid>`
+  admin sender remove -project <uuid> -id <uuid>
+  admin webhook create -project <uuid> -url <url> [-events email.bounced,…]
+  admin webhook list -project <uuid>
+  admin webhook disable|enable -project <uuid> -id <uuid>
+  admin webhook rotate-secret -project <uuid> -id <uuid>
+  admin webhook reencrypt`
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -84,7 +96,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet(args[0]+" "+args[1], flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	name := fs.String("name", "", "project name")
-	id := fs.String("id", "", "project or sender identity id")
+	id := fs.String("id", "", "project, sender identity or webhook endpoint id")
 	project := fs.String("project", "", "project id")
 	scopes := fs.String("scopes", "", "comma-separated scopes (default: all)")
 	prefix := fs.String("prefix", "", "key prefix")
@@ -92,6 +104,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	limit := fs.Int("limit", emails.DefaultAdminListLimit, "maximum number of emails")
 	email := fs.String("email", "", "email address")
 	address := fs.String("address", "", "sender address")
+	hookURL := fs.String("url", "", "webhook URL")
+	hookEvents := fs.String("events", "", "comma-separated webhook event types (default: all)")
 	domain := fs.String("domain", "", "sender domain")
 	reason := fs.String("reason", "manual", "suppression reason: "+strings.Join(emails.SuppressionReasons, ", "))
 	if err := fs.Parse(args[2:]); err != nil {
@@ -230,8 +244,68 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		if !ok {
 			return errors.New("no sender identity with this id in this project")
 		}
+	case "webhook reencrypt":
+		n, err := webhooks.Reencrypt(ctx, pool, cfg.WebhookKeys)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(stdout, "re-encrypted %d secrets with key %s\n", n, cfg.WebhookKeys.ActiveKeyID())
+	case "webhook create", "webhook list", "webhook disable", "webhook enable", "webhook rotate-secret":
+		pid, err := uuid.Parse(*project)
+		if err != nil {
+			return errors.New("-project must be a project uuid")
+		}
+		return webhook(ctx, cfg, pool, q, args[1], pid, *id, *hookURL, *hookEvents, stdout)
 	default:
 		return errors.New(usage)
+	}
+	return nil
+}
+
+func webhook(ctx context.Context, cfg config.Config, pool *pgxpool.Pool, q *store.Queries, action string, pid uuid.UUID, id, rawURL, events string, stdout io.Writer) error {
+	switch action {
+	case "create":
+		var types []string
+		if events != "" {
+			types = strings.Split(events, ",")
+		}
+		e, secret, err := webhooks.CreateEndpoint(ctx, q, cfg.WebhookKeys, cfg.WebhookTargets, pid, rawURL, types)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(stdout, "%s\t%s\n", e.ID, strings.Join(e.EventTypes, ","))
+		fmt.Fprintf(stdout, "secret (shown once, store it now): %s\n", secret)
+		return nil
+	case "list":
+		list, err := webhooks.ListEndpoints(ctx, q, pid)
+		if err != nil {
+			return err
+		}
+		w := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
+		fmt.Fprintln(w, "ID\tSTATUS\tEVENTS\tKEY\tURL")
+		for _, e := range list {
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", e.ID, e.Status, strings.Join(e.EventTypes, ","), e.KeyID, emails.TerminalSafe(e.URL))
+		}
+		return w.Flush()
+	}
+	eid, err := uuid.Parse(id)
+	if err != nil {
+		return errors.New("-id must be a webhook endpoint uuid")
+	}
+	if action == "rotate-secret" {
+		secret, err := webhooks.RotateSecret(ctx, pool, cfg.WebhookKeys, pid, eid)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(stdout, "new secret (shown once; the old one stops working now): %s\n", secret)
+		return nil
+	}
+	changed, err := webhooks.SetEndpointActive(ctx, pool, pid, eid, action == "enable")
+	if err != nil {
+		return err
+	}
+	if !changed {
+		fmt.Fprintf(stdout, "already %sd\n", action)
 	}
 	return nil
 }
