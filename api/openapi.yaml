@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Email Platform API
-  version: 0.2.0
+  version: 0.3.0
   description: |
     Internal email sending API. Every request is authenticated with a
     project API key and only ever sees data of that project.
@@ -9,7 +9,13 @@ info:
     Accepted is not delivered: `queued` means the request is persisted,
     `captured` means the local test sink (Mailpit) received the message,
     `submitted` means a real provider accepted it. Delivery is only reported
-    from real provider events.
+    from real provider events: `delivered` (the receiving mail server
+    accepted the message — not necessarily the inbox), `bounced` and
+    `complained` exist only for emails sent through a real provider, never
+    for the local test sink.
+
+    Status changes are also pushed to registered webhook endpoints (see
+    `webhooks`).
 servers:
   - url: http://127.0.0.1:8080
     description: Local development
@@ -32,8 +38,11 @@ paths:
         different payload returns `409 idempotency_key_reused`. Keys are scoped
         to the project. Without the header, every request creates a new email.
 
-        Checks run in this order: validation, idempotency replay, suppression
-        (`422 recipient_suppressed`), project rate limit (`429 rate_limited`).
+        Checks run in this order: validation, idempotency replay, sender
+        verification (`422 sender_not_verified`, only where verified senders
+        are required — always when sending through a real provider),
+        suppression (`422 recipient_suppressed`), project rate limit
+        (`429 rate_limited`).
         Rejected requests store nothing; neither they nor idempotent replays
         count towards the rate limit. Template fields are reserved and rejected with
         `422 templates_not_supported`.
@@ -133,6 +142,114 @@ paths:
           $ref: "#/components/responses/InternalError"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
+  /v1/emails/{id}/events:
+    get:
+      operationId: listEmailEvents
+      summary: List the events of an email of the authenticated project
+      description: |
+        Requires scope `emails:read`. Events are immutable and listed in the
+        order they were received; provider events may arrive late, twice or
+        out of order (duplicates are stored once). `occurred_at` is the
+        event time reported by its origin, `received_at` when the platform
+        stored it. Unknown ids, malformed ids and ids of other projects all
+        return the same `404`.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+        - name: cursor
+          in: query
+          required: false
+          description: Opaque `next_cursor` of the previous page; invalid values give `400 invalid_cursor`.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: One page of events.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EmailEventList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+webhooks:
+  emailStatusChanged:
+    post:
+      operationId: emailStatusChanged
+      summary: An email changed its status
+      description: |
+        Sent to every active webhook endpoint of the project subscribed to
+        the event type, once per status change (duplicate or late provider
+        events that do not change the status are not sent). Endpoints are
+        registered by an administrator, who receives the endpoint secret
+        once.
+
+        Verify every request: compute HMAC-SHA256 keyed with the endpoint
+        secret exactly as shown (the full `whsec_…` string as UTF-8 bytes)
+        over `<Webhook-Timestamp>.<raw request body>` and compare it in
+        constant time with each hex value after `v1=` in
+        `Webhook-Signature` (space-separated; more than one during a secret
+        rotation); reject timestamps more than 5 minutes away from your
+        clock; use `Webhook-Id` (equal to the body `id`) to drop replays and
+        duplicates. A retry repeats the identical body with a new timestamp
+        and signature. Events carry no ordering guarantee; fetch
+        `GET /v1/emails/{id}` for the current status.
+
+        Respond with any `2xx` to acknowledge receipt (not processing).
+        Timeouts (10 s), connection errors, `408`, `429` and `5xx` are
+        retried with exponential backoff and jitter (12 attempts within
+        at most about 5 hours by default); any other status, including redirects,
+        ends the delivery as failed.
+      parameters:
+        - name: Webhook-Id
+          in: header
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: Webhook-Timestamp
+          in: header
+          required: true
+          description: Unix time in seconds when this attempt was signed.
+          schema:
+            type: string
+            pattern: "^[0-9]+$"
+        - name: Webhook-Signature
+          in: header
+          required: true
+          schema:
+            type: string
+            pattern: "^v1=[0-9a-f]{64}( v1=[0-9a-f]{64})*$"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WebhookEvent"
+      responses:
+        "200":
+          description: Any 2xx acknowledges receipt.
 components:
   securitySchemes:
     projectKey:
@@ -188,16 +305,33 @@ components:
           const: queued
     EmailStatus:
       type: string
-      enum: [queued, sending, captured, submitted, failed]
+      description: |
+        `queued` → `sending` → `captured` (local test sink), `submitted`
+        (real provider) or `failed`. After `submitted`, provider events move
+        the status to `delivered`, `bounced` or `complained`; a later event
+        never moves it back (`complained` > `bounced` > `delivered` >
+        `submitted`).
+      enum:
+        [
+          queued,
+          sending,
+          captured,
+          submitted,
+          delivered,
+          bounced,
+          complained,
+          failed,
+        ]
     ErrorCode:
       type: string
       description: |
         Why the last dispatch attempt failed. Retryable codes (the email is
         retried until its attempts are used up): `provider_unreachable`,
         `provider_timeout`, `provider_protocol_error`, `provider_deferred`,
-        `internal_error`. Permanent codes (no further attempts):
-        `provider_rejected`, `message_invalid`, `unsafe_target`, `suppressed`,
-        `project_disabled`, `content_missing`, `expired`.
+        `provider_throttled`, `internal_error`. Permanent codes (no further
+        attempts): `provider_rejected`, `provider_auth_failed`,
+        `sender_not_verified`, `message_invalid`, `unsafe_target`,
+        `suppressed`, `project_disabled`, `content_missing`, `expired`.
 
         `provider_timeout` and `provider_protocol_error` mean the outcome of
         that attempt is unknown: a `failed` email with one of these codes may
@@ -209,7 +343,10 @@ components:
         - provider_timeout
         - provider_protocol_error
         - provider_deferred
+        - provider_throttled
         - provider_rejected
+        - provider_auth_failed
+        - sender_not_verified
         - message_invalid
         - unsafe_target
         - suppressed
@@ -267,6 +404,96 @@ components:
         finished_at:
           type: [string, "null"]
           format: date-time
+    EmailEvent:
+      type: object
+      required: [id, type, origin, provider, occurred_at, received_at, details]
+      properties:
+        id:
+          type: string
+          format: uuid
+        type:
+          type: string
+          description: |
+            Platform events: `captured`, `submitted`, `failed`. Provider
+            events: `send`, `delivered`, `bounced`, `complained`, `rejected`,
+            `delivery_delayed`. Engagement (open/click) is not tracked.
+          enum:
+            [
+              captured,
+              submitted,
+              failed,
+              send,
+              delivered,
+              bounced,
+              complained,
+              rejected,
+              delivery_delayed,
+            ]
+        origin:
+          type: string
+          enum: [platform, ses]
+        provider:
+          type: [string, "null"]
+          description: Provider involved (`mailpit`, `ses`), `null` for failures before a provider was called.
+        occurred_at:
+          type: string
+          format: date-time
+        received_at:
+          type: string
+          format: date-time
+        details:
+          type: object
+          description: |
+            Non-personal details only: `error_code` (failed),
+            `bounce_type`/`bounce_subtype` (bounced),
+            `complaint_feedback_type` (complained), `delay_type`
+            (delivery_delayed). Never addresses or diagnostic text.
+          additionalProperties:
+            type: string
+    EmailEventList:
+      type: object
+      required: [data, next_cursor]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/EmailEvent"
+        next_cursor:
+          type: [string, "null"]
+          description: Pass as `cursor` for the next page; `null` on the last page.
+    WebhookEvent:
+      type: object
+      required: [id, type, created_at, data]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Event id, stable across retries; equals `Webhook-Id`.
+        type:
+          type: string
+          enum:
+            [
+              email.captured,
+              email.submitted,
+              email.failed,
+              email.delivered,
+              email.bounced,
+              email.complained,
+            ]
+        created_at:
+          type: string
+          format: date-time
+          description: When the platform recorded the status change.
+        data:
+          type: object
+          required: [email_id, project_id]
+          properties:
+            email_id:
+              type: string
+              format: uuid
+            project_id:
+              type: string
+              format: uuid
     Error:
       type: object
       required: [error]
@@ -283,7 +510,7 @@ components:
               description: Human-readable explanation; never contains internals.
   responses:
     BadRequest:
-      description: "Malformed request: `invalid_json` or `invalid_idempotency_key`."
+      description: "Malformed request: `invalid_json`, `invalid_idempotency_key` or `invalid_cursor`."
       content:
         application/json:
           schema:
@@ -338,7 +565,7 @@ components:
           schema:
             $ref: "#/components/schemas/Error"
     UnprocessableEntity:
-      description: "`validation_failed` (message names the field), `recipient_suppressed` (the recipient is on the project's suppression list) or `templates_not_supported`."
+      description: "`validation_failed` (message names the field), `recipient_suppressed` (the recipient is on the project's suppression list), `sender_not_verified` (`from` is not a verified sender address or domain of the project) or `templates_not_supported`."
       content:
         application/json:
           schema:
