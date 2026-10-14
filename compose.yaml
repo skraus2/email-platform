@@ -71,6 +71,8 @@ services:
     environment:
       <<: *app-env
       SMTP_ADDR: mailpit:1025
+      # Required by the worker (webhook secrets); set it in .env.
+      WEBHOOK_KEKS: ${WEBHOOK_KEKS:-}
     depends_on:
       migrate:
         condition: service_completed_successfully

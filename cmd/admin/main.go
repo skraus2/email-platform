@@ -21,6 +21,7 @@
 //	admin webhook disable|enable -project <uuid> -id <uuid>
 //	admin webhook rotate-secret -project <uuid> -id <uuid>
 //	admin webhook reencrypt
+//	admin webhook deliveries -project <uuid> [-status failed] [-limit 50]
 package main
 
 import (
@@ -67,7 +68,8 @@ const usage = `usage:
   admin webhook list -project <uuid>
   admin webhook disable|enable -project <uuid> -id <uuid>
   admin webhook rotate-secret -project <uuid> -id <uuid>
-  admin webhook reencrypt`
+  admin webhook reencrypt
+  admin webhook deliveries -project <uuid> [-status failed] [-limit 50]`
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -250,6 +252,12 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 			return err
 		}
 		fmt.Fprintf(stdout, "re-encrypted %d secrets with key %s\n", n, cfg.WebhookKeys.ActiveKeyID())
+	case "webhook deliveries":
+		pid, err := uuid.Parse(*project)
+		if err != nil {
+			return errors.New("-project must be a project uuid")
+		}
+		return listDeliveries(ctx, q, pid, *status, *limit, stdout)
 	case "webhook create", "webhook list", "webhook disable", "webhook enable", "webhook rotate-secret":
 		pid, err := uuid.Parse(*project)
 		if err != nil {
@@ -323,6 +331,27 @@ func listSenders(ctx context.Context, q *store.Queries, pid uuid.UUID, limit int
 			verified = s.VerifiedAt.Format(time.RFC3339)
 		}
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", s.ID, s.Kind, emails.TerminalSafe(s.Value), s.Status, verified)
+	}
+	return w.Flush()
+}
+
+func listDeliveries(ctx context.Context, q *store.Queries, pid uuid.UUID, status string, limit int, stdout io.Writer) error {
+	list, err := webhooks.ListDeliveries(ctx, q, pid, status, limit)
+	if err != nil {
+		return err
+	}
+	w := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(w, "ID\tENDPOINT\tEMAIL\tEVENT\tSTATUS\tATTEMPTS\tHTTP\tERROR\tNEXT ATTEMPT")
+	for _, d := range list {
+		httpStatus, next := "-", "-"
+		if d.LastStatusCode != nil {
+			httpStatus = fmt.Sprint(*d.LastStatusCode)
+		}
+		if d.NextAttemptAt != nil {
+			next = d.NextAttemptAt.UTC().Format(time.RFC3339)
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\temail.%s\t%s\t%d\t%s\t%s\t%s\n",
+			d.ID, d.EndpointID, d.EmailID, d.EventType, d.Status, d.Attempts, httpStatus, orDash(d.LastErrorCode), next)
 	}
 	return w.Flush()
 }

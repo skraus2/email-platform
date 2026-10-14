@@ -276,3 +276,31 @@ func TestLoadWebhookSettings(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadWebhookDelivery(t *testing.T) {
+	cfg, err := Load(env(map[string]string{"DATABASE_URL": devURL}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.WebhookMaxAttempts != 12 || cfg.WebhookTimeout != 10*time.Second || cfg.WebhookConcurrency != 5 ||
+		cfg.WebhookRetryBaseDelay != 30*time.Second || cfg.WebhookRetryMaxDelay != time.Hour {
+		t.Fatalf("defaults = %d %v %d %v %v", cfg.WebhookMaxAttempts, cfg.WebhookTimeout, cfg.WebhookConcurrency, cfg.WebhookRetryBaseDelay, cfg.WebhookRetryMaxDelay)
+	}
+	for key, bad := range map[string]string{
+		"WEBHOOK_MAX_ATTEMPTS":     "0",
+		"WEBHOOK_TIMEOUT":          "0s",
+		"WEBHOOK_CONCURRENCY":      "1000",
+		"WEBHOOK_RETRY_BASE_DELAY": "100ms",
+		"WEBHOOK_RETRY_MAX_DELAY":  "48h",
+	} {
+		if _, err := Load(env(map[string]string{"DATABASE_URL": devURL, key: bad})); err == nil || !strings.Contains(err.Error(), key) {
+			t.Errorf("%s=%s: err = %v", key, bad, err)
+		}
+	}
+	if _, err := Load(env(map[string]string{"DATABASE_URL": devURL, "WEBHOOK_TIMEOUT": "2m"})); err == nil {
+		t.Error("timeout above 60s accepted")
+	}
+	if _, err := Load(env(map[string]string{"DATABASE_URL": devURL, "WEBHOOK_RETRY_BASE_DELAY": "2h"})); err == nil {
+		t.Error("base delay above max delay accepted")
+	}
+}

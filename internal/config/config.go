@@ -60,6 +60,13 @@ type Config struct {
 	WebhookKeys *webhooks.Keyring
 	// WebhookTargets limits which webhook URLs and addresses may be called.
 	WebhookTargets webhooks.TargetPolicy
+	// Webhook delivery (worker): requests per delivery, one request's
+	// timeout, parallel deliveries, and the backoff between attempts.
+	WebhookMaxAttempts    int
+	WebhookTimeout        time.Duration
+	WebhookConcurrency    int
+	WebhookRetryBaseDelay time.Duration
+	WebhookRetryMaxDelay  time.Duration
 
 	// JobRescueAfter: a dispatch job still running this long (its worker
 	// died) is handed to another attempt. At least one attempt budget.
@@ -149,6 +156,24 @@ func Load(lookup LookupFunc) (Config, error) {
 		errs = append(errs, errors.New("WEBHOOK_ALLOW_HTTP must not be true in production (webhooks need TLS)"))
 	}
 	cfg.WebhookTargets.AllowPrivate, errs = boolSetting(get, "WEBHOOK_ALLOW_PRIVATE", devDefault, errs)
+
+	cfg.WebhookMaxAttempts, errs = intInRange(get, "WEBHOOK_MAX_ATTEMPTS", "12", 1, 25, errs)
+	cfg.WebhookConcurrency, errs = intInRange(get, "WEBHOOK_CONCURRENCY", "5", 1, 100, errs)
+	cfg.WebhookTimeout, errs = positiveDuration(get, "WEBHOOK_TIMEOUT", "10s", errs)
+	if cfg.WebhookTimeout > time.Minute {
+		errs = append(errs, errors.New("WEBHOOK_TIMEOUT must be at most 60s"))
+	}
+	cfg.WebhookRetryBaseDelay, errs = positiveDuration(get, "WEBHOOK_RETRY_BASE_DELAY", "30s", errs)
+	if cfg.WebhookRetryBaseDelay > 0 && cfg.WebhookRetryBaseDelay < time.Second {
+		errs = append(errs, errors.New("WEBHOOK_RETRY_BASE_DELAY must be at least 1s"))
+	}
+	cfg.WebhookRetryMaxDelay, errs = positiveDuration(get, "WEBHOOK_RETRY_MAX_DELAY", "1h", errs)
+	if cfg.WebhookRetryMaxDelay > maxRetryDelay {
+		errs = append(errs, errors.New("WEBHOOK_RETRY_MAX_DELAY must be at most 24h"))
+	}
+	if cfg.WebhookRetryMaxDelay > 0 && cfg.WebhookRetryMaxDelay < cfg.WebhookRetryBaseDelay {
+		errs = append(errs, errors.New("WEBHOOK_RETRY_MAX_DELAY must not be shorter than WEBHOOK_RETRY_BASE_DELAY"))
+	}
 
 	cfg.JobRescueAfter, errs = positiveDuration(get, "JOB_RESCUE_AFTER", "5m", errs)
 	// A job is rescued this long after its attempt started. Leave a margin

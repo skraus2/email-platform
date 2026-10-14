@@ -99,6 +99,21 @@ type Suppression struct {
 	CreatedAt time.Time
 }
 
+type WebhookDelivery struct {
+	ID             uuid.UUID
+	ProjectID      uuid.UUID
+	EndpointID     uuid.UUID
+	EventID        uuid.UUID
+	Status         string
+	Attempts       int32
+	LastStatusCode *int32
+	LastErrorCode  *string
+	NextAttemptAt  *time.Time
+	DeliveredAt    *time.Time
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+}
+
 type WebhookEndpoint struct {
 	ID               uuid.UUID
 	ProjectID        uuid.UUID

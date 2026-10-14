@@ -7,9 +7,60 @@ package store
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 )
+
+const expireStaleDeliveries = `-- name: ExpireStaleDeliveries :execrows
+UPDATE webhook_deliveries
+SET status = 'failed', last_error_code = 'expired', next_attempt_at = NULL, updated_at = now()
+WHERE status = 'pending' AND created_at < $1
+`
+
+// Safety net for deliveries whose job ended without a final state.
+func (q *Queries) ExpireStaleDeliveries(ctx context.Context, createdAt time.Time) (int64, error) {
+	result, err := q.db.Exec(ctx, expireStaleDeliveries, createdAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const insertWebhookDeliveries = `-- name: InsertWebhookDeliveries :many
+INSERT INTO webhook_deliveries (project_id, endpoint_id, event_id)
+SELECT e.project_id, e.id, $1 FROM webhook_endpoints e
+WHERE e.project_id = $2 AND e.status = 'active' AND $3::text = ANY (e.event_types)
+ON CONFLICT (endpoint_id, event_id) DO NOTHING
+RETURNING id
+`
+
+type InsertWebhookDeliveriesParams struct {
+	EventID   uuid.UUID
+	ProjectID uuid.UUID
+	EventType string
+}
+
+// One delivery per active endpoint of the project subscribed to the type.
+func (q *Queries) InsertWebhookDeliveries(ctx context.Context, arg InsertWebhookDeliveriesParams) ([]uuid.UUID, error) {
+	rows, err := q.db.Query(ctx, insertWebhookDeliveries, arg.EventID, arg.ProjectID, arg.EventType)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []uuid.UUID{}
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
 
 const insertWebhookEndpoint = `-- name: InsertWebhookEndpoint :one
 INSERT INTO webhook_endpoints (id, project_id, url, event_types, secret_ciphertext, secret_key_id)
@@ -50,6 +101,72 @@ func (q *Queries) InsertWebhookEndpoint(ctx context.Context, arg InsertWebhookEn
 	return i, err
 }
 
+const listWebhookDeliveries = `-- name: ListWebhookDeliveries :many
+SELECT d.id, d.project_id, d.endpoint_id, d.event_id, d.status, d.attempts, d.last_status_code, d.last_error_code, d.next_attempt_at, d.delivered_at, d.created_at, d.updated_at, ev.email_id, ev.type AS event_type FROM webhook_deliveries d
+JOIN email_events ev ON ev.id = d.event_id AND ev.project_id = d.project_id
+WHERE d.project_id = $1 AND ($3::text IS NULL OR d.status = $3)
+ORDER BY d.created_at DESC, d.id DESC
+LIMIT $2
+`
+
+type ListWebhookDeliveriesParams struct {
+	ProjectID uuid.UUID
+	Limit     int32
+	Status    *string
+}
+
+type ListWebhookDeliveriesRow struct {
+	ID             uuid.UUID
+	ProjectID      uuid.UUID
+	EndpointID     uuid.UUID
+	EventID        uuid.UUID
+	Status         string
+	Attempts       int32
+	LastStatusCode *int32
+	LastErrorCode  *string
+	NextAttemptAt  *time.Time
+	DeliveredAt    *time.Time
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+	EmailID        uuid.UUID
+	EventType      string
+}
+
+func (q *Queries) ListWebhookDeliveries(ctx context.Context, arg ListWebhookDeliveriesParams) ([]ListWebhookDeliveriesRow, error) {
+	rows, err := q.db.Query(ctx, listWebhookDeliveries, arg.ProjectID, arg.Limit, arg.Status)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListWebhookDeliveriesRow{}
+	for rows.Next() {
+		var i ListWebhookDeliveriesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProjectID,
+			&i.EndpointID,
+			&i.EventID,
+			&i.Status,
+			&i.Attempts,
+			&i.LastStatusCode,
+			&i.LastErrorCode,
+			&i.NextAttemptAt,
+			&i.DeliveredAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.EmailID,
+			&i.EventType,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listWebhookEndpoints = `-- name: ListWebhookEndpoints :many
 SELECT id, project_id, url, event_types, secret_ciphertext, secret_key_id, status, created_at, updated_at FROM webhook_endpoints WHERE project_id = $1 ORDER BY created_at, id
 `
@@ -82,6 +199,65 @@ func (q *Queries) ListWebhookEndpoints(ctx context.Context, projectID uuid.UUID)
 		return nil, err
 	}
 	return items, nil
+}
+
+const loadWebhookDelivery = `-- name: LoadWebhookDelivery :one
+SELECT d.id, d.project_id, d.status, d.attempts,
+       e.id AS endpoint_id, e.url, e.status AS endpoint_status, e.secret_ciphertext, e.secret_key_id,
+       e.event_types, e.created_at AS endpoint_created_at, e.updated_at AS endpoint_updated_at,
+       ev.id AS event_id, ev.email_id, ev.type AS event_type, ev.received_at
+FROM webhook_deliveries d
+JOIN webhook_endpoints e ON e.id = d.endpoint_id AND e.project_id = d.project_id
+JOIN email_events ev ON ev.id = d.event_id AND ev.project_id = d.project_id
+WHERE d.id = $1 AND d.project_id = $2
+`
+
+type LoadWebhookDeliveryParams struct {
+	ID        uuid.UUID
+	ProjectID uuid.UUID
+}
+
+type LoadWebhookDeliveryRow struct {
+	ID                uuid.UUID
+	ProjectID         uuid.UUID
+	Status            string
+	Attempts          int32
+	EndpointID        uuid.UUID
+	Url               string
+	EndpointStatus    string
+	SecretCiphertext  []byte
+	SecretKeyID       string
+	EventTypes        []string
+	EndpointCreatedAt time.Time
+	EndpointUpdatedAt time.Time
+	EventID           uuid.UUID
+	EmailID           uuid.UUID
+	EventType         string
+	ReceivedAt        time.Time
+}
+
+func (q *Queries) LoadWebhookDelivery(ctx context.Context, arg LoadWebhookDeliveryParams) (LoadWebhookDeliveryRow, error) {
+	row := q.db.QueryRow(ctx, loadWebhookDelivery, arg.ID, arg.ProjectID)
+	var i LoadWebhookDeliveryRow
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.Status,
+		&i.Attempts,
+		&i.EndpointID,
+		&i.Url,
+		&i.EndpointStatus,
+		&i.SecretCiphertext,
+		&i.SecretKeyID,
+		&i.EventTypes,
+		&i.EndpointCreatedAt,
+		&i.EndpointUpdatedAt,
+		&i.EventID,
+		&i.EmailID,
+		&i.EventType,
+		&i.ReceivedAt,
+	)
+	return i, err
 }
 
 const lockEndpointsNotUnderKey = `-- name: LockEndpointsNotUnderKey :many
@@ -143,6 +319,89 @@ func (q *Queries) LockWebhookEndpoint(ctx context.Context, arg LockWebhookEndpoi
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const markDeliveryDelivered = `-- name: MarkDeliveryDelivered :execrows
+UPDATE webhook_deliveries
+SET status = 'delivered', attempts = attempts + 1, last_status_code = $3, last_error_code = NULL,
+    next_attempt_at = NULL, delivered_at = now(), updated_at = now()
+WHERE id = $1 AND project_id = $2 AND status = 'pending'
+`
+
+type MarkDeliveryDeliveredParams struct {
+	ID             uuid.UUID
+	ProjectID      uuid.UUID
+	LastStatusCode *int32
+}
+
+func (q *Queries) MarkDeliveryDelivered(ctx context.Context, arg MarkDeliveryDeliveredParams) (int64, error) {
+	result, err := q.db.Exec(ctx, markDeliveryDelivered, arg.ID, arg.ProjectID, arg.LastStatusCode)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const markDeliveryFailed = `-- name: MarkDeliveryFailed :execrows
+UPDATE webhook_deliveries
+SET status = 'failed', attempts = attempts + CASE WHEN $4::boolean THEN 1 ELSE 0 END,
+    last_status_code = coalesce($5, last_status_code), last_error_code = $3,
+    next_attempt_at = NULL, updated_at = now()
+WHERE id = $1 AND project_id = $2 AND status = 'pending'
+`
+
+type MarkDeliveryFailedParams struct {
+	ID            uuid.UUID
+	ProjectID     uuid.UUID
+	LastErrorCode *string
+	Counted       bool
+	StatusCode    *int32
+}
+
+// counted: whether this call ends an attempt (false when no request was made
+// or the attempt was already counted).
+func (q *Queries) MarkDeliveryFailed(ctx context.Context, arg MarkDeliveryFailedParams) (int64, error) {
+	result, err := q.db.Exec(ctx, markDeliveryFailed,
+		arg.ID,
+		arg.ProjectID,
+		arg.LastErrorCode,
+		arg.Counted,
+		arg.StatusCode,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const recordDeliveryRetry = `-- name: RecordDeliveryRetry :one
+UPDATE webhook_deliveries
+SET attempts = attempts + 1, last_status_code = $3, last_error_code = $4, next_attempt_at = $5, updated_at = now()
+WHERE id = $1 AND project_id = $2 AND status = 'pending'
+RETURNING attempts
+`
+
+type RecordDeliveryRetryParams struct {
+	ID             uuid.UUID
+	ProjectID      uuid.UUID
+	LastStatusCode *int32
+	LastErrorCode  *string
+	NextAttemptAt  *time.Time
+}
+
+// A failed attempt that will be retried at next_attempt_at; returns the
+// attempts made so far.
+func (q *Queries) RecordDeliveryRetry(ctx context.Context, arg RecordDeliveryRetryParams) (int32, error) {
+	row := q.db.QueryRow(ctx, recordDeliveryRetry,
+		arg.ID,
+		arg.ProjectID,
+		arg.LastStatusCode,
+		arg.LastErrorCode,
+		arg.NextAttemptAt,
+	)
+	var attempts int32
+	err := row.Scan(&attempts)
+	return attempts, err
 }
 
 const setWebhookEndpointStatus = `-- name: SetWebhookEndpointStatus :execrows

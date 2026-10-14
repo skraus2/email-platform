@@ -16,6 +16,7 @@ sql:
       - db/migrations/00010_email_events.sql
       - db/migrations/00011_webhook_endpoints.sql
       - db/migrations/00012_event_receive_time.sql
+      - db/migrations/00013_webhook_deliveries.sql
     queries: db/queries
     gen:
       go:
@@ -38,4 +39,9 @@ sql:
             nullable: true
             go_type:
               type: string
+              pointer: true
+          - db_type: pg_catalog.int4
+            nullable: true
+            go_type:
+              type: int32
               pointer: true

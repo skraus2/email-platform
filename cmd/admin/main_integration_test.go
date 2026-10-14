@@ -124,6 +124,14 @@ func TestWebhookCommands(t *testing.T) {
 		}
 	}
 
+	out, err = admin(t, "webhook", "deliveries", "-project", project, "-status", "failed")
+	if err != nil || !strings.HasPrefix(out, "ID") {
+		t.Fatalf("deliveries = %q, %v", out, err)
+	}
+	if _, err := admin(t, "webhook", "deliveries", "-project", project, "-status", "lost"); err == nil {
+		t.Error("unknown delivery status accepted")
+	}
+
 	t.Setenv("WEBHOOK_KEKS", "")
 	if _, err := admin(t, "webhook", "create", "-project", project, "-url", "https://h.example.test/"); err == nil || !strings.Contains(err.Error(), "WEBHOOK_KEKS") {
 		t.Fatalf("without keys: err = %v", err)

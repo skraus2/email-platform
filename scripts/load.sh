@@ -9,6 +9,9 @@ set -euo pipefail
 : "${DATABASE_URL:?DATABASE_URL must be set (make sets a local default)}"
 # shellcheck source=scripts/local-guard.sh
 source "$(dirname "$0")/local-guard.sh"
+# The worker needs a key-encryption key for webhook secrets; a run-local one
+# is generated unless the environment provides one.
+export WEBHOOK_KEKS="${WEBHOOK_KEKS:-run:$(openssl rand -base64 32)}"
 unset LOADTEST_API_KEY # never revoke a key from the caller's environment
 ADDR="127.0.0.1:${LOAD_PORT:-18082}"
 TMP="$(mktemp -d)"

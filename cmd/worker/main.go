@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -17,6 +18,7 @@ import (
 	"github.com/skraus2/email-platform/internal/emails"
 	"github.com/skraus2/email-platform/internal/jobs"
 	"github.com/skraus2/email-platform/internal/logging"
+	"github.com/skraus2/email-platform/internal/webhooks"
 )
 
 func main() {
@@ -35,6 +37,11 @@ func run() error {
 		return err
 	}
 	logger := logging.New(os.Stdout, cfg.LogFormat, cfg.LogLevel, "worker")
+	if cfg.WebhookKeys == nil {
+		// Every status change may create a webhook delivery; without keys
+		// none could ever be signed.
+		return errors.New("WEBHOOK_KEKS is required: webhook secrets cannot be decrypted without it")
+	}
 
 	pool, err := database.Open(ctx, cfg.DatabaseURL)
 	if err != nil {
@@ -62,12 +69,28 @@ func run() error {
 	if err := dispatcher.LimitProviderRate(cfg.ProviderRatePerSecond); err != nil {
 		return err
 	}
+	enqueuer, err := jobs.NewEnqueuer(pool, logger, cfg.SendMaxAttempts)
+	if err != nil {
+		return err
+	}
+	dispatcher.Events().OnStatusChange(webhooks.NewOutbox(enqueuer).OnStatusChange)
+	deliverer, err := webhooks.NewDeliverer(webhooks.DelivererConfig{
+		Pool: pool, Logger: logger, Keys: cfg.WebhookKeys, Targets: cfg.WebhookTargets,
+		Timeout: cfg.WebhookTimeout, MaxAttempts: cfg.WebhookMaxAttempts,
+		Retry: jobs.RetryPolicy{Base: cfg.WebhookRetryBaseDelay, Max: cfg.WebhookRetryMaxDelay},
+	})
+	if err != nil {
+		return err
+	}
 	worker, err := jobs.NewWorker(jobs.WorkerConfig{
 		Pool:   pool,
 		Logger: logger,
 		Handlers: jobs.Handlers{
-			SendEmail: dispatcher.SendEmail,
-			Cleanup:   dispatcher.Cleanup,
+			SendEmail:      dispatcher.SendEmail,
+			DeliverWebhook: deliverer.Deliver,
+			Cleanup: func(ctx context.Context) error {
+				return errors.Join(dispatcher.Cleanup(ctx), deliverer.Cleanup(ctx))
+			},
 		},
 		Retry:       jobs.RetryPolicy{Base: cfg.RetryBaseDelay, Max: cfg.RetryMaxDelay},
 		Concurrency: workerConcurrency,
@@ -75,6 +98,8 @@ func run() error {
 		// still "running" well past that belongs to a dead worker.
 		JobTimeout:           jobs.AttemptBudget(cfg.ProviderTimeout),
 		RescueStuckJobsAfter: cfg.JobRescueAfter,
+		WebhookConcurrency:   cfg.WebhookConcurrency,
+		WebhookTimeout:       cfg.WebhookTimeout,
 	})
 	if err != nil {
 		return err
