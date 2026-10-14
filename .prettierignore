@@ -7,3 +7,6 @@ bin/
 tmp/
 *.go
 go.sum
+
+# Provider payload fixtures are kept byte-for-byte as the provider sends them.
+internal/events/ses/testdata/
