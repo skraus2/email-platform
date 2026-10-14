@@ -9,6 +9,7 @@ set -euo pipefail
 : "${DATABASE_URL:?DATABASE_URL must be set (make sets a local default)}"
 # shellcheck source=scripts/local-guard.sh
 source "$(dirname "$0")/local-guard.sh"
+unset LOADTEST_API_KEY # never revoke a key from the caller's environment
 ADDR="127.0.0.1:${LOAD_PORT:-18082}"
 TMP="$(mktemp -d)"
 API_PID="" WORKER_PID=""
@@ -21,7 +22,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-export LOG_FORMAT=json LOG_LEVEL=warn API_RATE_LIMIT_PER_MINUTE=1000000 \
+export LOG_FORMAT=json LOG_LEVEL=info API_RATE_LIMIT_PER_MINUTE=1000000 \
   PROVIDER_RATE_PER_SECOND="${LOAD_PROVIDER_RATE:-1000}"
 
 go build -o "$TMP/" ./cmd/api ./cmd/worker ./cmd/admin
@@ -46,6 +47,6 @@ if grep -q '"level":"ERROR"' "$TMP/api.log" "$TMP/worker.log"; then
 fi
 # Needles from a file: the key must not appear in grep's command line.
 printf '%s\n' "$LOADTEST_API_KEY" "load-0@example.test" "xxxxxxxxxx" "load-1" "email_platform:email_platform@" >"$TMP/needles"
-if grep -qFf "$TMP/needles" "$TMP/api.log" "$TMP/worker.log"; then
+if grep -qiFf "$TMP/needles" "$TMP/api.log" "$TMP/worker.log"; then
   echo "LOAD FAIL: logs contain a secret, address, idempotency key or body" >&2; exit 1
 fi

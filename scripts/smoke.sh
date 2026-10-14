@@ -29,7 +29,10 @@ API_PID=$!
 LOG_FORMAT=json "$TMP/worker" >"$TMP/worker.log" 2>&1 &
 WORKER_PID=$!
 
-fail() { echo "SMOKE FAIL: $*" >&2; echo "--- api.log" >&2; cat "$TMP/api.log" >&2; echo "--- worker.log" >&2; cat "$TMP/worker.log" >&2; exit 1; }
+# Logs are printed on failure with the run's secrets filtered out (the
+# needles file is written as soon as the key exists).
+redact() { if [[ -s "$TMP/needles" ]]; then grep -viFf "$TMP/needles" "$1" || true; else cat "$1"; fi; }
+fail() { echo "SMOKE FAIL: $*" >&2; echo "--- api.log" >&2; redact "$TMP/api.log" >&2; echo "--- worker.log" >&2; redact "$TMP/worker.log" >&2; exit 1; }
 
 for _ in $(seq 1 50); do
   curl -fsS "http://$ADDR/healthz" >/dev/null 2>&1 && break
@@ -53,6 +56,8 @@ echo "worker -> ready"
 project=$("$TMP/admin" project create -name "smoke-$(date +%s)-$RANDOM" | cut -f1) || fail "admin project create"
 key=$("$TMP/admin" key create -project "$project" 2>"$TMP/admin.err") || fail "admin key create: $(cat "$TMP/admin.err")"
 [[ "$key" == ep_* ]] || fail "admin did not issue a key"
+# Needles from a file: the key must not appear in grep's command line.
+printf '%s\n' "$key" "smoke-recipient@example.test" "blocked@example.test" "smoke body" "smoke-par-" >"$TMP/needles"
 # Pass the key via a file, not the command line (visible in ps).
 umask 077
 printf 'Authorization: Bearer %s\n' "$key" >"$TMP/auth.header"
@@ -89,7 +94,7 @@ post_keyed() {
 run="$(date +%s)-$RANDOM"
 par_pids=()
 for i in $(seq 1 8); do post_keyed "$i" & par_pids+=($!); done
-wait "${par_pids[@]}"
+wait "${par_pids[@]}" || true # each request's status is checked below
 par_ids=$(for i in $(seq 1 8); do
   [[ $(cat "$TMP/par.$i.code") == 202 ]] || fail "parallel POST $i: $(cat "$TMP/par.$i.code")"
   sed -nE 's/.*"id":"([0-9a-f-]{36})".*/\1/p' "$TMP/par.$i.json"
@@ -101,9 +106,14 @@ for _ in $(seq 1 50); do
   [[ "$count" -ge 1 ]] && break
   sleep 0.1
 done
-sleep 0.5
-count=$(curl -sS "$MAILPIT_URL/api/v1/search?query=message-id:%22$par_ids@email-platform.local%22" | sed -E 's/.*"messages_count":([0-9]+).*/\1/')
 [[ "$count" == 1 ]] || fail "parallel same-key requests: Mailpit holds $count copies, want 1"
+par_state=$(curl -sS "http://$ADDR/v1/emails/$par_ids" -H @"$TMP/auth.header")
+for _ in $(seq 1 50); do
+  [[ "$par_state" == *'"status":"captured"'* ]] && break
+  sleep 0.1
+  par_state=$(curl -sS "http://$ADDR/v1/emails/$par_ids" -H @"$TMP/auth.header")
+done
+[[ "$par_state" == *'"status":"captured"'* && "$par_state" == *'"attempts":1,'* ]] || fail "parallel email not captured in one attempt: $par_state"
 echo "8 parallel POSTs with one Idempotency-Key -> 1 email, 1 message in Mailpit"
 
 # A suppressed recipient is refused.
@@ -125,10 +135,6 @@ done
 grep -qiE '^retry-after: [0-9]+' "$TMP/rl.headers" || fail "429 without Retry-After"
 echo "project rate limit -> 429 with $(grep -i '^retry-after' "$TMP/rl.headers" | tr -d '\r')"
 
-# Needles from a file: the key must not appear in grep's command line.
-printf '%s\n' "$key" "smoke-recipient@example.test" "blocked@example.test" "smoke body" "smoke-par-" >"$TMP/needles"
-if grep -qiFf "$TMP/needles" "$TMP/api.log" "$TMP/worker.log"; then fail "logs contain a secret, idempotency key or personal data"; fi
-echo "logs contain no API key, idempotency key, recipient or body"
 
 kill -TERM "$API_PID" "$WORKER_PID"
 wait "$API_PID" || fail "api exited non-zero after SIGTERM"
@@ -136,6 +142,12 @@ wait "$WORKER_PID" || fail "worker exited non-zero after SIGTERM"
 grep -q '"shutdown complete"' "$TMP/api.log" || fail "api did not log shutdown complete"
 grep -q '"shutdown complete"' "$TMP/worker.log" || fail "worker did not log shutdown complete"
 echo "SIGTERM -> api and worker shut down cleanly"
+
+# After shutdown, so that lines written while stopping are checked too.
+if grep -qiFf "$TMP/needles" "$TMP/api.log" "$TMP/worker.log"; then
+  echo "SMOKE FAIL: logs contain a secret, idempotency key or personal data" >&2; exit 1
+fi
+echo "logs contain no API key, idempotency key, recipient or body"
 
 if grep -q 'email_platform:email_platform@' "$TMP/api.log" "$TMP/worker.log"; then
   fail "database password appeared in logs"

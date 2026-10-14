@@ -112,7 +112,7 @@ check: fmt-check lint test build ## Fast full gate (no Docker needed)
 ci: check test-integration smoke ## Local superset of CI gates (needs `make up migrate`)
 
 .PHONY: smoke
-smoke: ## Start API + worker binaries, probe health endpoints, stop them
+smoke: ## Real API + worker: health, send, idempotency, 422/429, log leaks, SIGTERM
 	./scripts/smoke.sh
 
 .PHONY: load
