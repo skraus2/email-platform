@@ -18,7 +18,9 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"slices"
@@ -50,22 +52,40 @@ func run() error {
 	total := flag.Int("n", 2000, "requests")
 	size := flag.Int("size", 2048, "text body size in bytes")
 	drainTimeout := flag.Duration("drain-timeout", 10*time.Minute, "how long to wait for the worker")
-	pids := flag.String("pids", "", "comma-separated api,worker PIDs for memory sampling")
+	pids := flag.String("pids", "", "processes to sample memory of, as name=PID,name=PID")
 	flag.Parse()
+	if *concurrency < 1 || *total < 1 || *size < 0 {
+		return errors.New("-c and -n must be at least 1, -size at least 0")
+	}
+	if err := loopbackURL(*addr); err != nil {
+		return err
+	}
 	key := os.Getenv("LOADTEST_API_KEY")
 	if key == "" {
 		return errors.New("LOADTEST_API_KEY is required")
 	}
 	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, os.Getenv("DATABASE_URL"))
+	cfg, err := pgxpool.ParseConfig(os.Getenv("DATABASE_URL"))
+	if err != nil {
+		return errors.New("DATABASE_URL is not a valid PostgreSQL URL")
+	}
+	if !loopbackHost(cfg.ConnConfig.Host) {
+		return errors.New("DATABASE_URL must point at a local database")
+	}
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		return errors.New("cannot connect to DATABASE_URL")
 	}
 	defer pool.Close()
 
-	sampler := startSampler(ctx, pool, strings.Split(*pids, ","))
+	sampler := startSampler(ctx, pool, parsePIDs(*pids))
 	body := strings.Repeat("x", *size)
-	client := &http.Client{Timeout: 30 * time.Second}
+	// One kept-alive connection per client goroutine: the default transport
+	// keeps only 2 idle connections per host, so most requests would dial
+	// anew and the run would measure connection churn.
+	client := &http.Client{Timeout: 30 * time.Second, Transport: &http.Transport{
+		MaxIdleConnsPerHost: *concurrency, MaxConnsPerHost: *concurrency,
+	}}
 	results := make([]result, *total)
 	var next atomic.Int64
 	var wg sync.WaitGroup
@@ -86,15 +106,18 @@ func run() error {
 
 	var ids []string
 	codes := map[int]int{}
-	var lat []time.Duration
+	var lat, failedLat []time.Duration
 	for _, r := range results {
 		codes[r.status]++
-		lat = append(lat, r.latency)
 		if r.status == http.StatusAccepted {
 			ids = append(ids, r.id)
+			lat = append(lat, r.latency)
+		} else {
+			failedLat = append(failedLat, r.latency)
 		}
 	}
 	slices.Sort(lat)
+	slices.Sort(failedLat)
 
 	drained, err := waitTerminal(ctx, pool, ids, *drainTimeout)
 	if err != nil {
@@ -104,7 +127,7 @@ func run() error {
 	s := sampler.stop()
 
 	var statuses []string
-	rows, err := pool.Query(ctx, "SELECT status, count(*) FROM emails WHERE id::text = ANY($1) GROUP BY status ORDER BY status", ids)
+	rows, err := pool.Query(ctx, "SELECT status, count(*) FROM emails WHERE id = ANY($1::uuid[]) GROUP BY status ORDER BY status", ids)
 	if err != nil {
 		return fmt.Errorf("final states: %w", err)
 	}
@@ -117,18 +140,26 @@ func run() error {
 		statuses = append(statuses, fmt.Sprintf("%s=%d", st, n))
 	}
 	rows.Close()
-	var snoozes int64
-	_ = pool.QueryRow(ctx, `SELECT coalesce(sum((metadata->>'snoozes')::int), 0) FROM river_job
-		WHERE kind = 'send_email' AND args->>'email_id' = ANY($1)`, ids).Scan(&snoozes)
+	snoozes := "unknown"
+	var n int64
+	if err := pool.QueryRow(ctx, `SELECT coalesce(sum((metadata->>'snoozes')::int), 0) FROM river_job
+		WHERE kind = 'send_email' AND args->>'email_id' = ANY($1)`, ids).Scan(&n); err == nil {
+		snoozes = strconv.FormatInt(n, 10)
+	}
 
 	fmt.Printf("parameters      concurrency=%d requests=%d body=%dB\n", *concurrency, *total, *size)
-	fmt.Printf("POST status     %v\n", codes)
-	fmt.Printf("POST latency    p50=%v p95=%v p99=%v max=%v\n", pct(lat, 50), pct(lat, 95), pct(lat, 99), lat[len(lat)-1])
+	fmt.Printf("POST status     %v (error rate %.2f%%; -1 = transport error)\n", codes, 100*float64(*total-len(ids))/float64(*total))
+	if len(lat) > 0 {
+		fmt.Printf("POST latency    accepted: p50=%v p95=%v p99=%v max=%v\n", pct(lat, 50), pct(lat, 95), pct(lat, 99), pct(lat, 100))
+	}
+	if len(failedLat) > 0 {
+		fmt.Printf("                not accepted: p50=%v p99=%v\n", pct(failedLat, 50), pct(failedLat, 99))
+	}
 	fmt.Printf("accept rate     %.1f req/s (%v for all requests)\n", float64(*total)/acceptDur.Seconds(), acceptDur.Round(time.Millisecond))
 	fmt.Printf("queue lag       all %d accepted emails terminal %v after the first request (drain %v after the last accept)\n",
 		len(ids), endToEnd.Round(time.Millisecond), drained.Round(time.Millisecond))
 	fmt.Printf("dispatch rate   %.1f emails/s end to end\n", float64(len(ids))/endToEnd.Seconds())
-	fmt.Printf("final states    %s; snoozes=%d\n", strings.Join(statuses, " "), snoozes)
+	fmt.Printf("final states    %s; snoozes=%s\n", strings.Join(statuses, " "), snoozes)
 	fmt.Printf("db lock waits   max %d sessions waiting on locks at once (%d samples)\n", s.maxLockWaits, s.samples)
 	fmt.Printf("memory (RSS)    %s\n", s.memory())
 	return nil
@@ -167,7 +198,7 @@ func waitTerminal(ctx context.Context, pool *pgxpool.Pool, ids []string, timeout
 	start := time.Now()
 	for {
 		var open int
-		if err := pool.QueryRow(ctx, "SELECT count(*) FROM emails WHERE id::text = ANY($1) AND status IN ('queued', 'sending')", ids).Scan(&open); err != nil {
+		if err := pool.QueryRow(ctx, "SELECT count(*) FROM emails WHERE id = ANY($1::uuid[]) AND status IN ('queued', 'sending')", ids).Scan(&open); err != nil {
 			return 0, fmt.Errorf("poll: %w", err)
 		}
 		if open == 0 {
@@ -194,10 +225,23 @@ type sampler struct {
 	done         sync.WaitGroup
 	samples      int
 	maxLockWaits int
-	maxRSS       map[string]int // pid → KiB
+	maxRSS       map[string]int // process name → KiB
 }
 
-func startSampler(ctx context.Context, pool *pgxpool.Pool, pids []string) *sampler {
+// parsePIDs reads name=PID pairs; entries without a positive numeric PID are
+// ignored, so only numbers ever reach ps.
+func parsePIDs(spec string) map[string]string {
+	out := map[string]string{}
+	for _, part := range strings.Split(spec, ",") {
+		name, pid, ok := strings.Cut(part, "=")
+		if n, err := strconv.ParseUint(pid, 10, 31); ok && err == nil && n > 0 {
+			out[name] = pid
+		}
+	}
+	return out
+}
+
+func startSampler(ctx context.Context, pool *pgxpool.Pool, pids map[string]string) *sampler {
 	s := &sampler{stopCh: make(chan struct{}), maxRSS: map[string]int{}}
 	s.done.Go(func() {
 		tick := time.NewTicker(100 * time.Millisecond)
@@ -209,17 +253,16 @@ func startSampler(ctx context.Context, pool *pgxpool.Pool, pids []string) *sampl
 			case <-tick.C:
 			}
 			var waits int
-			_ = pool.QueryRow(ctx, "SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock'").Scan(&waits)
+			lockErr := pool.QueryRow(ctx, "SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock'").Scan(&waits)
 			s.mu.Lock()
-			s.samples++
-			s.maxLockWaits = max(s.maxLockWaits, waits)
-			for _, pid := range pids {
-				if _, err := strconv.Atoi(pid); err != nil {
-					continue // only numeric PIDs reach ps
-				}
-				out, err := exec.CommandContext(ctx, "ps", "-o", "rss=", "-p", pid).Output() //nolint:gosec // fixed binary, numeric argument
+			if lockErr == nil {
+				s.samples++
+				s.maxLockWaits = max(s.maxLockWaits, waits)
+			}
+			for name, pid := range pids {
+				out, err := exec.CommandContext(ctx, "ps", "-o", "rss=", "-p", pid).Output() //nolint:gosec // fixed binary, numeric argument (parsePIDs)
 				if kib, err2 := strconv.Atoi(strings.TrimSpace(string(out))); err == nil && err2 == nil {
-					s.maxRSS[pid] = max(s.maxRSS[pid], kib)
+					s.maxRSS[name] = max(s.maxRSS[name], kib)
 				}
 			}
 			s.mu.Unlock()
@@ -239,9 +282,26 @@ func (s *sampler) memory() string {
 		return "not sampled"
 	}
 	var parts []string
-	for pid, kib := range s.maxRSS {
-		parts = append(parts, fmt.Sprintf("pid %s max %.1f MiB", pid, float64(kib)/1024))
+	for name, kib := range s.maxRSS {
+		parts = append(parts, fmt.Sprintf("%s max %.1f MiB", name, float64(kib)/1024))
 	}
 	slices.Sort(parts)
 	return strings.Join(parts, ", ")
+}
+
+// loopbackURL refuses to load anything but a local API.
+func loopbackURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || !loopbackHost(u.Hostname()) {
+		return errors.New("-addr must be an http(s) URL on localhost")
+	}
+	return nil
+}
+
+func loopbackHost(h string) bool {
+	if h == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(h)
+	return ip != nil && ip.IsLoopback()
 }
