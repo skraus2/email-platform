@@ -149,12 +149,16 @@ components:
           type: string
           format: email
           maxLength: 254
-          description: Bare address, no display name.
+          description: |
+            Bare address, no display name, ASCII only (international domains
+            in punycode, e.g. `xn--bcher-kva.test`).
         to:
           type: string
           format: email
           maxLength: 254
-          description: Exactly one bare recipient address.
+          description: |
+            Exactly one bare recipient address, ASCII only (international
+            domains in punycode). Other addresses get `422 validation_failed`.
         subject:
           type: string
           minLength: 1

@@ -78,6 +78,15 @@ func (in CreateInput) Validate() error {
 // as for the from/to fields of a send request.
 func ValidateAddress(v string) error { return validateAddress("email", v) }
 
+func printableASCII(v string) bool {
+	for i := range len(v) {
+		if v[i] < 0x20 || v[i] > 0x7e {
+			return false
+		}
+	}
+	return true
+}
+
 // validateAddress accepts exactly one bare address (no display name, no
 // surrounding whitespace, no list).
 func validateAddress(field, v string) error {
@@ -88,6 +97,11 @@ func validateAddress(field, v string) error {
 		return invalid(field, "must be at most 254 characters")
 	case strings.ContainsAny(v, headerForbidCh):
 		return invalid(field, "must not contain line breaks or NUL")
+	case !printableASCII(v):
+		// One mailbox must have one spelling, or suppressions could be
+		// bypassed (Unicode vs. punycode domains, normalisation forms).
+		// Internationalised domains are accepted in punycode (xn--...).
+		return invalid(field, "must contain only ASCII characters (use punycode for international domains)")
 	}
 	a, err := mail.ParseAddress(v)
 	if err != nil || a.Name != "" || a.Address != v {

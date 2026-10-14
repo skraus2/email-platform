@@ -46,6 +46,12 @@ func TestValidateRejects(t *testing.T) {
 		{"to list", "to", func(in *CreateInput) { in.To = "a@example.test, b@example.test" }},
 		{"to no domain", "to", func(in *CreateInput) { in.To = "customer" }},
 		{"to CRLF", "to", func(in *CreateInput) { in.To = "customer@example.test\r\nBcc: x@example.test" }},
+		{"to unicode domain", "to", func(in *CreateInput) { in.To = "info@b\u00fccher.test" }},
+		{"to unicode local part", "to", func(in *CreateInput) { in.To = "j\u00fcrgen@example.test" }},
+		{"to decomposed unicode", "to", func(in *CreateInput) { in.To = "info@bu\u0308cher.test" }},
+		{"to C1 control", "to", func(in *CreateInput) { in.To = "a\u009b@example.test" }},
+		{"to bidi override", "to", func(in *CreateInput) { in.To = "a\u202e@example.test" }},
+		{"from unicode", "from", func(in *CreateInput) { in.From = "noreply@b\u00fccher.test" }},
 		{"missing subject", "subject", func(in *CreateInput) { in.Subject = "" }},
 		{"subject too long", "subject", func(in *CreateInput) { in.Subject = strings.Repeat("a", 256) }},
 		{"subject CRLF", "subject", func(in *CreateInput) { in.Subject = "Hi\r\nBcc: victim@example.test" }},
@@ -73,5 +79,13 @@ func TestValidateRejects(t *testing.T) {
 				t.Fatalf("validation message echoes the address: %q", err)
 			}
 		})
+	}
+}
+
+func TestValidateAcceptsPunycodeDomain(t *testing.T) {
+	in := valid()
+	in.To = "info@xn--bcher-kva.test"
+	if err := in.Validate(); err != nil {
+		t.Fatalf("A-label domain refused: %v", err)
 	}
 }

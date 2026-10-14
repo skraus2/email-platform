@@ -38,6 +38,7 @@ func TestSuppressionAdmin(t *testing.T) {
 		"whitespace":     {" a@example.test", "manual"},
 		"line break":     {"a@example.test\r\n", "manual"},
 		"not an email":   {"nope", "manual"},
+		"unicode domain": {"info@b\u00fccher.test", "manual"},
 		"unknown reason": {"a@example.test", "spam"},
 	} {
 		if _, err := emails.AddSuppression(ctx, q, projectID, tc.addr, tc.reason); err == nil {
