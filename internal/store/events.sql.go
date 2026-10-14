@@ -76,7 +76,7 @@ func (q *Queries) InsertProviderEvent(ctx context.Context, arg InsertProviderEve
 }
 
 const listEmailEvents = `-- name: ListEmailEvents :many
-SELECT id, project_id, email_id, origin, type, provider, provider_event_id, provider_message_id, occurred_at, received_at, details FROM email_events
+SELECT id, type, origin, provider, occurred_at, received_at, details FROM email_events
 WHERE project_id = $1 AND email_id = $2 AND id > $4
 ORDER BY id
 LIMIT $3
@@ -89,7 +89,17 @@ type ListEmailEventsParams struct {
 	After     uuid.UUID
 }
 
-func (q *Queries) ListEmailEvents(ctx context.Context, arg ListEmailEventsParams) ([]EmailEvent, error) {
+type ListEmailEventsRow struct {
+	ID         uuid.UUID
+	Type       string
+	Origin     string
+	Provider   *string
+	OccurredAt time.Time
+	ReceivedAt time.Time
+	Details    []byte
+}
+
+func (q *Queries) ListEmailEvents(ctx context.Context, arg ListEmailEventsParams) ([]ListEmailEventsRow, error) {
 	rows, err := q.db.Query(ctx, listEmailEvents,
 		arg.ProjectID,
 		arg.EmailID,
@@ -100,18 +110,14 @@ func (q *Queries) ListEmailEvents(ctx context.Context, arg ListEmailEventsParams
 		return nil, err
 	}
 	defer rows.Close()
-	items := []EmailEvent{}
+	items := []ListEmailEventsRow{}
 	for rows.Next() {
-		var i EmailEvent
+		var i ListEmailEventsRow
 		if err := rows.Scan(
 			&i.ID,
-			&i.ProjectID,
-			&i.EmailID,
-			&i.Origin,
 			&i.Type,
+			&i.Origin,
 			&i.Provider,
-			&i.ProviderEventID,
-			&i.ProviderMessageID,
 			&i.OccurredAt,
 			&i.ReceivedAt,
 			&i.Details,

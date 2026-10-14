@@ -369,9 +369,17 @@ func List(ctx context.Context, q *store.Queries, projectID, emailID, after uuid.
 	}
 	out := make([]Event, 0, len(rows))
 	for _, r := range rows {
-		details := map[string]string{}
-		if err := json.Unmarshal(r.Details, &details); err != nil {
+		stored := map[string]string{}
+		if err := json.Unmarshal(r.Details, &stored); err != nil {
 			return nil, fmt.Errorf("decode event details: %w", err)
+		}
+		// Filtered on read too, so a write path that skipped validation can
+		// never expose more than the allowlist.
+		details := map[string]string{}
+		for k, v := range stored {
+			if (detailKeys[k] || k == "error_code") && len(v) <= maxDetailLen && printable(v) {
+				details[k] = v
+			}
 		}
 		out = append(out, Event{
 			ID: r.ID, Type: r.Type, Origin: r.Origin, Provider: r.Provider,

@@ -3,6 +3,8 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -10,6 +12,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/skraus2/email-platform/internal/auth"
 	"github.com/skraus2/email-platform/internal/emails"
@@ -96,11 +99,12 @@ func TestListEventsPaginates(t *testing.T) {
 	if svc.askedAfter != svc.all[1].ID {
 		t.Fatalf("cursor decoded to %s, want %s", svc.askedAfter, svc.all[1].ID)
 	}
-	if rec, _ := listEvents(t, s, base); rec.Code != http.StatusOK || svc.askedLimit != defaultEventPage {
-		t.Fatalf("default limit = %d (code %d)", svc.askedLimit, rec.Code)
+	def, _ := listEvents(t, s, base)
+	if def.Code != http.StatusOK || svc.askedLimit != defaultEventPage {
+		t.Fatalf("default limit = %d (code %d)", svc.askedLimit, def.Code)
 	}
-	if !strings.Contains(rec.Body.String(), `"details":{}`) {
-		t.Fatalf("details not an object: %s", rec.Body.String())
+	if !strings.Contains(def.Body.String(), `"details":{}`) {
+		t.Fatalf("details not an object: %s", def.Body.String())
 	}
 }
 
@@ -116,6 +120,7 @@ func TestListEventsRejects(t *testing.T) {
 		base + "?limit=abc":                          {400, "invalid_limit"},
 		base + "?limit=1&limit=2":                    {400, "invalid_limit"},
 		base + "?cursor=nope!":                       {400, "invalid_cursor"},
+		base + "?limit=%zz":                          {400, "invalid_limit"},
 		base + "?cursor=" + strings.Repeat("A", 30):  {400, "invalid_cursor"},
 		"/v1/emails/not-a-uuid/events":               {404, "not_found"},
 		"/v1/emails/" + uuid.NewString() + "/events": {404, "not_found"},
@@ -140,5 +145,41 @@ func TestListEventsRejects(t *testing.T) {
 	s.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("POST = %d, want 405", rec.Code)
+	}
+}
+
+type failingEvents struct {
+	fakeEmails
+	err error
+}
+
+func (f *failingEvents) Events(context.Context, uuid.UUID, uuid.UUID, uuid.UUID, int) ([]events.Event, bool, error) {
+	return nil, false, f.err
+}
+
+func TestListEventsDatabaseErrors(t *testing.T) {
+	for _, tc := range []struct {
+		err     error
+		code    int
+		errCode string
+	}{
+		{fmt.Errorf("list: %w", &pgconn.PgError{Code: "57P03"}), http.StatusServiceUnavailable, "service_unavailable"},
+		{errors.New("boom"), http.StatusInternalServerError, "internal_error"},
+	} {
+		svc := &failingEvents{err: tc.err}
+		s, logs := emailServer(t, &svc.fakeEmails, principal)
+		s.emails = svc
+		rec, _ := listEvents(t, s, "/v1/emails/"+uuid.NewString()+"/events")
+		if rec.Code != tc.code {
+			t.Fatalf("%v: code %d, want %d", tc.err, rec.Code, tc.code)
+		}
+		assertErrorCode(t, rec, tc.errCode)
+		if tc.code == http.StatusServiceUnavailable && rec.Header().Get("Retry-After") == "" {
+			t.Error("503 without Retry-After")
+		}
+		if strings.Contains(rec.Body.String(), "boom") || strings.Contains(rec.Body.String(), "57P03") {
+			t.Errorf("internal error text in the response: %s", rec.Body.String())
+		}
+		_ = logs
 	}
 }

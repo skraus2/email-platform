@@ -35,7 +35,7 @@ ORDER BY email_status_rank(type) DESC, id
 LIMIT 1;
 
 -- name: ListEmailEvents :many
-SELECT * FROM email_events
+SELECT id, type, origin, provider, occurred_at, received_at, details FROM email_events
 WHERE project_id = $1 AND email_id = $2 AND id > sqlc.arg(after)
 ORDER BY id
 LIMIT $3;

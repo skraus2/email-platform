@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strconv"
 	"time"
 
@@ -51,7 +52,11 @@ func (s *Server) handleListEvents(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "resource not found")
 		return
 	}
-	query := r.URL.Query()
+	query, err := url.ParseQuery(r.URL.RawQuery)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_limit", "the query string is malformed")
+		return
+	}
 	limit := defaultEventPage
 	if v, ok := query["limit"]; ok {
 		n, err := strconv.Atoi(v[0])

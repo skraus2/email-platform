@@ -15,6 +15,7 @@ sql:
       - db/migrations/00009_sender_identities.sql
       - db/migrations/00010_email_events.sql
       - db/migrations/00011_webhook_endpoints.sql
+      - db/migrations/00012_event_receive_time.sql
     queries: db/queries
     gen:
       go:
