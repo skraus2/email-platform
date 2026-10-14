@@ -111,6 +111,16 @@ func (s *Service) Create(ctx context.Context, projectID uuid.UUID, in CreateInpu
 		// project hammering the API cannot tie up connections for others.
 		// The checks after the key claim below stay authoritative.
 		if err := s.refuse(ctx, q, projectID, in.To, false); err != nil {
+			if key != nil {
+				// A concurrent request with the same key may have committed
+				// (and filled the window) after the lookup above: replay it
+				// rather than refuse a duplicate of an accepted request.
+				id, found, kerr := matchKey(ctx, q, *key, fingerprint)
+				if kerr != nil || found {
+					replayOf = id
+					return kerr
+				}
+			}
 			return err
 		}
 		var err error
