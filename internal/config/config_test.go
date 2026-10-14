@@ -251,8 +251,7 @@ func TestLoadWebhookSettings(t *testing.T) {
 		t.Fatalf("explicit = %+v, %v", cfg.WebhookTargets, err)
 	}
 
-	prod := map[string]string{"APP_ENV": "production", "DATABASE_URL": devURL + "&sslmode=require"}
-	prod["DATABASE_URL"] = "postgres://ep:s3cret@db.internal:5432/ep?sslmode=require"
+	prod := map[string]string{"APP_ENV": "production", "DATABASE_URL": "postgres://ep:s3cret@db.internal:5432/ep?sslmode=require"}
 	cfg, err = Load(env(prod))
 	if err != nil || cfg.WebhookTargets.AllowHTTP || cfg.WebhookTargets.AllowPrivate {
 		t.Fatalf("production defaults = %+v, %v; want both off", cfg.WebhookTargets, err)

@@ -56,7 +56,7 @@ type Config struct {
 	RequireVerifiedSender bool
 
 	// WebhookKeys encrypt and decrypt webhook endpoint secrets (nil when
-	// WEBHOOK_KEKS is unset; processes that need it refuse to start).
+	// WEBHOOK_KEKS is unset; every use then fails with webhooks.ErrNoKeys).
 	WebhookKeys *webhooks.Keyring
 	// WebhookTargets limits which webhook URLs and addresses may be called.
 	WebhookTargets webhooks.TargetPolicy

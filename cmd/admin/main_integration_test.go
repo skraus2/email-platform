@@ -96,7 +96,8 @@ func TestWebhookCommands(t *testing.T) {
 	secret := lines[1][strings.Index(lines[1], "whsec_"):]
 
 	out, err = admin(t, "webhook", "list", "-project", project)
-	if err != nil || !strings.Contains(out, id) || !strings.Contains(out, "active") || strings.Contains(out, secret) {
+	if err != nil || !strings.Contains(out, id) || !strings.Contains(out, "active") || strings.Contains(out, secret) ||
+		!strings.Contains(out, "127.0.0.1:9/hook") || !strings.Contains(out, "email.bounced,email.complained") {
 		t.Fatalf("list = %q, %v (must not show the secret)", out, err)
 	}
 	if _, err := admin(t, "webhook", "disable", "-project", project, "-id", id); err != nil {

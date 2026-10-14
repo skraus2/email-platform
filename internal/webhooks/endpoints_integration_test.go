@@ -199,3 +199,37 @@ func TestReencryptMovesSecretsToActiveKey(t *testing.T) {
 		t.Fatalf("second run = %d, %v", n, err)
 	}
 }
+
+// Re-encryption is all or nothing: a secret that cannot be decrypted, found
+// after others were already re-encrypted, rolls all of them back.
+func TestReencryptIsAtomic(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	pool, q, projectID := setup(t)
+	k1 := keyring(t, "k1:"+key(1))
+	var ids []uuid.UUID
+	for range 2 {
+		e, _, err := CreateEndpoint(ctx, q, k1, lax, projectID, "https://hooks.example.test/", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, e.ID)
+	}
+	// Created last, so it sorts last: encrypted under a key that the
+	// re-encryption below does not know.
+	lost, _, err := CreateEndpoint(ctx, q, keyring(t, "k0:"+key(9)), lax, projectID, "https://hooks.example.test/", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Reencrypt(ctx, pool, keyring(t, "k2:"+key(2)+",k1:"+key(1))); !errors.Is(err, ErrUndecryptable) {
+		t.Fatalf("err = %v, want ErrUndecryptable", err)
+	}
+	for _, id := range ids {
+		if kid := storedRow(t, q, projectID, id).SecretKeyID; kid != "k1" {
+			t.Fatalf("endpoint %s moved to %s although the run failed", id, kid)
+		}
+	}
+	if kid := storedRow(t, q, projectID, lost.ID).SecretKeyID; kid != "k0" {
+		t.Fatalf("undecryptable endpoint changed to %s", kid)
+	}
+}

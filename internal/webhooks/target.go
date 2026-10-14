@@ -28,6 +28,8 @@ var ErrForbiddenTarget = errors.New("webhook target not allowed")
 // MaxURLLen bounds a webhook URL.
 const MaxURLLen = 2048
 
+const defaultClientTimeout = 10 * time.Second
+
 func forbidden(format string, args ...any) error {
 	return fmt.Errorf("%w: %s", ErrForbiddenTarget, fmt.Sprintf(format, args...))
 }
@@ -63,17 +65,51 @@ func (p TargetPolicy) ValidateURL(raw string) (*url.URL, error) {
 			return nil, forbidden("invalid port")
 		}
 	}
+	if len(u.String()) > MaxURLLen {
+		return nil, forbidden("URL must be at most %d bytes once escaped", MaxURLLen)
+	}
 	if ip, err := netip.ParseAddr(host); err == nil {
 		if err := p.checkIP(ip); err != nil {
 			return nil, err
 		}
+	} else if numericHost(host) {
+		// 2130706433, 0177.0.0.1, 0x7f.1: resolvers may read these as IPv4.
+		return nil, forbidden("IPv4 addresses must be written as four decimal numbers")
 	} else if h := strings.ToLower(strings.TrimSuffix(host, ".")); (h == "localhost" || strings.HasSuffix(h, ".localhost")) && !p.AllowPrivate {
 		return nil, forbidden("loopback host")
 	}
 	return u, nil
 }
 
+// numericHost reports a host made only of digits, dots and hex notation
+// that is not a canonical IP address.
+func numericHost(h string) bool {
+	h = strings.ToLower(h)
+	for _, label := range strings.Split(h, ".") {
+		if label == "" {
+			continue
+		}
+		digits := strings.TrimPrefix(label, "0x")
+		if strings.Trim(digits, "0123456789abcdef") != "" || (digits == label && strings.Trim(label, "0123456789") != "") {
+			return false
+		}
+	}
+	return true
+}
+
 var (
+	// Never targets, even where private networks are allowed: cloud
+	// metadata services outside link-local, IETF protocol assignments,
+	// reserved space, and IPv6 forms that tunnel to arbitrary IPv4 hosts.
+	alwaysRefused = []netip.Prefix{
+		netip.MustParsePrefix("fd00:ec2::254/128"),  // AWS instance metadata (IPv6)
+		netip.MustParsePrefix("100.100.100.200/32"), // Alibaba Cloud metadata
+		netip.MustParsePrefix("192.0.0.0/24"),       // IETF protocol assignments
+		netip.MustParsePrefix("240.0.0.0/4"),        // reserved
+		netip.MustParsePrefix("::/96"),              // IPv4-compatible (deprecated)
+		netip.MustParsePrefix("64:ff9b:1::/48"),     // local-use NAT64
+		netip.MustParsePrefix("2001::/32"),          // Teredo
+	}
 	thisNetwork = netip.MustParsePrefix("0.0.0.0/8")
 	cgnat       = netip.MustParsePrefix("100.64.0.0/10")
 	nat64       = netip.MustParsePrefix("64:ff9b::/96")
@@ -95,6 +131,18 @@ func (p TargetPolicy) checkIP(ip netip.Addr) error {
 			return p.checkIP(netip.AddrFrom4([4]byte(b[2:6])))
 		}
 	}
+	if ip.IsLoopback() && ip.Is6() {
+		// ::1 lies in ::/96 but is plain loopback.
+		if !p.AllowPrivate {
+			return forbidden("private or loopback address %s", ip)
+		}
+		return nil
+	}
+	for _, r := range alwaysRefused {
+		if r.Contains(ip) {
+			return forbidden("address %s is never a webhook target", ip)
+		}
+	}
 	switch {
 	case !ip.IsValid(), ip.IsUnspecified(), thisNetwork.Contains(ip), ip == broadcast,
 		ip.IsLinkLocalUnicast(), ip.IsLinkLocalMulticast(), ip.IsInterfaceLocalMulticast(), ip.IsMulticast():
@@ -109,8 +157,12 @@ func (p TargetPolicy) checkIP(ip netip.Addr) error {
 
 // Client returns an HTTP client that checks every connection's resolved
 // address, never uses a proxy (which would hide the target from the check)
-// and never follows redirects. timeout 0 means no client timeout.
+// and never follows redirects. timeout bounds a whole request; values of
+// zero or less mean the default of 10 seconds, never "no limit".
 func (p TargetPolicy) Client(timeout time.Duration) *http.Client {
+	if timeout <= 0 {
+		timeout = defaultClientTimeout
+	}
 	dialer := &net.Dialer{
 		Timeout: 10 * time.Second,
 		Control: func(_, address string, _ syscall.RawConn) error {

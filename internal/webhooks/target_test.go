@@ -41,17 +41,20 @@ func TestValidateURL(t *testing.T) {
 		"https://hooks.localhost/",
 		"https://hooks.example.test:0/",
 		"https://hooks.example.test:99999/",
+		"https://2130706433/", "https://0177.0.0.1/", "https://0x7f000001/", "https://127.1/", "https://0x7f.1/",
+		"https://[fd00:ec2::254]/",
 	} {
 		if _, err := strict.ValidateURL(bad); err == nil {
 			t.Errorf("%q accepted by the strict policy", bad)
 		}
 	}
-	for _, ok := range []string{"http://127.0.0.1:9000/hook", "https://10.0.0.1/", "http://localhost:8080/"} {
+	for _, ok := range []string{"http://127.0.0.1:9000/hook", "https://10.0.0.1/", "http://localhost:8080/", "http://[::1]:8080/", "https://cafe.example.test/", "https://1.example.test/"} {
 		if _, err := lax.ValidateURL(ok); err != nil {
 			t.Errorf("%s with private+http allowed: %v", ok, err)
 		}
 	}
-	for _, bad := range []string{"https://169.254.169.254/", "http://[fe80::1]/", "https://224.0.0.1/", "https://[::]/"} {
+	for _, bad := range []string{"https://169.254.169.254/", "http://[fe80::1]/", "https://224.0.0.1/", "https://[::]/",
+		"https://[fd00:ec2::254]/", "https://100.100.100.200/", "https://2130706433/"} {
 		if _, err := lax.ValidateURL(bad); err == nil {
 			t.Errorf("%q accepted although always forbidden", bad)
 		}
@@ -62,7 +65,9 @@ func TestCheckIP(t *testing.T) {
 	always := []string{
 		"0.0.0.0", "0.1.2.3", "169.254.169.254", "169.254.0.1", "224.0.0.1", "255.255.255.255",
 		"::", "fe80::1", "ff02::1", "::ffff:169.254.169.254", "::ffff:0.0.0.0",
-		"64:ff9b::a9fe:a9fe", // NAT64 of 169.254.169.254
+		"64:ff9b::a9fe:a9fe",               // NAT64 of 169.254.169.254
+		"fd00:ec2::254", "100.100.100.200", // cloud metadata outside link-local
+		"192.0.0.1", "240.0.0.1", "::a9fe:a9fe", "64:ff9b:1::1", "2001:0:4136:e378::1",
 	}
 	private := []string{
 		"127.0.0.1", "10.1.2.3", "172.16.0.1", "192.168.1.1", "100.64.0.1", "::1", "fc00::1", "fd12::1",
@@ -118,6 +123,20 @@ func TestClientChecksResolvedAddress(t *testing.T) {
 	}
 	if !errors.Is(err, ErrForbiddenTarget) {
 		t.Fatalf("loopback with the strict policy: err = %v, want ErrForbiddenTarget", err)
+	}
+
+	// A host name is checked on the address it resolves to at dial time.
+	byName := strings.Replace(srv.URL, "127.0.0.1", "localhost", 1) + "/hook"
+	req, _ = http.NewRequestWithContext(context.Background(), http.MethodPost, byName, nil)
+	resp, err = strict.Do(req)
+	if err == nil {
+		_ = resp.Body.Close()
+	}
+	if !errors.Is(err, ErrForbiddenTarget) || hits != 0 {
+		t.Fatalf("localhost by name with the strict policy: err = %v, hits %d; want ErrForbiddenTarget and no request", err, hits)
+	}
+	if strict.Timeout != defaultClientTimeout {
+		t.Fatalf("Client(0) timeout = %v, want the default, never unlimited", strict.Timeout)
 	}
 
 	lax := TargetPolicy{AllowHTTP: true, AllowPrivate: true}.Client(0)
