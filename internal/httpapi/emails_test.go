@@ -285,3 +285,12 @@ func TestEmailsDatabaseUnavailable(t *testing.T) {
 	}
 	assertErrorCode(t, rec, "service_unavailable")
 }
+
+func TestCreateEmailSenderNotVerified(t *testing.T) {
+	s, _ := emailServer(t, &fakeEmails{err: emails.ErrSenderNotVerified}, principal)
+	rec := post(t, s, okBody, nil)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("code = %d, want 422", rec.Code)
+	}
+	assertErrorCode(t, rec, "sender_not_verified")
+}

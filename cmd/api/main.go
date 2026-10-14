@@ -57,9 +57,13 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	service := emails.NewService(pool, enqueuer, logger, cfg.APIRateLimitPerMinute)
+	if cfg.RequireVerifiedSender {
+		service.RequireVerifiedSenders()
+	}
 	api := httpapi.New(httpapi.Deps{
 		Logger: logger,
-		Emails: emails.NewService(pool, enqueuer, logger, cfg.APIRateLimitPerMinute),
+		Emails: service,
 		Authenticate: func(ctx context.Context, token string) (auth.Principal, error) {
 			return auth.Authenticate(ctx, queries.GetActiveKeyByPrefix, token)
 		},

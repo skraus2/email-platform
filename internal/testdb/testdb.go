@@ -96,7 +96,20 @@ func redact(err error) error {
 // NewMigrated creates a throwaway database with all migrations applied.
 func NewMigrated(t testing.TB) *pgxpool.Pool {
 	t.Helper()
-	pool := New(t)
+	_, pool := NewMigratedURL(t)
+	return pool
+}
+
+// NewMigratedURL is NewMigrated that also returns the database URL, for
+// tests that start code which opens its own connection.
+func NewMigratedURL(t testing.TB) (string, *pgxpool.Pool) {
+	t.Helper()
+	dbURL := NewURL(t)
+	pool, err := pgxpool.New(context.Background(), dbURL)
+	if err != nil {
+		t.Fatal("testdb: cannot connect to the throwaway database")
+	}
+	t.Cleanup(pool.Close)
 	m, err := database.NewMigrator(pool)
 	if err != nil {
 		t.Fatalf("testdb: migrator: %v", err)
@@ -105,5 +118,5 @@ func NewMigrated(t testing.TB) *pgxpool.Pool {
 	if _, err := m.Up(context.Background()); err != nil {
 		t.Fatalf("testdb: migrate: %v", err)
 	}
-	return pool
+	return dbURL, pool
 }

@@ -220,3 +220,19 @@ func TestLoadAcceptsComposeMailpitHost(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestLoadRequireVerifiedSender(t *testing.T) {
+	cfg, err := Load(env(map[string]string{"DATABASE_URL": devURL}))
+	if err != nil || cfg.RequireVerifiedSender {
+		t.Fatalf("default = %v, %v; want off for the local test sink", cfg.RequireVerifiedSender, err)
+	}
+	cfg, err = Load(env(map[string]string{"DATABASE_URL": devURL, "REQUIRE_VERIFIED_SENDER": "true"}))
+	if err != nil || !cfg.RequireVerifiedSender {
+		t.Fatalf("true = %v, %v", cfg.RequireVerifiedSender, err)
+	}
+	for _, bad := range []string{"yes", "1", "TRUE ", "on"} {
+		if _, err := Load(env(map[string]string{"DATABASE_URL": devURL, "REQUIRE_VERIFIED_SENDER": bad})); err == nil || !strings.Contains(err.Error(), "REQUIRE_VERIFIED_SENDER") {
+			t.Errorf("%q: err = %v, want a REQUIRE_VERIFIED_SENDER error", bad, err)
+		}
+	}
+}

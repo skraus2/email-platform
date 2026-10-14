@@ -41,6 +41,12 @@ func newStack(t *testing.T) *stack {
 // newLimitedStack is newStack with a send rate limit per project and minute.
 func newLimitedStack(t *testing.T, perMinute int) *stack {
 	t.Helper()
+	return newStackWith(t, perMinute, false)
+}
+
+// newStackWith also sets whether senders must be verified identities.
+func newStackWith(t *testing.T, perMinute int, requireSender bool) *stack {
+	t.Helper()
 	pool := testdb.NewMigrated(t)
 	q := store.New(pool)
 	logger := slog.New(slog.DiscardHandler)
@@ -48,9 +54,13 @@ func newLimitedStack(t *testing.T, perMinute int) *stack {
 	if err != nil {
 		t.Fatal(err)
 	}
+	svc := emails.NewService(pool, enq, logger, perMinute)
+	if requireSender {
+		svc.RequireVerifiedSenders()
+	}
 	api := httpapi.New(httpapi.Deps{
 		Logger: logger,
-		Emails: emails.NewService(pool, enq, logger, perMinute),
+		Emails: svc,
 		Authenticate: func(ctx context.Context, token string) (auth.Principal, error) {
 			return auth.Authenticate(ctx, q.GetActiveKeyByPrefix, token)
 		},
@@ -281,5 +291,29 @@ func TestPostEmailToSuppressedRecipientOverHTTP(t *testing.T) {
 	_ = s.pool.QueryRow(context.Background(), "SELECT count(*) FROM emails").Scan(&n)
 	if n != 0 {
 		t.Fatalf("emails = %d, want 0", n)
+	}
+}
+
+func TestPostEmailUnverifiedSenderOverHTTP(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s := newStackWith(t, 1_000_000, true)
+	projectID, token := s.project(t)
+	code, body := s.do(t, http.MethodPost, "/v1/emails", token, sendBody)
+	if e, _ := body["error"].(map[string]any); code != http.StatusUnprocessableEntity || e["code"] != "sender_not_verified" {
+		t.Fatalf("POST = %d %v, want 422 sender_not_verified", code, body)
+	}
+	id, err := emails.AddSender(ctx, s.q, projectID, emails.SenderDomain, "example.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code, _ := s.do(t, http.MethodPost, "/v1/emails", token, sendBody); code != http.StatusUnprocessableEntity {
+		t.Fatalf("pending identity: POST = %d, want 422", code)
+	}
+	if _, err := emails.VerifySender(ctx, s.q, id.ID); err != nil {
+		t.Fatal(err)
+	}
+	if code, body := s.do(t, http.MethodPost, "/v1/emails", token, sendBody); code != http.StatusAccepted {
+		t.Fatalf("verified: POST = %d %v, want 202", code, body)
 	}
 }

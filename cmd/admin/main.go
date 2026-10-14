@@ -12,6 +12,10 @@
 //	admin suppression add -project <uuid> -email <addr> [-reason manual]
 //	admin suppression list -project <uuid> [-limit 50]
 //	admin suppression remove -project <uuid> -email <addr>
+//	admin sender add -project <uuid> (-address <addr> | -domain <domain>)
+//	admin sender list -project <uuid> [-limit 50]
+//	admin sender verify -id <uuid>
+//	admin sender remove -id <uuid>
 package main
 
 import (
@@ -47,7 +51,11 @@ const usage = `usage:
   admin email list -project <uuid> [-status failed] [-limit 50]
   admin suppression add -project <uuid> -email <addr> [-reason manual]
   admin suppression list -project <uuid> [-limit 50]
-  admin suppression remove -project <uuid> -email <addr>`
+  admin suppression remove -project <uuid> -email <addr>
+  admin sender add -project <uuid> (-address <addr> | -domain <domain>)
+  admin sender list -project <uuid> [-limit 50]
+  admin sender verify -id <uuid>
+  admin sender remove -id <uuid>`
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -76,13 +84,15 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet(args[0]+" "+args[1], flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	name := fs.String("name", "", "project name")
-	id := fs.String("id", "", "project id")
+	id := fs.String("id", "", "project or sender identity id")
 	project := fs.String("project", "", "project id")
 	scopes := fs.String("scopes", "", "comma-separated scopes (default: all)")
 	prefix := fs.String("prefix", "", "key prefix")
 	status := fs.String("status", "", "only emails with this status")
 	limit := fs.Int("limit", emails.DefaultAdminListLimit, "maximum number of emails")
 	email := fs.String("email", "", "email address")
+	address := fs.String("address", "", "sender address")
+	domain := fs.String("domain", "", "sender domain")
 	reason := fs.String("reason", "manual", "suppression reason: "+strings.Join(emails.SuppressionReasons, ", "))
 	if err := fs.Parse(args[2:]); err != nil {
 		return err
@@ -171,10 +181,72 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 			return errors.New("-project must be a project uuid")
 		}
 		return suppression(ctx, q, args[1], pid, *email, *reason, *limit, stdout)
+	case "sender add", "sender list":
+		pid, err := uuid.Parse(*project)
+		if err != nil {
+			return errors.New("-project must be a project uuid")
+		}
+		if args[1] == "list" {
+			return listSenders(ctx, q, pid, *limit, stdout)
+		}
+		var kind emails.SenderKind
+		var value string
+		switch {
+		case *address != "" && *domain == "":
+			kind, value = emails.SenderAddress, *address
+		case *domain != "" && *address == "":
+			kind, value = emails.SenderDomain, *domain
+		default:
+			return errors.New("give exactly one of -address or -domain")
+		}
+		s, err := emails.AddSender(ctx, q, pid, kind, value)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(stdout, "%s\t%s\t%s\t%s\n", s.ID, s.Kind, emails.TerminalSafe(s.Value), s.Status)
+	case "sender verify", "sender remove":
+		sid, err := uuid.Parse(*id)
+		if err != nil {
+			return errors.New("-id must be a sender identity uuid")
+		}
+		if args[1] == "verify" {
+			ok, err := emails.VerifySender(ctx, q, sid)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				return errors.New("no pending sender identity with this id")
+			}
+			return nil
+		}
+		ok, err := emails.RemoveSender(ctx, q, sid)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return errors.New("no sender identity with this id")
+		}
 	default:
 		return errors.New(usage)
 	}
 	return nil
+}
+
+func listSenders(ctx context.Context, q *store.Queries, pid uuid.UUID, limit int, stdout io.Writer) error {
+	list, err := emails.ListSenders(ctx, q, pid, limit)
+	if err != nil {
+		return err
+	}
+	w := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(w, "ID\tKIND\tVALUE\tSTATUS\tVERIFIED")
+	for _, s := range list {
+		verified := "-"
+		if s.VerifiedAt != nil {
+			verified = s.VerifiedAt.Format(time.RFC3339)
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", s.ID, s.Kind, emails.TerminalSafe(s.Value), s.Status, verified)
+	}
+	return w.Flush()
 }
 
 func orDash(s *string) string {

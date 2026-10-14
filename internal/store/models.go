@@ -67,6 +67,16 @@ type RateLimitWindow struct {
 	Count       int32
 }
 
+type SenderIdentity struct {
+	ID         uuid.UUID
+	ProjectID  uuid.UUID
+	Kind       string
+	Value      string
+	Status     string
+	VerifiedAt *time.Time
+	CreatedAt  time.Time
+}
+
 type Suppression struct {
 	ID        uuid.UUID
 	ProjectID uuid.UUID

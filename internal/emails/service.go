@@ -57,6 +57,8 @@ type Service struct {
 	enq       Enqueuer
 	logger    *slog.Logger
 	perMinute int
+	// requireSender: from must match a verified sender identity.
+	requireSender bool
 }
 
 // NewService builds a Service that accepts at most perMinute sends per
@@ -64,6 +66,10 @@ type Service struct {
 func NewService(pool *pgxpool.Pool, enq Enqueuer, logger *slog.Logger, perMinute int) *Service {
 	return &Service{pool: pool, enq: enq, logger: logger, perMinute: max(perMinute, 1)}
 }
+
+// RequireVerifiedSenders makes Create refuse a from address that matches
+// no verified sender identity of the project (ErrSenderNotVerified).
+func (s *Service) RequireVerifiedSenders() { s.requireSender = true }
 
 // RateLimitError means the project used up its sends for the current minute.
 type RateLimitError struct {
@@ -110,9 +116,9 @@ func (s *Service) Create(ctx context.Context, projectID uuid.UUID, in CreateInpu
 		// write work and does not queue on the project's window row, so one
 		// project hammering the API cannot tie up connections for others.
 		// The checks after the key claim below stay authoritative.
-		if err := s.refuse(ctx, q, projectID, in.To, false); err != nil {
+		if err := s.refuse(ctx, q, projectID, in, false); err != nil {
 			var limited *RateLimitError
-			if key != nil && (errors.Is(err, ErrRecipientSuppressed) || errors.As(err, &limited)) {
+			if key != nil && (errors.Is(err, ErrSenderNotVerified) || errors.Is(err, ErrRecipientSuppressed) || errors.As(err, &limited)) {
 				// A concurrent request with the same key may have committed
 				// (and filled the window) after the lookup above: replay it
 				// rather than refuse a duplicate of an accepted request.
@@ -158,7 +164,7 @@ func (s *Service) Create(ctx context.Context, projectID uuid.UUID, in CreateInpu
 		// Refusals come after the idempotency key is claimed, so a duplicate
 		// of an accepted request replays instead of being refused. The send
 		// is counted last, so the window row is locked only briefly.
-		return s.refuse(ctx, q, projectID, in.To, true)
+		return s.refuse(ctx, q, projectID, in, true)
 	})
 	if errors.Is(err, errKeyTaken) {
 		// Rolled back; the winner's key is committed and visible now.
@@ -191,11 +197,21 @@ func (s *Service) Create(ctx context.Context, projectID uuid.UUID, in CreateInpu
 	return fromRow(row), nil
 }
 
-// refuse checks suppression and the project's rate limit. With count set it
-// counts this send (locking the window row until the transaction ends);
-// otherwise it only reads the committed count.
-func (s *Service) refuse(ctx context.Context, q *store.Queries, projectID uuid.UUID, to string, count bool) error {
-	suppressed, err := q.IsSuppressed(ctx, store.IsSuppressedParams{ProjectID: projectID, Recipient: to})
+// refuse checks the sender identity (when required), suppression and the
+// project's rate limit, in that order. With count set it counts this send
+// (locking the window row until the transaction ends); otherwise it only
+// reads the committed count.
+func (s *Service) refuse(ctx context.Context, q *store.Queries, projectID uuid.UUID, in CreateInput, count bool) error {
+	if s.requireSender {
+		ok, err := senderVerified(ctx, q, projectID, in.From)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return ErrSenderNotVerified
+		}
+	}
+	suppressed, err := q.IsSuppressed(ctx, store.IsSuppressedParams{ProjectID: projectID, Recipient: in.To})
 	if err != nil {
 		return fmt.Errorf("check suppression: %w", err)
 	}

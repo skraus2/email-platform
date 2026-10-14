@@ -50,6 +50,10 @@ type Config struct {
 	// ProviderRatePerSecond caps messages per second the worker process
 	// hands to the provider.
 	ProviderRatePerSecond float64
+	// RequireVerifiedSender makes the API accept only from addresses that
+	// match a verified sender identity of the project.
+	RequireVerifiedSender bool
+
 	// JobRescueAfter: a dispatch job still running this long (its worker
 	// died) is handed to another attempt. At least one attempt budget.
 	JobRescueAfter time.Duration
@@ -121,6 +125,8 @@ func Load(lookup LookupFunc) (Config, error) {
 		errs = append(errs, errors.New("BODY_MAX_AGE must be at most 720h (message content is deleted by then at the latest)"))
 	}
 
+	cfg.RequireVerifiedSender, errs = boolSetting(get, "REQUIRE_VERIFIED_SENDER", "false", errs)
+
 	cfg.JobRescueAfter, errs = positiveDuration(get, "JOB_RESCUE_AFTER", "5m", errs)
 	// A job is rescued this long after its attempt started. Leave a margin
 	// beyond the attempt budget for the detached result write and the
@@ -173,6 +179,19 @@ func intInRange(get func(string, string) string, key, def string, lo, hi int, er
 		return 0, append(errs, fmt.Errorf("%s must be an integer between %d and %d", key, lo, hi))
 	}
 	return n, errs
+}
+
+// boolSetting accepts exactly "true" or "false", so a typo never silently
+// turns a safety setting off.
+func boolSetting(get func(string, string) string, key, def string, errs []error) (bool, []error) {
+	switch get(key, def) {
+	case "true":
+		return true, errs
+	case "false":
+		return false, errs
+	default:
+		return false, append(errs, fmt.Errorf("%s must be true or false", key))
+	}
 }
 
 func rateInRange(get func(string, string) string, key, def string, errs []error) (float64, []error) {

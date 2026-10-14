@@ -82,6 +82,10 @@ func (s *Server) handleCreateEmail(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, emails.ErrInvalidIdempotencyKey):
 		writeInvalidIdempotencyKey(w)
 		return
+	case errors.Is(err, emails.ErrSenderNotVerified):
+		writeError(w, http.StatusUnprocessableEntity, "sender_not_verified",
+			"from is not a verified sender address or domain of this project; nothing was sent")
+		return
 	case errors.Is(err, emails.ErrRecipientSuppressed):
 		writeError(w, http.StatusUnprocessableEntity, "recipient_suppressed",
 			"the recipient is on this project's suppression list; nothing was sent")
