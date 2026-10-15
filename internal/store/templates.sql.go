@@ -208,11 +208,12 @@ func (q *Queries) NextTemplateVersion(ctx context.Context, arg NextTemplateVersi
 }
 
 const templateStorageBytes = `-- name: TemplateStorageBytes :one
-SELECT coalesce(sum(octet_length(subject) + octet_length(text_body) + coalesce(octet_length(html_body), 0)), 0)::bigint
+SELECT coalesce(sum(octet_length(subject) + octet_length(text_body) + coalesce(octet_length(html_body), 0)
+                    + octet_length(variables::text)), 0)::bigint
 FROM template_versions WHERE project_id = $1
 `
 
-// Bytes of template source a project stores (all versions).
+// Bytes of template source and schemas a project stores (all versions).
 func (q *Queries) TemplateStorageBytes(ctx context.Context, projectID uuid.UUID) (int64, error) {
 	row := q.db.QueryRow(ctx, templateStorageBytes, projectID)
 	var column_1 int64

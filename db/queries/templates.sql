@@ -14,8 +14,9 @@ RETURNING *;
 SELECT * FROM templates WHERE id = $1 AND project_id = $2;
 
 -- name: TemplateStorageBytes :one
--- Bytes of template source a project stores (all versions).
-SELECT coalesce(sum(octet_length(subject) + octet_length(text_body) + coalesce(octet_length(html_body), 0)), 0)::bigint
+-- Bytes of template source and schemas a project stores (all versions).
+SELECT coalesce(sum(octet_length(subject) + octet_length(text_body) + coalesce(octet_length(html_body), 0)
+                    + octet_length(variables::text)), 0)::bigint
 FROM template_versions WHERE project_id = $1;
 
 -- name: NextTemplateVersion :one

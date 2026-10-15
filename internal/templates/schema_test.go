@@ -56,6 +56,11 @@ func TestParseSchemaRejects(t *testing.T) {
 		{`{"n":{"type":"number","MAX_LENGTH":10}}`, "variables.n"},
 		{`{"n":{"type":"boolean","max_\u006cength":10}}`, "variables.n"},
 		{`{"name":{"type":"string","Max_Length":0}}`, "variables.name"},
+		{`{"name":{"TYPE":"string"}}`, "variables.name"},
+		{`{"name":{"type":"string","type":"number"}}`, "variables.name"},
+		{`{"name":{"type":"string","max_length":null}}`, "variables.name"},
+		{`{"name":{"type":"string","required":null}}`, "variables.name"},
+		{`{"name":{"type":"string","max_length":1.5}}`, "variables.name"},
 		{`{` + strings.Join(many, ",") + `}`, "variables"},
 	} {
 		_, err := ParseSchema([]byte(tc.raw))
@@ -68,7 +73,7 @@ func TestParseSchemaRejects(t *testing.T) {
 
 func TestParseSchemaRoundTrips(t *testing.T) {
 	for _, raw := range []string{
-		`{"a":{"type":"string","Required":true,"Max_Length":5},"b":{"TYPE":"number"}}`,
+		`{"a":{"type":"string","required":true,"max_length":5},"b":{"type":"number"}}`,
 		`{"a":{"type":"boolean"}}`,
 	} {
 		s, err := ParseSchema([]byte(raw))

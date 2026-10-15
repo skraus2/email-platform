@@ -95,17 +95,46 @@ func ParseSchema(raw []byte) (Schema, error) {
 		if err := dec.Decode(&rawVar); err != nil {
 			return bad(field, "must be an object")
 		}
-		// Decoded with pointers: encoding/json matches keys case-insensitively
-		// and unescaped, so presence must come from the decoder, not the text.
+		// Walked key by key with exact, lowercase keys: encoding/json would
+		// match keys case-insensitively and keep the last of duplicates.
+		shape := `must be an object with "type", optional "required" (boolean) and "max_length" (integer)`
 		var in struct {
-			Type      string `json:"type"`
-			Required  *bool  `json:"required"`
-			MaxLength *int   `json:"max_length"`
+			Type      string
+			Required  *bool
+			MaxLength *int
 		}
-		vd := json.NewDecoder(bytes.NewReader(rawVar))
-		vd.DisallowUnknownFields()
-		if string(bytes.TrimSpace(rawVar)) == "null" || vd.Decode(&in) != nil {
-			return bad(field, `must be an object with "type", optional "required" and "max_length"`)
+		seen := map[string]bool{}
+		err := decodeObject(rawVar, func(key string, vd *json.Decoder) error {
+			if seen[key] {
+				return bad(field, "%s", shape)
+			}
+			seen[key] = true
+			var dst any
+			switch key {
+			case "type":
+				dst = &in.Type
+			case "required":
+				dst = &in.Required
+			case "max_length":
+				dst = &in.MaxLength
+			default:
+				return bad(field, "%s", shape)
+			}
+			var val json.RawMessage
+			if err := vd.Decode(&val); err != nil || string(val) == "null" {
+				return bad(field, "%s", shape)
+			}
+			if err := json.Unmarshal(val, dst); err != nil {
+				return bad(field, "%s", shape)
+			}
+			return nil
+		})
+		if err != nil {
+			var te *Error
+			if errors.As(err, &te) {
+				return err
+			}
+			return bad(field, "%s", shape)
 		}
 		v := Var{Type: in.Type, Required: in.Required != nil && *in.Required}
 		switch v.Type {

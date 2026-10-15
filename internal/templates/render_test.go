@@ -170,7 +170,10 @@ func TestRenderOutputLimits(t *testing.T) {
 		}
 	}
 	// Subject length counts characters after rendering: 255 pass, 256 fail.
-	sc, _ := Compile(Source{Subject: "{{.s}}", Text: "t"}, big)
+	sc, err := Compile(Source{Subject: "{{.s}}", Text: "t"}, big)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := sc.Render([]byte(`{"s":"` + strings.Repeat("ü", 255) + `"}`)); err != nil {
 		t.Fatalf("255 characters: %v", err)
 	}
@@ -179,7 +182,10 @@ func TestRenderOutputLimits(t *testing.T) {
 		t.Fatalf("256 characters: %v", err)
 	}
 	// 52 × 10000 bytes stays below the 512 KiB limit.
-	c, _ := Compile(Source{Subject: "x", Text: strings.Repeat("{{.s}}", 52)}, big)
+	c, err := Compile(Source{Subject: "x", Text: strings.Repeat("{{.s}}", 52)}, big)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if r, err := c.Render([]byte(`{"s":"` + long + `"}`)); err != nil || len(r.Text) != 520000 {
 		t.Fatalf("below limit: %d %v", len(r.Text), err)
 	}

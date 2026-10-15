@@ -23,6 +23,7 @@ func TestCompileAccepts(t *testing.T) {
 		{Subject: "x", Text: "{{/* a comment */}}t", HTML: `<a href="{{.link}}">{{.name}}</a>{{- .plan -}}`},
 		{Subject: "x", Text: "t", HTML: `<p style="color: red">{{if .vip}}<b>{{.name}}</b>{{end}}</p>`},
 		{Subject: "x", Text: "t", HTML: `<p>1 < {{.count}} and content={{.name}}</p><meta name="x" content="static">`},
+		{Subject: "x", Text: "t", HTML: `<div data-content="{{.name}}" title="content={{.plan}}">x</div>`},
 	} {
 		if _, err := Compile(src, testSchema); err != nil {
 			t.Errorf("%+v: %v", src, err)
@@ -89,6 +90,10 @@ func TestCompileRejects(t *testing.T) {
 		{"dynamic end tag", "html", Source{Subject: "x", Text: "t", HTML: `</ {{.name}}>`}},
 		{"tag after if", "html", Source{Subject: "x", Text: "t", HTML: `{{if .vip}}<{{end}}{{.name}}>`}},
 		{"declaration", "html", Source{Subject: "x", Text: "t", HTML: `<!{{.name}}>`}},
+		{"dynamic tag behind trim", "html", Source{Subject: "x", Text: "t", HTML: "< {{- .name}}>"}},
+		{"dynamic tag behind trimmed newline", "html", Source{Subject: "x", Text: "t", HTML: "<\n{{- .name}}>"}},
+		{"attribute split by comment", "html", Source{Subject: "x", Text: "t", HTML: `<meta http-equiv="refresh" content{{/**/}}="0;url={{.link}}">`}},
+		{"attribute split by trimmed comment", "html", Source{Subject: "x", Text: "t", HTML: `<meta content {{- /**/ -}} = "{{.link}}">`}},
 		{"srcdoc", "html", Source{Subject: "x", Text: "t", HTML: `<iframe srcdoc="{{.name}}"></iframe>`}},
 		{"srcdoc single quoted", "html", Source{Subject: "x", Text: "t", HTML: `<iframe SRCDOC='<p>{{.name}}</p>'></iframe>`}},
 		{"meta refresh", "html", Source{Subject: "x", Text: "t", HTML: `<meta http-equiv="refresh" content="0;url={{.link}}">`}},
@@ -135,4 +140,19 @@ func FuzzCompile(f *testing.F) {
 		// Whatever compiles must render with valid variables without panicking.
 		_, _ = c.Render([]byte(`{"name":"Ada","plan":"pro","vip":true,"count":3,"link":"https://x.test"}`))
 	})
+}
+
+func TestStoredVersionsCompileWithoutTheCurrentPolicy(t *testing.T) {
+	// A version published under an older, looser policy still renders.
+	old := Source{Subject: "x", Text: "t", HTML: `<{{.name}}>`}
+	if _, err := Compile(old, testSchema); err == nil {
+		t.Fatal("policy should refuse a dynamic tag name")
+	}
+	c, err := compile(old, testSchema, false)
+	if err != nil {
+		t.Fatalf("stored version: %v", err)
+	}
+	if _, err := c.Render([]byte(`{"name":"b"}`)); err != nil {
+		t.Fatal(err)
+	}
 }

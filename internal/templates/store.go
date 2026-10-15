@@ -60,7 +60,9 @@ func (v Version) Compile() (*Compiled, error) {
 	if err != nil {
 		return nil, fmt.Errorf("stored schema of template %s version %d: %w", v.TemplateID, v.Version, err)
 	}
-	c, err := Compile(v.Source, schema)
+	// The publish policy was applied when the version was stored; a later,
+	// stricter policy applies to new versions only, never to published ones.
+	c, err := compile(v.Source, schema, false)
 	if err != nil {
 		return nil, fmt.Errorf("stored template %s version %d: %w", v.TemplateID, v.Version, err)
 	}
@@ -145,7 +147,8 @@ func (s *Store) Publish(ctx context.Context, projectID, templateID uuid.UUID, sr
 	if _, err := Compile(src, schema); err != nil {
 		return Version{}, err
 	}
-	size := int64(len(src.Subject) + len(src.Text) + len(src.HTML))
+	canonical := schema.Canonical()
+	size := int64(len(src.Subject) + len(src.Text) + len(src.HTML) + len(canonical))
 	var v Version
 	err = pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		q := store.New(tx)
@@ -186,7 +189,7 @@ func (s *Store) Publish(ctx context.Context, projectID, templateID uuid.UUID, sr
 		}
 		row, err := q.InsertTemplateVersion(ctx, store.InsertTemplateVersionParams{
 			TemplateID: templateID, ProjectID: projectID, Version: next,
-			Subject: src.Subject, TextBody: src.Text, HtmlBody: html, Variables: schema.Canonical(),
+			Subject: src.Subject, TextBody: src.Text, HtmlBody: html, Variables: canonical,
 		})
 		if err != nil {
 			return fmt.Errorf("insert version: %w", err)
@@ -256,7 +259,7 @@ func validateName(name string) error {
 		return fail(CodeValidation, "name", "must be at most %d characters", MaxNameLength)
 	}
 	for _, r := range name {
-		if unicode.IsControl(r) || unicode.Is(unicode.Bidi_Control, r) {
+		if unicode.IsControl(r) || unicode.In(r, unicode.Bidi_Control, unicode.Cf, unicode.Zl, unicode.Zp) {
 			return fail(CodeValidation, "name", "must not contain control or text-direction characters")
 		}
 	}

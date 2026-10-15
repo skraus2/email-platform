@@ -34,7 +34,12 @@ type Compiled struct {
 
 // Compile validates src against schema and the allowed language subset and
 // prepares it for rendering. Errors are *Error with code template_invalid.
-func Compile(src Source, schema Schema) (*Compiled, error) {
+func Compile(src Source, schema Schema) (*Compiled, error) { return compile(src, schema, true) }
+
+// compile applies the publish policy (limits, construct allowlist, HTML
+// context rules) only when policy is set; parsing and the zero-value run
+// always happen.
+func compile(src Source, schema Schema, policy bool) (*Compiled, error) {
 	for _, p := range []struct {
 		part, src string
 		max       int
@@ -46,19 +51,19 @@ func Compile(src Source, schema Schema) (*Compiled, error) {
 			return nil, invalidTemplate(p.part, "must not contain NUL")
 		}
 	}
-	if src.Subject == "" {
+	if policy && src.Subject == "" {
 		return nil, invalidTemplate("subject", "is required")
 	}
-	if src.Text == "" {
+	if policy && src.Text == "" {
 		return nil, invalidTemplate("text", "is required (the text alternative of every email)")
 	}
 
 	c := &Compiled{schema: schema}
 	var err error
-	if c.subject, err = parseText("subject", src.Subject, schema); err != nil {
+	if c.subject, err = parseText("subject", src.Subject, schema, policy); err != nil {
 		return nil, err
 	}
-	if c.text, err = parseText("text", src.Text, schema); err != nil {
+	if c.text, err = parseText("text", src.Text, schema, policy); err != nil {
 		return nil, err
 	}
 	if src.HTML != "" {
@@ -66,11 +71,18 @@ func Compile(src Source, schema Schema) (*Compiled, error) {
 		if err != nil {
 			return nil, parseError("html", err)
 		}
-		if err := checkTree("html", h.Tree, len(h.Templates()), schema); err != nil {
-			return nil, err
-		}
-		if err := checkHTMLContexts(src.HTML); err != nil {
-			return nil, err
+		if policy {
+			if err := checkTree("html", h.Tree, len(h.Templates()), schema); err != nil {
+				return nil, err
+			}
+			// Checked on the source and on the parsed tree (trim markers and
+			// comments applied), so neither spelling hides a forbidden context.
+			if err := checkHTMLContexts(src.HTML); err != nil {
+				return nil, err
+			}
+			if err := checkHTMLContexts(h.Tree.Root.String()); err != nil {
+				return nil, err
+			}
 		}
 		c.html = h
 	}
@@ -96,10 +108,13 @@ func (c *Compiled) executeHTML(w io.Writer, data any) error {
 	return c.html.Execute(w, data)
 }
 
-func parseText(part, src string, schema Schema) (*texttemplate.Template, error) {
+func parseText(part, src string, schema Schema, policy bool) (*texttemplate.Template, error) {
 	t, err := texttemplate.New(part).Option("missingkey=error").Parse(src)
 	if err != nil {
 		return nil, parseError(part, err)
+	}
+	if !policy {
+		return t, nil
 	}
 	if err := checkTree(part, t.Tree, len(t.Templates()), schema); err != nil {
 		return nil, err
@@ -273,7 +288,7 @@ var errTooLarge = errors.New("output too large")
 // document, and content/http-equiv can trigger refreshes to any URL.
 var (
 	actionAsTagName    = regexp.MustCompile(`<(?:[/!?]\s*)?\{\{`)
-	actionInRiskyValue = regexp.MustCompile(`(?i)<[a-z][^>]*\b(?:srcdoc|content|http-equiv)\s*=\s*(?:"[^"]*\{\{|'[^']*\{\{|[^\s>"']*\{\{)`)
+	actionInRiskyValue = regexp.MustCompile(`(?i)<[a-z][^>]*[\s/](?:srcdoc|content|http-equiv)\s*=\s*(?:"[^"]*\{\{|'[^']*\{\{|[^\s>"']*\{\{)`)
 )
 
 func checkHTMLContexts(src string) error {

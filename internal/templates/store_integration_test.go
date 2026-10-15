@@ -65,7 +65,7 @@ func TestCreateTemplate(t *testing.T) {
 			t.Errorf("slug %q: %v", bad, err)
 		}
 	}
-	for _, bad := range []string{strings.Repeat("n", 201), "a\x00b", "line\nbreak", "rtl\u202eexe.txt", "\xff"} {
+	for _, bad := range []string{strings.Repeat("n", 201), "a\x00b", "line\nbreak", "rtl\u202eexe.txt", "\xff", "zero\u200bwidth", "line\u2028sep"} {
 		var te *templates.Error
 		if _, err := s.Create(ctx, a, "n"+uuid.NewString()[:8], bad); !errors.As(err, &te) || te.Field != "name" {
 			t.Errorf("name %q: %v", bad, err)
@@ -296,8 +296,14 @@ func TestPublishStorageBudgetPerProject(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	pool, a, b := setup(t)
-	size := int64(len(src.Subject) + len(src.Text) + len(src.HTML))
-	s := templates.NewStore(pool, 200, 500, 2*size)
+	parsed, err := templates.ParseSchema([]byte(schema))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Stored schemas count as jsonb text, a few bytes longer than the
+	// canonical form; the margin stays far below a third version.
+	size := int64(len(src.Subject) + len(src.Text) + len(src.HTML) + len(parsed.Canonical()))
+	s := templates.NewStore(pool, 200, 500, 2*size+20)
 	ta, err := s.Create(ctx, a, "a", "")
 	if err != nil {
 		t.Fatal(err)
