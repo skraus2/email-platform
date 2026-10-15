@@ -242,11 +242,12 @@ func (s *Service) Login(ctx context.Context, username, password string) (Session
 	now := time.Now()
 	q := store.New(s.pool)
 	var user *store.AdminUser
+	locked := false
 	if ValidateUsername(username) == nil && len(password) <= 4*MaxPasswordLength {
 		row, err := q.GetAdminUserByUsername(ctx, username)
 		switch {
 		case err == nil:
-			user = &row
+			user, locked = &row.AdminUser, row.Locked
 		case !errors.Is(err, pgx.ErrNoRows):
 			return Session{}, fmt.Errorf("get admin user: %w", err)
 		}
@@ -259,13 +260,13 @@ func (s *Service) Login(ctx context.Context, username, password string) (Session
 			s.unknown.fail(username, now)
 			return Session{}, &LockedError{RetryAfter: s.unknown.locked(username, now)}
 		}
-	} else if user.LockedUntil != nil && user.LockedUntil.After(now) {
+	} else if locked {
 		f, err := q.RecordAdminLoginFailure(ctx, user.ID)
 		if err != nil {
 			return Session{}, fmt.Errorf("record login failure: %w", err)
 		}
 		s.logger.WarnContext(ctx, "admin login refused: locked", slog.String("admin_user_id", user.ID.String()))
-		return Session{}, &LockedError{RetryAfter: lockRemaining(f.LockedUntil, now)}
+		return Session{}, &LockedError{RetryAfter: time.Duration(max(f.LockSeconds, 1)) * time.Second}
 	}
 
 	wait := time.NewTimer(s.hashWait)
@@ -323,13 +324,6 @@ func (s *Service) Login(ctx context.Context, username, password string) (Session
 	}
 	s.logger.InfoContext(ctx, "admin login", slog.String("admin_user_id", user.ID.String()))
 	return Session{Token: token, ExpiresAt: row.ExpiresAt, UserID: user.ID}, nil
-}
-
-func lockRemaining(until *time.Time, now time.Time) time.Duration {
-	if until == nil {
-		return time.Minute
-	}
-	return max(until.Sub(now), time.Second)
 }
 
 // tokenHash returns the stored hash of a well-formed token.

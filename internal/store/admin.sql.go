@@ -98,21 +98,33 @@ func (q *Queries) GetAdminSession(ctx context.Context, arg GetAdminSessionParams
 }
 
 const getAdminUserByUsername = `-- name: GetAdminUserByUsername :one
-SELECT id, username, password_hash, disabled_at, failed_logins, locked_until, created_at, password_changed_at FROM admin_users WHERE username = $1
+SELECT admin_users.id, admin_users.username, admin_users.password_hash, admin_users.disabled_at, admin_users.failed_logins, admin_users.locked_until, admin_users.created_at, admin_users.password_changed_at,
+       coalesce(locked_until > now(), false)::boolean AS locked,
+       coalesce(ceil(extract(epoch FROM locked_until - now())), 0)::integer AS lock_seconds
+FROM admin_users WHERE username = $1
 `
 
-func (q *Queries) GetAdminUserByUsername(ctx context.Context, username string) (AdminUser, error) {
+type GetAdminUserByUsernameRow struct {
+	AdminUser   AdminUser
+	Locked      bool
+	LockSeconds int32
+}
+
+// locked and the seconds left come from the database clock, like the lock.
+func (q *Queries) GetAdminUserByUsername(ctx context.Context, username string) (GetAdminUserByUsernameRow, error) {
 	row := q.db.QueryRow(ctx, getAdminUserByUsername, username)
-	var i AdminUser
+	var i GetAdminUserByUsernameRow
 	err := row.Scan(
-		&i.ID,
-		&i.Username,
-		&i.PasswordHash,
-		&i.DisabledAt,
-		&i.FailedLogins,
-		&i.LockedUntil,
-		&i.CreatedAt,
-		&i.PasswordChangedAt,
+		&i.AdminUser.ID,
+		&i.AdminUser.Username,
+		&i.AdminUser.PasswordHash,
+		&i.AdminUser.DisabledAt,
+		&i.AdminUser.FailedLogins,
+		&i.AdminUser.LockedUntil,
+		&i.AdminUser.CreatedAt,
+		&i.AdminUser.PasswordChangedAt,
+		&i.Locked,
+		&i.LockSeconds,
 	)
 	return i, err
 }
@@ -182,12 +194,13 @@ SET failed_logins = failed_logins + 1,
         THEN now() + least(interval '1 minute' * power(2, least(failed_logins + 1 - 5, 10)), interval '15 minutes')
         ELSE locked_until END
 WHERE id = $1
-RETURNING failed_logins, locked_until
+RETURNING failed_logins,
+    coalesce(ceil(extract(epoch FROM locked_until - now())), 0)::integer AS lock_seconds
 `
 
 type RecordAdminLoginFailureRow struct {
 	FailedLogins int32
-	LockedUntil  *time.Time
+	LockSeconds  int32
 }
 
 // One more consecutive failure; from the fifth on, the account is locked for
@@ -195,7 +208,7 @@ type RecordAdminLoginFailureRow struct {
 func (q *Queries) RecordAdminLoginFailure(ctx context.Context, id uuid.UUID) (RecordAdminLoginFailureRow, error) {
 	row := q.db.QueryRow(ctx, recordAdminLoginFailure, id)
 	var i RecordAdminLoginFailureRow
-	err := row.Scan(&i.FailedLogins, &i.LockedUntil)
+	err := row.Scan(&i.FailedLogins, &i.LockSeconds)
 	return i, err
 }
 

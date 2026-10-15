@@ -3,7 +3,11 @@ INSERT INTO admin_users (username, password_hash) VALUES ($1, $2)
 RETURNING *;
 
 -- name: GetAdminUserByUsername :one
-SELECT * FROM admin_users WHERE username = $1;
+-- locked and the seconds left come from the database clock, like the lock.
+SELECT sqlc.embed(admin_users),
+       coalesce(locked_until > now(), false)::boolean AS locked,
+       coalesce(ceil(extract(epoch FROM locked_until - now())), 0)::integer AS lock_seconds
+FROM admin_users WHERE username = $1;
 
 -- name: ListAdminUsers :many
 SELECT * FROM admin_users ORDER BY username;
@@ -37,7 +41,8 @@ SET failed_logins = failed_logins + 1,
         THEN now() + least(interval '1 minute' * power(2, least(failed_logins + 1 - 5, 10)), interval '15 minutes')
         ELSE locked_until END
 WHERE id = $1
-RETURNING failed_logins, locked_until;
+RETURNING failed_logins,
+    coalesce(ceil(extract(epoch FROM locked_until - now())), 0)::integer AS lock_seconds;
 
 -- name: RecordAdminLoginSuccess :exec
 UPDATE admin_users SET failed_logins = 0, locked_until = NULL WHERE id = $1;
