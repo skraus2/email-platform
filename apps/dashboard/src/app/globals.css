@@ -1,9 +1,94 @@
 :root {
   color-scheme: light dark;
   font-family: system-ui, sans-serif;
+  --fg: CanvasText;
+  --muted: color-mix(in srgb, CanvasText 65%, Canvas);
+  --line: color-mix(in srgb, CanvasText 20%, Canvas);
+  --accent: #1a5fb4;
+  --danger: #a51d2d;
 }
 
 body {
   margin: 0;
-  padding: 2rem;
+  line-height: 1.5;
+}
+
+main {
+  padding: 1.5rem 2rem;
+  max-width: 80rem;
+}
+
+:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.skip {
+  position: absolute;
+  left: -999px;
+}
+.skip:focus {
+  left: 1rem;
+  top: 1rem;
+  background: Canvas;
+  padding: 0.5rem;
+  z-index: 1;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.75rem 2rem;
+  border-bottom: 1px solid var(--line);
+  flex-wrap: wrap;
+}
+.topbar nav {
+  display: flex;
+  gap: 1.25rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.topbar a {
+  color: inherit;
+}
+.brand {
+  font-weight: 700;
+  text-decoration: none;
+}
+.user {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+}
+
+.login {
+  max-width: 24rem;
+  margin: 4rem auto;
+}
+.stack {
+  display: grid;
+  gap: 0.5rem;
+}
+input,
+select,
+button,
+textarea {
+  font: inherit;
+  padding: 0.4rem 0.6rem;
+}
+button {
+  cursor: pointer;
+}
+.muted {
+  color: var(--muted);
+}
+.error {
+  color: var(--danger);
+  font-weight: 600;
+}
+.notice {
+  border-left: 4px solid var(--accent);
+  padding-left: 0.75rem;
 }
