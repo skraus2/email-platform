@@ -146,11 +146,17 @@ func run() error {
 		logger.Warn("job worker did not stop cleanly", slog.Any("error", err))
 	}
 	if pollerDone != nil {
+		timer := time.NewTimer(max(time.Until(deadline), 0))
 		select {
 		case <-pollerDone:
-		case <-time.After(time.Until(deadline)):
-			logger.Warn("ses event poller did not stop in time")
+		case <-timer.C:
+			select {
+			case <-pollerDone: // stopped just as the deadline passed
+			default:
+				logger.Warn("ses event poller did not stop in time")
+			}
 		}
+		timer.Stop()
 	}
 	logger.Info("shutdown complete")
 	return nil

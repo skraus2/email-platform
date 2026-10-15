@@ -15,6 +15,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
 	"github.com/aws/smithy-go"
 	smithyhttp "github.com/aws/smithy-go/transport/http"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/skraus2/email-platform/internal/awsconfig"
 	"github.com/skraus2/email-platform/internal/events"
@@ -60,6 +61,9 @@ const (
 	visibilityTimeout = 2 * maxMessages * maxMessageTimeout
 	receiveTimeout    = (waitSeconds + 10) * time.Second
 	maxBackoff        = 30 * time.Second
+	// alertReceiveCount: a message left for redelivery this often is logged
+	// as an error (it will end in the dead-letter queue unless fixed).
+	alertReceiveCount = 10
 )
 
 // NewPoller builds the poller. It is only called with the SES opt-in
@@ -194,8 +198,9 @@ func (p *Poller) handle(ctx context.Context, m types.Message) bool {
 	defer cancel()
 	r := p.process(mctx, aws.ToString(m.Body))
 	attrs := []any{slog.String("sqs_message_id", aws.ToString(m.MessageId)), slog.String("outcome", r.outcome)}
-	if n, err := strconv.Atoi(m.Attributes[string(types.MessageSystemAttributeNameApproximateReceiveCount)]); err == nil {
-		attrs = append(attrs, slog.Int("receive_count", n))
+	receives, err := strconv.Atoi(m.Attributes[string(types.MessageSystemAttributeNameApproximateReceiveCount)])
+	if err == nil {
+		attrs = append(attrs, slog.Int("receive_count", receives))
 	}
 	if r.event != nil {
 		attrs = append(attrs, slog.String("project_id", r.event.ProjectID.String()), slog.String("email_id", r.event.EmailID.String()))
@@ -203,8 +208,14 @@ func (p *Poller) handle(ctx context.Context, m types.Message) bool {
 	if r.reason != "" {
 		attrs = append(attrs, slog.String("reason", r.reason))
 	}
+	if r.sqlstate != "" {
+		attrs = append(attrs, slog.String("sqlstate", r.sqlstate))
+	}
 	log := p.logger.With(attrs...)
 	switch {
+	case !r.final && receives == alertReceiveCount:
+		log.ErrorContext(mctx, "ses event keeps failing")
+		return false
 	case !r.final:
 		log.WarnContext(mctx, "ses event left for redelivery")
 		return false
@@ -228,6 +239,7 @@ type result struct {
 	outcome, reason string
 	final           bool
 	event           *events.ProviderEvent
+	sqlstate        string // of a failed ingest, if the database answered
 }
 
 // process authenticates, parses and ingests a message body.
@@ -256,7 +268,14 @@ func (p *Poller) process(ctx context.Context, body string) result {
 	case errors.Is(err, events.ErrInvalidEvent):
 		return result{outcome: "invalid", reason: "refused by the event store", final: true, event: &ev}
 	case err != nil:
-		return result{outcome: "ingest_failed", reason: "event store unavailable", event: &ev}
+		// Only the code: the server's message and detail can quote row
+		// values, and connection errors name hosts and users.
+		var pgErr *pgconn.PgError
+		state := ""
+		if errors.As(err, &pgErr) {
+			state = pgErr.Code
+		}
+		return result{outcome: "ingest_failed", reason: "event store unavailable", event: &ev, sqlstate: state}
 	}
 	return result{outcome: out.String(), final: true, event: &ev}
 }

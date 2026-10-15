@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -15,6 +17,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/skraus2/email-platform/internal/awsconfig"
 	"github.com/skraus2/email-platform/internal/events"
@@ -356,7 +359,10 @@ func TestPollerStopsDuringLongPoll(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { defer close(done); ps.poller.Run(ctx) }()
-	for len(ps.stub.Requests()) == 0 {
+	for deadline := time.Now().Add(5 * time.Second); len(ps.stub.Requests()) == 0; {
+		if time.Now().After(deadline) {
+			t.Fatal("no receive request")
+		}
 		time.Sleep(5 * time.Millisecond)
 	}
 	start := time.Now()
@@ -509,7 +515,38 @@ func TestNewPollerValidatesConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	clamped, err := NewPoller(context.Background(), PollerConfig{
+		Region: region, QueueURL: queueURL, TopicARN: topicARN, Endpoint: "http://127.0.0.1:1", Logger: logger, Recorder: rec,
+		MessageTimeout: 30 * time.Second,
+	})
+	if err != nil || clamped.messageTimeout != maxMessageTimeout {
+		t.Fatalf("MessageTimeout 30s: %v, %v; want clamped to %v", clamped, err, maxMessageTimeout)
+	}
 	if p.account != "123456789012" || p.verifier == nil || p.verifier.fetch == nil || p.messageTimeout != maxMessageTimeout || p.ingest == nil {
 		t.Fatalf("poller %+v", p)
+	}
+}
+
+// A transient store failure is logged with its SQLSTATE (never the server's
+// detail text, which can quote row values); a message that keeps coming back
+// is logged as an error so an operator sees it before the dead-letter queue.
+func TestPollerReportsPersistentFailures(t *testing.T) {
+	ps := newTestPoller(t, nil)
+	ps.ingest.fn = func(context.Context, events.ProviderEvent) (events.Outcome, error) {
+		return 0, fmt.Errorf("ingest event: %w", &pgconn.PgError{Code: "23514", Message: "check", Detail: "Failing row contains (customer@example.test)"})
+	}
+	ps.stub.Add(ps.signed(t, fixture(t, "delivery")))
+	for range alertReceiveCount {
+		if err := ps.poller.poll(context.Background()); err == nil {
+			t.Fatal("poll reported no error")
+		}
+		ps.stub.ExpireVisibility()
+	}
+	logs := ps.logs.String()
+	if !strings.Contains(logs, `"sqlstate":"23514"`) || strings.Contains(logs, "customer@example.test") {
+		t.Fatalf("logs:\n%s", logs)
+	}
+	if n := strings.Count(logs, `"level":"ERROR"`); n != 1 || !strings.Contains(logs, `"receive_count":`+strconv.Itoa(alertReceiveCount)) {
+		t.Fatalf("%d error lines, want one at receive %d:\n%s", n, alertReceiveCount, logs)
 	}
 }
