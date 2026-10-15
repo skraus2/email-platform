@@ -10,6 +10,7 @@ import (
 
 	"github.com/skraus2/email-platform/internal/config"
 	"github.com/skraus2/email-platform/internal/delivery"
+	"github.com/skraus2/email-platform/internal/events"
 )
 
 func TestNextDelayDoublesAndCaps(t *testing.T) {
@@ -63,7 +64,8 @@ func TestNewProviderIsMailpitWithoutSESOptIn(t *testing.T) {
 	}
 }
 
-func TestNewProviderBuildsSESOnlyFromTheOptIn(t *testing.T) {
+func sesConfig(t *testing.T) config.Config {
+	t.Helper()
 	cfg, err := config.Load(func(k string) (string, bool) {
 		v, ok := map[string]string{
 			"DATABASE_URL": "postgres://u:p@localhost:5432/db", "MAIL_PROVIDER": "ses", "SES_ENABLED": "true",
@@ -77,11 +79,33 @@ func TestNewProviderBuildsSESOnlyFromTheOptIn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, err := newProvider(context.Background(), cfg)
+	return cfg
+}
+
+func TestNewProviderBuildsSESOnlyFromTheOptIn(t *testing.T) {
+	p, err := newProvider(context.Background(), sesConfig(t))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := p.(*delivery.SES); !ok {
 		t.Fatalf("provider = %T, want SES", p)
+	}
+}
+
+func TestEventPollerOnlyWithSES(t *testing.T) {
+	logger := slog.New(slog.DiscardHandler)
+	cfg, err := config.Load(func(k string) (string, bool) {
+		v, ok := map[string]string{"DATABASE_URL": "postgres://u:p@localhost:5432/db"}[k]
+		return v, ok
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p, err := newEventPoller(context.Background(), cfg, nil, logger); p != nil || err != nil {
+		t.Fatalf("Mailpit: poller %v, err %v; want none", p, err)
+	}
+	rec := events.NewRecorder(nil, logger) // never used: nothing is received
+	if p, err := newEventPoller(context.Background(), sesConfig(t), rec, logger); p == nil || err != nil {
+		t.Fatalf("SES: poller %v, err %v; want one", p, err)
 	}
 }

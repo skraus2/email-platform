@@ -29,9 +29,10 @@ const (
 type sesEvent struct {
 	EventType string `json:"eventType"`
 	Mail      struct {
-		Timestamp string              `json:"timestamp"`
-		MessageID string              `json:"messageId"`
-		Tags      map[string][]string `json:"tags"`
+		Timestamp        string              `json:"timestamp"`
+		MessageID        string              `json:"messageId"`
+		SendingAccountID string              `json:"sendingAccountId"`
+		Tags             map[string][]string `json:"tags"`
 	} `json:"mail"`
 	Bounce *struct {
 		BounceType    string `json:"bounceType"`
@@ -61,10 +62,22 @@ func invalid(reason string) error { return fmt.Errorf("%w: %s", ErrInvalid, reas
 // non-personal details are kept: no addresses, diagnostic codes, SMTP
 // responses or links.
 func Parse(message string) (events.ProviderEvent, error) {
+	ev, _, err := parse(message)
+	return ev, err
+}
+
+// parse also returns the AWS account that sent the message (empty if the
+// event does not name one).
+func parse(message string) (events.ProviderEvent, string, error) {
 	var e sesEvent
 	if err := json.Unmarshal([]byte(message), &e); err != nil {
-		return events.ProviderEvent{}, invalid("not JSON")
+		return events.ProviderEvent{}, "", invalid("not JSON")
 	}
+	ev, err := convert(e)
+	return ev, e.Mail.SendingAccountID, err
+}
+
+func convert(e sesEvent) (events.ProviderEvent, error) {
 	ev := events.ProviderEvent{Provider: "ses", Details: map[string]string{}}
 	switch e.EventType {
 	case "Send", "Delivery", "Bounce", "Complaint", "Reject", "DeliveryDelay":

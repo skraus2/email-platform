@@ -155,3 +155,16 @@ func FuzzParse(f *testing.F) {
 		}
 	})
 }
+
+// The sending account comes back with every event, so the poller can refuse
+// events of another AWS account published to the platform's topic.
+func TestParseSendingAccount(t *testing.T) {
+	_, account, err := parse(fixture(t, "delivery"))
+	if err != nil || account != "123456789012" {
+		t.Fatalf("account = %q, %v; want 123456789012", account, err)
+	}
+	msg := strings.Replace(fixture(t, "delivery"), `"sendingAccountId":"123456789012",`, ``, 1)
+	if _, account, err := parse(msg); err != nil || account != "" {
+		t.Fatalf("without the field: account = %q, %v; want empty", account, err)
+	}
+}

@@ -1,6 +1,6 @@
 // Command worker runs the background worker process: it dispatches queued
-// emails to the configured provider (Mailpit, or SES with the opt-in) and runs
-// periodic cleanup.
+// emails to the configured provider (Mailpit, or SES with the opt-in), polls
+// SES events (SES only), delivers webhooks and runs periodic cleanup.
 package main
 
 import (
@@ -17,6 +17,8 @@ import (
 	"github.com/skraus2/email-platform/internal/database"
 	"github.com/skraus2/email-platform/internal/delivery"
 	"github.com/skraus2/email-platform/internal/emails"
+	"github.com/skraus2/email-platform/internal/events"
+	"github.com/skraus2/email-platform/internal/events/ses"
 	"github.com/skraus2/email-platform/internal/jobs"
 	"github.com/skraus2/email-platform/internal/logging"
 	"github.com/skraus2/email-platform/internal/webhooks"
@@ -113,8 +115,20 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	poller, err := newEventPoller(ctx, cfg, dispatcher.Events(), logger)
+	if err != nil {
+		return err
+	}
 	if err := worker.Start(ctx); err != nil {
 		return fmt.Errorf("start job worker: %w", err)
+	}
+	var pollerDone chan struct{}
+	if poller != nil {
+		pollerDone = make(chan struct{})
+		go func() {
+			defer close(pollerDone)
+			poller.Run(ctx)
+		}()
 	}
 	if cfg.MailProvider == "ses" {
 		logger.Info("worker ready", slog.String("provider", cfg.MailProvider), slog.String("region", cfg.SES.Region),
@@ -125,8 +139,18 @@ func run() error {
 
 	<-ctx.Done()
 	logger.Info("shutdown started", slog.Duration("timeout", cfg.ShutdownTimeout))
+	// The poller stops on the same cancellation, in parallel with the job
+	// worker; both share one deadline.
+	deadline := time.Now().Add(cfg.ShutdownTimeout)
 	if err := worker.Stop(cfg.ShutdownTimeout); err != nil {
 		logger.Warn("job worker did not stop cleanly", slog.Any("error", err))
+	}
+	if pollerDone != nil {
+		select {
+		case <-pollerDone:
+		case <-time.After(time.Until(deadline)):
+			logger.Warn("ses event poller did not stop in time")
+		}
 	}
 	logger.Info("shutdown complete")
 	return nil
@@ -144,6 +168,21 @@ func newProvider(ctx context.Context, cfg config.Config) (delivery.Provider, err
 		})
 	}
 	return delivery.NewMailpit(cfg.SMTPAddr)
+}
+
+// newEventPoller builds the SES event poller, or nil without SES: the queue
+// and topic settings, like every AWS client, exist only with the complete
+// opt-in. Ingested events go through rec, which carries the webhook outbox.
+func newEventPoller(ctx context.Context, cfg config.Config, rec *events.Recorder, logger *slog.Logger) (*ses.Poller, error) {
+	if cfg.MailProvider != "ses" {
+		return nil, nil
+	}
+	return ses.NewPoller(ctx, ses.PollerConfig{
+		Region: cfg.SES.Region, QueueURL: cfg.SES.EventsQueueURL, TopicARN: cfg.SES.EventsTopicARN,
+		Endpoint: cfg.SES.SQSEndpoint, Recorder: rec, Logger: logger,
+		// A message being handled is finished on shutdown.
+		MessageTimeout: cfg.ShutdownTimeout,
+	})
 }
 
 // waitReady polls check with capped exponential backoff until it succeeds
