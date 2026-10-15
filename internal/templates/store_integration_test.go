@@ -89,6 +89,7 @@ func TestTemplateCapIsRaceSafe(t *testing.T) {
 	ctx := context.Background()
 	pool, a, _ := setup(t)
 	s := templates.NewStore(pool, 3, 500, 1<<20, 1_000_000)
+	s.SetWriteLimits(20, 30*time.Second, 30*time.Second) // about numbering and caps, not the write limits
 	for i := range 2 {
 		if _, err := s.Create(ctx, a, fmt.Sprintf("t%d", i), ""); err != nil {
 			t.Fatal(err)
@@ -119,6 +120,7 @@ func TestPublishConcurrentVersionsAreGapless(t *testing.T) {
 	ctx := context.Background()
 	pool, a, _ := setup(t)
 	s := templates.NewStore(pool, 200, 500, 1<<20, 1_000_000)
+	s.SetWriteLimits(20, 30*time.Second, 30*time.Second) // about numbering and caps, not the write limits
 	tmpl, err := s.Create(ctx, a, "welcome", "")
 	if err != nil {
 		t.Fatal(err)
@@ -305,6 +307,7 @@ func TestPublishStorageBudgetPerProject(t *testing.T) {
 	// canonical form; the margin stays far below a third version.
 	size := int64(len(src.Subject) + len(src.Text) + len(src.HTML) + len(parsed.Canonical()))
 	s := templates.NewStore(pool, 200, 500, 2*size+20, 1_000_000)
+	s.SetWriteLimits(20, 30*time.Second, 30*time.Second) // about numbering and caps, not the write limits
 	ta, err := s.Create(ctx, a, "a", "")
 	if err != nil {
 		t.Fatal(err)
