@@ -88,8 +88,9 @@ func VerifySender(ctx context.Context, q *store.Queries, projectID, id uuid.UUID
 }
 
 // RemoveSender deletes an identity of the project; removed is false if the
-// project has no such identity.
-// Emails already accepted from it are not affected.
+// project has no such identity. When verified senders are required, emails
+// from it that are still queued fail with sender_not_verified when a worker
+// claims them; emails already handed to the provider are not affected.
 func RemoveSender(ctx context.Context, q *store.Queries, projectID, id uuid.UUID) (bool, error) {
 	n, err := q.RemoveSenderIdentity(ctx, store.RemoveSenderIdentityParams{ID: id, ProjectID: projectID})
 	if err != nil {

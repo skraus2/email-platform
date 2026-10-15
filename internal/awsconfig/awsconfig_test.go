@@ -40,7 +40,7 @@ func TestValidateEndpointLoopbackOnly(t *testing.T) {
 
 func TestLoadWithEndpointUsesFakeCredentials(t *testing.T) {
 	// Real credentials in the environment must never reach a stub.
-	t.Setenv("AWS_ACCESS_KEY_ID", "AKIAREALKEYREALKEY00")
+	t.Setenv("AWS_ACCESS_KEY_ID", "AKIAIOSFODNN7EXAMPLE")
 	t.Setenv("AWS_SECRET_ACCESS_KEY", "real-secret")
 	cfg, err := Load(context.Background(), "eu-central-1", "http://127.0.0.1:4566")
 	if err != nil {

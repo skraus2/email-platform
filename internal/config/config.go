@@ -307,6 +307,11 @@ func loadSES(get func(string, string) string, env string, errs []error) (SES, []
 			}
 		}
 	}
+	// Half a stub setup would send through real SES while believing it is
+	// local.
+	if env != EnvProduction && (c.Endpoint == "") != (c.SQSEndpoint == "") {
+		errs = append(errs, errors.New("SES_ENDPOINT and SQS_ENDPOINT must be set together (local stubs) or both left unset (AWS)"))
+	}
 	return c, errs
 }
 

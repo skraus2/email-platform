@@ -37,6 +37,11 @@ type SES struct {
 // NewSES builds the adapter. It is only called with the SES opt-in
 // configuration in place.
 func NewSES(ctx context.Context, c SESConfig) (*SES, error) {
+	return newSES(ctx, c)
+}
+
+// newSES lets tests replace the HTTP client.
+func newSES(ctx context.Context, c SESConfig, opts ...func(*sesv2.Options)) (*SES, error) {
 	if c.ConfigurationSet == "" {
 		return nil, errors.New("SES configuration set is required (it publishes the delivery events)")
 	}
@@ -44,7 +49,10 @@ func NewSES(ctx context.Context, c SESConfig) (*SES, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &SES{client: sesv2.NewFromConfig(cfg), configurationSet: c.ConfigurationSet}, nil
+	// Applied last: the SDK also takes endpoints from AWS_ENDPOINT_URL*,
+	// and the shared AWS config, none of which is checked like SES_ENDPOINT.
+	opts = append(opts, func(o *sesv2.Options) { o.BaseEndpoint = cfg.BaseEndpoint })
+	return &SES{client: sesv2.NewFromConfig(cfg, opts...), configurationSet: c.ConfigurationSet}, nil
 }
 
 // Tag names on every SES message.
@@ -70,7 +78,7 @@ func (s *SES) Send(ctx context.Context, msg Message) (Result, error) {
 		},
 	})
 	if err != nil {
-		return Result{}, classifySES(ctx, err)
+		return Result{}, classifySES(ctx, err, msg.From)
 	}
 	return Result{Provider: "ses", ProviderID: aws.ToString(out.MessageId), Status: StatusSubmitted}, nil
 }
@@ -89,9 +97,9 @@ var (
 )
 
 // classifySES maps an SDK error to a sanitized Error. The provider's message
-// text is only inspected (SES names an unverified sender nowhere else),
+// text is only inspected (SES names an unverified identity nowhere else),
 // never kept.
-func classifySES(ctx context.Context, err error) *Error {
+func classifySES(ctx context.Context, err error, sender string) *Error {
 	if ctx.Err() != nil {
 		return &Error{Class: ClassTimeout}
 	}
@@ -117,7 +125,7 @@ func classifySES(ctx context.Context, err error) *Error {
 		if errors.As(err, &ae) {
 			code, text = ae.ErrorCode(), ae.ErrorMessage()
 		}
-		return &Error{Class: sesClass(status, code, text), HTTPStatus: status}
+		return &Error{Class: sesClass(status, code, text, sender), HTTPStatus: status}
 	}
 	var ipe smithy.InvalidParamsError
 	if errors.As(err, &ipe) {
@@ -127,14 +135,18 @@ func classifySES(ctx context.Context, err error) *Error {
 	return &Error{Class: ClassConnect}
 }
 
-func sesClass(status int, code, text string) string {
+// sesClass classifies an API error answer. "Not verified" names the failed
+// identities: in the SES sandbox an unverified recipient gets the same
+// rejection, so only one naming the sender counts as an unverified sender.
+func sesClass(status int, code, text, sender string) string {
+	text = strings.ToLower(text)
 	switch {
 	case throttleCodes[code] || status == http.StatusTooManyRequests:
 		return ClassThrottled
 	case authCodes[code] || status == http.StatusUnauthorized || status == http.StatusForbidden:
 		return ClassAuth
 	case code == "MailFromDomainNotVerifiedException",
-		code == "MessageRejected" && strings.Contains(strings.ToLower(text), "not verified"):
+		code == "MessageRejected" && strings.Contains(text, "not verified") && strings.Contains(text, strings.ToLower(sender)):
 		return ClassSenderUnverified
 	case status >= 500 || status == http.StatusRequestTimeout:
 		return ClassAPIUnavailable

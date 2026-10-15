@@ -49,8 +49,9 @@ SET status = $3, provider = $4, provider_id = $5, last_error = NULL, error_code 
 WHERE id = $1 AND project_id = $2 AND status = 'sending';
 
 -- name: RequeueAfterError :exec
--- The provider certainly did not accept the message (connect failure or SMTP
--- rejection): back to queued, so the retry is not flagged as a duplicate.
+-- The provider certainly did not accept the message (connect failure, SMTP
+-- rejection or API refusal): back to queued, so the retry is not flagged as a
+-- duplicate.
 UPDATE emails SET status = 'queued', last_error = $3, error_code = $4, updated_at = now()
 WHERE id = $1 AND project_id = $2 AND status = 'sending';
 

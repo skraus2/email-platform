@@ -454,8 +454,9 @@ type RequeueAfterErrorParams struct {
 	ErrorCode *string
 }
 
-// The provider certainly did not accept the message (connect failure or SMTP
-// rejection): back to queued, so the retry is not flagged as a duplicate.
+// The provider certainly did not accept the message (connect failure, SMTP
+// rejection or API refusal): back to queued, so the retry is not flagged as a
+// duplicate.
 func (q *Queries) RequeueAfterError(ctx context.Context, arg RequeueAfterErrorParams) error {
 	_, err := q.db.Exec(ctx, requeueAfterError,
 		arg.ID,

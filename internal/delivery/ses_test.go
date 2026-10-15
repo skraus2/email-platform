@@ -118,6 +118,8 @@ func TestSESErrorMapping(t *testing.T) {
 		{"bad signature", testaws.Response{Status: 403, ErrorType: "InvalidSignatureException", Message: secret}, ClassAuth, false},
 		{"expired token", testaws.Response{Status: 403, ErrorType: "ExpiredTokenException"}, ClassAuth, false},
 		{"unverified sender", testaws.Response{Status: 400, ErrorType: "MessageRejected", Message: "Email address is not verified. The following identities failed the check in region EU-CENTRAL-1: sender@example.test"}, ClassSenderUnverified, false},
+		{"sandbox recipient not verified", testaws.Response{Status: 400, ErrorType: "MessageRejected", Message: "Email address is not verified. The following identities failed the check in region EU-CENTRAL-1: customer@example.test"}, ClassAPIRejected, false},
+		{"unverified sender, upper case", testaws.Response{Status: 400, ErrorType: "MessageRejected", Message: "Email address is not verified. The following identities failed the check in region EU-CENTRAL-1: SENDER@EXAMPLE.TEST"}, ClassSenderUnverified, false},
 		{"unverified mail from", testaws.Response{Status: 400, ErrorType: "MailFromDomainNotVerifiedException", Message: secret}, ClassSenderUnverified, false},
 		{"other rejection", testaws.Response{Status: 400, ErrorType: "MessageRejected", Message: "Message contains a virus"}, ClassAPIRejected, false},
 		{"account suspended", testaws.Response{Status: 400, ErrorType: "AccountSuspendedException", Message: secret}, ClassAPIRejected, false},

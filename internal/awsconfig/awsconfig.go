@@ -57,6 +57,11 @@ func ValidateEndpoint(raw string) error {
 // (IAM role, environment, shared files). SDK retries are off in both cases:
 // the platform retries itself, and a transparently retried send could go
 // out twice.
+//
+// BaseEndpoint is the validated endpoint, or nil for AWS. The SDK also reads
+// endpoint overrides from AWS_ENDPOINT_URL* and the shared config while
+// building a service client, so every client must set its BaseEndpoint from
+// this value as its last option.
 func Load(ctx context.Context, region, endpoint string) (aws.Config, error) {
 	if !ValidRegion(region) {
 		return aws.Config{}, fmt.Errorf("invalid AWS region %q", region)
@@ -67,6 +72,7 @@ func Load(ctx context.Context, region, endpoint string) (aws.Config, error) {
 		if err != nil {
 			return aws.Config{}, fmt.Errorf("load AWS configuration: %w", err)
 		}
+		cfg.BaseEndpoint = nil // never an unchecked override from the environment or a profile
 		return cfg, nil
 	}
 	if err := ValidateEndpoint(endpoint); err != nil {

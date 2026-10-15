@@ -70,7 +70,7 @@ func TestNewProviderBuildsSESOnlyFromTheOptIn(t *testing.T) {
 			"AWS_REGION": "eu-central-1", "SES_CONFIGURATION_SET": "platform-events",
 			"SES_EVENTS_QUEUE_URL": "https://sqs.eu-central-1.amazonaws.com/123456789012/ses-events",
 			"SES_EVENTS_TOPIC_ARN": "arn:aws:sns:eu-central-1:123456789012:ses-events",
-			"SES_ENDPOINT":         "http://127.0.0.1:4566",
+			"SES_ENDPOINT":         "http://127.0.0.1:4566", "SQS_ENDPOINT": "http://127.0.0.1:4567",
 		}[k]
 		return v, ok
 	})

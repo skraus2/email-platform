@@ -87,8 +87,9 @@ func TestDispatchSESOutcomes(t *testing.T) {
 		{"throttled", testaws.Response{Status: 429, ErrorType: "TooManyRequestsException", Message: awsText}, "queued", "provider_throttled", "delivery failed: throttled (http 429)", true, false},
 		{"daily quota", testaws.Response{Status: 400, ErrorType: "LimitExceededException", Message: awsText}, "queued", "provider_throttled", "delivery failed: throttled (http 400)", true, false},
 		{"access denied", testaws.Response{Status: 403, ErrorType: "AccessDeniedException", Message: awsText}, "failed", "provider_auth_failed", "delivery failed: auth (http 403)", false, false},
-		{"unverified sender", testaws.Response{Status: 400, ErrorType: "MessageRejected", Message: "Email address is not verified: " + awsText}, "failed", "sender_not_verified", "delivery failed: sender_unverified (http 400)", false, false},
+		{"unverified sender", testaws.Response{Status: 400, ErrorType: "MessageRejected", Message: "Email address is not verified. The following identities failed the check: " + input.From}, "failed", "sender_not_verified", "delivery failed: sender_unverified (http 400)", false, false},
 		{"rejected", testaws.Response{Status: 400, ErrorType: "MessageRejected", Message: awsText}, "failed", "provider_rejected", "delivery failed: api_rejected (http 400)", false, false},
+		{"sandbox recipient", testaws.Response{Status: 400, ErrorType: "MessageRejected", Message: "Email address is not verified: " + awsText}, "failed", "provider_rejected", "delivery failed: api_rejected (http 400)", false, false},
 		{"server error", testaws.Response{Status: 500, ErrorType: "InternalServiceErrorException", Message: awsText}, "sending", "provider_unreachable", "delivery failed: api_unavailable (http 500)", true, true},
 		{"timeout", testaws.Response{Delay: 3 * time.Second}, "sending", "provider_timeout", "delivery failed: timeout", true, true},
 	}
