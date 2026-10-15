@@ -24,7 +24,7 @@ type emailResponse struct {
 	CreatedAt  time.Time  `json:"created_at"`
 	UpdatedAt  time.Time  `json:"updated_at"`
 	FinishedAt *time.Time `json:"finished_at"`
-	// Template sends are not accepted yet; both stay null until they are.
+	// Null for raw sends.
 	TemplateID      *string `json:"template_id"`
 	TemplateVersion *int    `json:"template_version"`
 }
@@ -65,6 +65,10 @@ func toEmailResponse(e emails.Email) emailResponse {
 	if e.FinishedAt != nil {
 		f := e.FinishedAt.UTC()
 		resp.FinishedAt = &f
+	}
+	if e.TemplateID != nil {
+		id := e.TemplateID.String()
+		resp.TemplateID, resp.TemplateVersion = &id, e.TemplateVersion
 	}
 	return resp
 }

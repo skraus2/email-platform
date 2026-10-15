@@ -1,6 +1,6 @@
 -- name: InsertEmail :one
-INSERT INTO emails (project_id, sender, recipient, subject)
-VALUES ($1, $2, $3, $4)
+INSERT INTO emails (project_id, sender, recipient, subject, template_id, template_version)
+VALUES ($1, $2, $3, $4, $5, $6)
 RETURNING *;
 
 -- name: InsertEmailContent :exec
@@ -105,6 +105,7 @@ WHERE project_id = sqlc.arg(project_id)
   AND (cardinality(sqlc.arg(statuses)::text[]) = 0 OR status = ANY (sqlc.arg(statuses)::text[]))
   AND (sqlc.narg(created_after)::timestamptz IS NULL OR created_at >= sqlc.narg(created_after)::timestamptz)
   AND (sqlc.narg(created_before)::timestamptz IS NULL OR created_at < sqlc.narg(created_before)::timestamptz)
+  AND (sqlc.narg(template_id)::uuid IS NULL OR template_id = sqlc.narg(template_id)::uuid)
 ORDER BY id DESC
 LIMIT sqlc.arg(row_limit);
 
@@ -118,6 +119,7 @@ WHERE project_id = sqlc.arg(project_id)
   AND (cardinality(sqlc.arg(statuses)::text[]) = 0 OR status = ANY (sqlc.arg(statuses)::text[]))
   AND (sqlc.narg(created_after)::timestamptz IS NULL OR created_at >= sqlc.narg(created_after)::timestamptz)
   AND (sqlc.narg(created_before)::timestamptz IS NULL OR created_at < sqlc.narg(created_before)::timestamptz)
+  AND (sqlc.narg(template_id)::uuid IS NULL OR template_id = sqlc.narg(template_id)::uuid)
 ORDER BY id DESC
 LIMIT sqlc.arg(row_limit);
 

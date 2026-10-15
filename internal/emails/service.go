@@ -18,6 +18,7 @@ import (
 	"github.com/skraus2/email-platform/internal/jobs"
 	"github.com/skraus2/email-platform/internal/logging"
 	"github.com/skraus2/email-platform/internal/store"
+	"github.com/skraus2/email-platform/internal/templates"
 )
 
 // Enqueuer inserts the dispatch job inside the caller's transaction.
@@ -41,17 +42,26 @@ type Email struct {
 	// ErrorCode is the failure code of the last failed attempt (nil if none
 	// or after a successful send).
 	ErrorCode *string
+	// TemplateID and TemplateVersion name the template version a template
+	// send was rendered from (nil for raw sends).
+	TemplateID      *uuid.UUID
+	TemplateVersion *int
 	// Replayed is set by Create when the request repeated an earlier one
 	// with the same idempotency key: the email is that earlier one.
 	Replayed bool
 }
 
 func fromRow(r store.Email) Email {
-	return Email{
+	e := Email{
 		ID: r.ID, ProjectID: r.ProjectID, Status: r.Status, From: r.Sender, To: r.Recipient,
 		Subject: r.Subject, CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt, FinishedAt: r.FinishedAt,
-		Attempts: int(r.Attempts), ErrorCode: r.ErrorCode,
+		Attempts: int(r.Attempts), ErrorCode: r.ErrorCode, TemplateID: r.TemplateID,
 	}
+	if r.TemplateVersion != nil {
+		v := int(*r.TemplateVersion)
+		e.TemplateVersion = &v
+	}
+	return e
 }
 
 // Service accepts and reads emails.
@@ -103,7 +113,47 @@ func (s *Service) Create(ctx context.Context, projectID uuid.UUID, in CreateInpu
 	var fingerprint []byte
 	if in.IdempotencyKey != "" {
 		key = &store.GetIdempotencyKeyParams{ProjectID: projectID, Operation: operationCreateEmail, Key: in.IdempotencyKey}
-		fingerprint = in.Fingerprint()
+		if in.TemplateID == uuid.Nil {
+			fingerprint = in.Fingerprint()
+		} else {
+			var err error
+			if fingerprint, err = in.TemplateFingerprint(); err != nil {
+				return Email{}, &templates.Error{Code: templates.CodeVariablesInvalid, Field: "variables", Reason: err.Error()}
+			}
+		}
+	}
+	var templateID *uuid.UUID
+	var templateVersion *int32
+	if in.TemplateID != uuid.Nil {
+		// Rendering costs real work, so it runs only for a request that is
+		// neither a replay nor refused: a retry stays a replay even if the
+		// published version changed meanwhile. The checks in the transaction
+		// below stay authoritative.
+		q := store.New(s.pool)
+		if key != nil {
+			if err := q.DeleteExpiredIdempotencyKey(ctx, store.DeleteExpiredIdempotencyKeyParams{
+				ProjectID: key.ProjectID, Operation: key.Operation, Key: key.Key, TtlSeconds: IdempotencyKeyTTL.Seconds(),
+			}); err != nil {
+				return Email{}, fmt.Errorf("expire idempotency key: %w", err)
+			}
+			id, found, err := matchKey(ctx, q, *key, fingerprint)
+			if err != nil {
+				return Email{}, err
+			}
+			if found {
+				return s.replay(ctx, projectID, id)
+			}
+		}
+		if err := s.refuse(ctx, q, projectID, in, false); err != nil {
+			return Email{}, err
+		}
+		r, version, err := s.render(ctx, projectID, in)
+		if err != nil {
+			return Email{}, err
+		}
+		in.Subject, in.Text, in.HTML = r.Subject, r.Text, r.HTML
+		id, v := in.TemplateID, int32(version) //nolint:gosec // versions are capped far below 2^31
+		templateID, templateVersion = &id, &v
 	}
 
 	var row store.Email
@@ -146,6 +196,7 @@ func (s *Service) Create(ctx context.Context, projectID uuid.UUID, in CreateInpu
 		var err error
 		row, err = q.InsertEmail(ctx, store.InsertEmailParams{
 			ProjectID: projectID, Sender: in.From, Recipient: in.To, Subject: in.Subject,
+			TemplateID: templateID, TemplateVersion: templateVersion,
 		})
 		if err != nil {
 			return fmt.Errorf("insert email: %w", err)
@@ -188,16 +239,7 @@ func (s *Service) Create(ctx context.Context, projectID uuid.UUID, in CreateInpu
 		return Email{}, err
 	}
 	if replayOf != uuid.Nil {
-		e, err := s.Get(ctx, projectID, replayOf)
-		if err != nil {
-			return Email{}, fmt.Errorf("load replayed email: %w", err)
-		}
-		e.Replayed = true
-		s.logger.InfoContext(ctx, "idempotent replay",
-			slog.String("project_id", projectID.String()),
-			slog.String("email_id", e.ID.String()),
-		)
-		return e, nil
+		return s.replay(ctx, projectID, replayOf)
 	}
 	s.logger.InfoContext(ctx, "email queued",
 		slog.String("project_id", projectID.String()),
@@ -205,6 +247,46 @@ func (s *Service) Create(ctx context.Context, projectID uuid.UUID, in CreateInpu
 		slog.String("recipient", logging.MaskEmail(in.To)),
 	)
 	return fromRow(row), nil
+}
+
+func (s *Service) replay(ctx context.Context, projectID, id uuid.UUID) (Email, error) {
+	e, err := s.Get(ctx, projectID, id)
+	if err != nil {
+		return Email{}, fmt.Errorf("load replayed email: %w", err)
+	}
+	e.Replayed = true
+	s.logger.InfoContext(ctx, "idempotent replay",
+		slog.String("project_id", projectID.String()),
+		slog.String("email_id", e.ID.String()),
+	)
+	return e, nil
+}
+
+// ErrTemplateNotFound: the template or version does not exist in the
+// project (also for templates of other projects, and for "published" on a
+// template without versions).
+var ErrTemplateNotFound = errors.New("template not found")
+
+// render resolves the requested version of a template of the project and
+// renders it with the request variables. Variable and output errors are
+// *templates.Error; variables are never logged.
+func (s *Service) render(ctx context.Context, projectID uuid.UUID, in CreateInput) (templates.Rendered, int, error) {
+	v, err := templates.Resolve(ctx, store.New(s.pool), projectID, in.TemplateID, in.TemplateVersion)
+	if errors.Is(err, templates.ErrNotFound) {
+		return templates.Rendered{}, 0, ErrTemplateNotFound
+	}
+	if err != nil {
+		return templates.Rendered{}, 0, fmt.Errorf("resolve template: %w", err)
+	}
+	c, err := v.Compile()
+	if err != nil {
+		return templates.Rendered{}, 0, fmt.Errorf("compile stored template: %w", err)
+	}
+	r, err := c.Render(in.Variables)
+	if err != nil {
+		return templates.Rendered{}, 0, err
+	}
+	return r, v.Version, nil
 }
 
 // refuse checks the sender identity (when required), suppression and the
@@ -300,6 +382,7 @@ type ListFilter struct {
 	Recipient     string     // exact address, case-insensitive
 	CreatedAfter  *time.Time // inclusive
 	CreatedBefore *time.Time // exclusive
+	TemplateID    *uuid.UUID // only emails sent from this template
 	// After is the cursor: only emails with a smaller id follow (uuid.Nil:
 	// from the newest).
 	After uuid.UUID
@@ -360,12 +443,12 @@ func (s *Service) List(ctx context.Context, projectID uuid.UUID, f ListFilter, l
 	if f.Recipient != "" {
 		rows, err = q.ListProjectEmailsByRecipient(qctx, store.ListProjectEmailsByRecipientParams{
 			ProjectID: projectID, Recipient: f.Recipient, BeforeID: before, MinID: minID, Statuses: statuses,
-			CreatedAfter: f.CreatedAfter, CreatedBefore: f.CreatedBefore, RowLimit: rowLimit,
+			CreatedAfter: f.CreatedAfter, CreatedBefore: f.CreatedBefore, TemplateID: f.TemplateID, RowLimit: rowLimit,
 		})
 	} else {
 		rows, err = q.ListProjectEmails(qctx, store.ListProjectEmailsParams{
 			ProjectID: projectID, BeforeID: before, MinID: minID, Statuses: statuses,
-			CreatedAfter: f.CreatedAfter, CreatedBefore: f.CreatedBefore, RowLimit: rowLimit,
+			CreatedAfter: f.CreatedAfter, CreatedBefore: f.CreatedBefore, TemplateID: f.TemplateID, RowLimit: rowLimit,
 		})
 	}
 	if err != nil {

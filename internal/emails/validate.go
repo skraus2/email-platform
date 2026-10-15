@@ -6,6 +6,8 @@ import (
 	"net/mail"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/google/uuid"
 )
 
 // Limits for a send request.
@@ -16,13 +18,21 @@ const (
 	headerForbidCh = "\r\n\x00"
 )
 
-// CreateInput is one send request for one recipient.
+// CreateInput is one send request for one recipient: either the raw form
+// (Subject with Text and/or HTML) or the template form (TemplateID set).
 type CreateInput struct {
 	From    string
 	To      string
 	Subject string
 	Text    string
 	HTML    string
+	// TemplateID selects a template of the project (uuid.Nil: raw form).
+	TemplateID uuid.UUID
+	// TemplateVersion is the version to send; 0 means the published
+	// (highest) version at accept time.
+	TemplateVersion int
+	// Variables is the JSON object of template variables (nil: none).
+	Variables []byte
 	// IdempotencyKey is optional (empty = no deduplication). It is not part
 	// of the payload fingerprint.
 	IdempotencyKey string
@@ -51,6 +61,18 @@ func (in CreateInput) Validate() error {
 	}
 	if err := validateAddress("to", in.To); err != nil {
 		return err
+	}
+	if in.TemplateID != uuid.Nil {
+		// The subject and bodies come from the template version.
+		for _, f := range []struct{ field, v string }{{"subject", in.Subject}, {"text", in.Text}, {"html", in.HTML}} {
+			if f.v != "" {
+				return invalid(f.field, "must not be combined with template_id")
+			}
+		}
+		if in.TemplateVersion < 0 {
+			return invalid("template_version", `must be a positive integer or "published"`)
+		}
+		return nil
 	}
 	switch n := utf8.RuneCountInString(in.Subject); {
 	case n == 0:

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -18,6 +19,7 @@ import (
 	"github.com/skraus2/email-platform/internal/auth"
 	"github.com/skraus2/email-platform/internal/emails"
 	"github.com/skraus2/email-platform/internal/events"
+	"github.com/skraus2/email-platform/internal/templates"
 )
 
 type fakeEmails struct {
@@ -102,11 +104,54 @@ func TestCreateEmailAccepted(t *testing.T) {
 		t.Fatal("email created for the wrong project")
 	}
 	want := emails.CreateInput{From: "noreply@example.test", To: "customer@example.test", Subject: "Hi", Text: "Hello", HTML: "<p>Hello</p>"}
-	if svc.created[0] != want {
+	if !reflect.DeepEqual(svc.created[0], want) {
 		t.Fatalf("input = %+v", svc.created[0])
 	}
 	if strings.Contains(logs.String(), "customer@example.test") || strings.Contains(logs.String(), "Hello") {
 		t.Errorf("request log contains recipient or body: %s", logs.String())
+	}
+}
+
+const tmplID = "0192f0aa-0000-7000-8000-000000000001"
+
+func TestCreateEmailTemplateForm(t *testing.T) {
+	for _, tc := range []struct {
+		body    string
+		version int
+		vars    string
+	}{
+		{`{"from":"a@example.test","to":"b@example.test","template_id":"` + tmplID + `","template_version":"published","variables":{"name":"Ada"}}`, 0, `{"name":"Ada"}`},
+		{`{"from":"a@example.test","to":"b@example.test","template_id":"` + tmplID + `","template_version":3}`, 3, ""},
+	} {
+		svc := &fakeEmails{}
+		s, _ := emailServer(t, svc, principal)
+		rec := post(t, s, tc.body, nil)
+		if rec.Code != http.StatusAccepted || len(svc.created) != 1 {
+			t.Fatalf("%s: %d %s", tc.body, rec.Code, rec.Body)
+		}
+		in := svc.created[0]
+		if in.TemplateID.String() != tmplID || in.TemplateVersion != tc.version || string(in.Variables) != tc.vars || in.Subject != "" {
+			t.Fatalf("input %+v", in)
+		}
+	}
+}
+
+func TestCreateEmailTemplateErrors(t *testing.T) {
+	body := `{"from":"a@example.test","to":"b@example.test","template_id":"` + tmplID + `","template_version":1}`
+	for _, tc := range []struct {
+		err  error
+		code string
+	}{
+		{emails.ErrTemplateNotFound, "template_not_found"},
+		{&templates.Error{Code: templates.CodeVariablesInvalid, Field: "variables.name", Reason: "is required"}, "variables_invalid"},
+		{&templates.Error{Code: templates.CodeRenderFailed, Field: "subject", Reason: "too long"}, "render_failed"},
+	} {
+		s, _ := emailServer(t, &fakeEmails{err: tc.err}, principal)
+		rec := post(t, s, body, nil)
+		if rec.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("%v: %d", tc.err, rec.Code)
+		}
+		assertErrorCode(t, rec, tc.code)
 	}
 }
 
@@ -130,8 +175,20 @@ func TestCreateEmailRejects(t *testing.T) {
 		{"no content type", okBody, map[string]string{"Content-Type": ""}, 415, "unsupported_media_type"},
 		{"form content type", okBody, map[string]string{"Content-Type": "application/x-www-form-urlencoded"}, 415, "unsupported_media_type"},
 		{"too large", big, nil, 413, "payload_too_large"},
-		{"template id", `{"from":"a@example.test","to":"b@example.test","subject":"s","template_id":"t1"}`, nil, 422, "templates_not_supported"},
-		{"template null", `{"from":"a@example.test","to":"b@example.test","subject":"s","text":"t","variables":null}`, nil, 422, "templates_not_supported"},
+		{"template id not a uuid", `{"from":"a@example.test","to":"b@example.test","template_id":"t1","template_version":1}`, nil, 422, "validation_failed"},
+		{"template id null", `{"from":"a@example.test","to":"b@example.test","template_id":null,"template_version":1}`, nil, 422, "validation_failed"},
+		{"template id number", `{"from":"a@example.test","to":"b@example.test","template_id":1,"template_version":1}`, nil, 422, "validation_failed"},
+		{"variables without template", `{"from":"a@example.test","to":"b@example.test","subject":"s","text":"t","variables":{}}`, nil, 422, "validation_failed"},
+		{"version without template", `{"from":"a@example.test","to":"b@example.test","subject":"s","text":"t","template_version":1}`, nil, 422, "validation_failed"},
+		{"template without version", `{"from":"a@example.test","to":"b@example.test","template_id":"` + tmplID + `"}`, nil, 422, "validation_failed"},
+		{"version zero", `{"from":"a@example.test","to":"b@example.test","template_id":"` + tmplID + `","template_version":0}`, nil, 422, "validation_failed"},
+		{"version fraction", `{"from":"a@example.test","to":"b@example.test","template_id":"` + tmplID + `","template_version":1.5}`, nil, 422, "validation_failed"},
+		{"version exponent", `{"from":"a@example.test","to":"b@example.test","template_id":"` + tmplID + `","template_version":1e0}`, nil, 422, "validation_failed"},
+		{"version string number", `{"from":"a@example.test","to":"b@example.test","template_id":"` + tmplID + `","template_version":"1"}`, nil, 422, "validation_failed"},
+		{"version latest", `{"from":"a@example.test","to":"b@example.test","template_id":"` + tmplID + `","template_version":"latest"}`, nil, 422, "validation_failed"},
+		{"version null", `{"from":"a@example.test","to":"b@example.test","template_id":"` + tmplID + `","template_version":null}`, nil, 422, "validation_failed"},
+		{"template with subject", `{"from":"a@example.test","to":"b@example.test","subject":"s","template_id":"` + tmplID + `","template_version":1}`, nil, 422, "validation_failed"},
+		{"template with text", `{"from":"a@example.test","to":"b@example.test","text":"t","template_id":"` + tmplID + `","template_version":"published"}`, nil, 422, "validation_failed"},
 		{"invalid address", `{"from":"a@example.test","to":"not-an-address","subject":"s","text":"t"}`, nil, 422, "validation_failed"},
 		{"header injection", `{"from":"a@example.test","to":"b@example.test","subject":"Hi\r\nBcc: x@example.test","text":"t"}`, nil, 422, "validation_failed"},
 	}

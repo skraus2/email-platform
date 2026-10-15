@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/skraus2/email-platform/internal/database"
 	"github.com/skraus2/email-platform/internal/emails"
 )
@@ -25,7 +27,7 @@ const (
 // listQueryParams are the query parameters GET /v1/emails understands.
 var listQueryParams = map[string]bool{
 	"status": true, "recipient": true, "created_after": true, "created_before": true,
-	"limit": true, "cursor": true,
+	"limit": true, "cursor": true, "template_id": true,
 }
 
 func (s *Server) handleListEmails(w http.ResponseWriter, r *http.Request) {
@@ -110,6 +112,13 @@ func parseListQuery(query url.Values) (f emails.ListFilter, limit, status int, c
 			return bad("invalid_filter", "recipient must be a single plain email address")
 		}
 		f.Recipient = v[0]
+	}
+	if v, ok := query["template_id"]; ok {
+		id, err := uuid.Parse(v[0])
+		if len(v) != 1 || err != nil || id.String() != v[0] {
+			return bad("invalid_filter", "template_id must be a single UUID")
+		}
+		f.TemplateID = &id
 	}
 	for _, b := range []struct {
 		name string

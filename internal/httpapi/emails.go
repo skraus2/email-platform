@@ -20,6 +20,7 @@ import (
 	"github.com/skraus2/email-platform/internal/database"
 	"github.com/skraus2/email-platform/internal/emails"
 	"github.com/skraus2/email-platform/internal/events"
+	"github.com/skraus2/email-platform/internal/templates"
 )
 
 // maxRequestBytes caps a send request; bodies are limited to 512 KiB each.
@@ -34,8 +35,7 @@ type EmailService interface {
 }
 
 // createEmailRequest mirrors CreateEmailRequest in api/openapi.yaml. The
-// template fields are declared so that using them yields a precise 422
-// instead of a generic unknown-field error.
+// template fields stay raw so that their type errors get precise 422s.
 type createEmailRequest struct {
 	From            string          `json:"from"`
 	To              string          `json:"to"`
@@ -68,22 +68,30 @@ func (s *Server) handleCreateEmail(w http.ResponseWriter, r *http.Request) {
 		writeError(w, status, code, msg)
 		return
 	}
-	if req.TemplateID != nil || req.TemplateVersion != nil || req.Variables != nil {
-		writeError(w, http.StatusUnprocessableEntity, "templates_not_supported",
-			"templates are not supported yet; send subject with text and/or html")
+	in := emails.CreateInput{
+		From: req.From, To: req.To, Subject: req.Subject, Text: req.Text, HTML: req.HTML,
+		IdempotencyKey: idemKey,
+	}
+	if field, msg := parseTemplateForm(req, &in); field != "" {
+		writeError(w, http.StatusUnprocessableEntity, "validation_failed", field+": "+msg)
 		return
 	}
 
 	p := principalFrom(r.Context())
-	e, err := s.emails.Create(r.Context(), p.ProjectID, emails.CreateInput{
-		From: req.From, To: req.To, Subject: req.Subject, Text: req.Text, HTML: req.HTML,
-		IdempotencyKey: idemKey,
-	})
+	e, err := s.emails.Create(r.Context(), p.ProjectID, in)
 	var ve *emails.ValidationError
 	var rl *emails.RateLimitError
+	var te *templates.Error
 	switch {
 	case errors.As(err, &ve):
 		writeError(w, http.StatusUnprocessableEntity, "validation_failed", ve.Error())
+		return
+	case errors.As(err, &te):
+		writeError(w, http.StatusUnprocessableEntity, te.Code, te.Error())
+		return
+	case errors.Is(err, emails.ErrTemplateNotFound):
+		writeError(w, http.StatusUnprocessableEntity, "template_not_found",
+			"no such template or version in this project; nothing was sent")
 		return
 	case errors.Is(err, emails.ErrInvalidIdempotencyKey):
 		writeInvalidIdempotencyKey(w)
@@ -216,4 +224,43 @@ func exactKeys(body []byte, v any) error {
 		}
 	}
 	return nil
+}
+
+// parseTemplateForm fills the template fields of in from the request. It
+// returns the offending field and a message (never the submitted value).
+func parseTemplateForm(req createEmailRequest, in *emails.CreateInput) (string, string) {
+	present := func(raw json.RawMessage) bool { return raw != nil }
+	if !present(req.TemplateID) {
+		switch {
+		case present(req.TemplateVersion):
+			return "template_id", "is required with template_version"
+		case present(req.Variables):
+			return "template_id", "is required with variables"
+		}
+		return "", ""
+	}
+	var id string
+	if json.Unmarshal(req.TemplateID, &id) != nil {
+		return "template_id", "must be a UUID"
+	}
+	tid, err := uuid.Parse(id)
+	if err != nil || tid == uuid.Nil || tid.String() != id {
+		return "template_id", "must be a UUID"
+	}
+	in.TemplateID = tid
+	if !present(req.TemplateVersion) {
+		return "template_version", `is required: a version number or "published"`
+	}
+	var published string
+	var number int
+	switch {
+	case json.Unmarshal(req.TemplateVersion, &published) == nil && published == "published":
+		in.TemplateVersion = 0
+	case json.Unmarshal(req.TemplateVersion, &number) == nil && number >= 1 && bytes.Equal(bytes.TrimSpace(req.TemplateVersion), []byte(strconv.Itoa(number))):
+		in.TemplateVersion = number
+	default:
+		return "template_version", `must be a positive integer or "published"`
+	}
+	in.Variables = req.Variables
+	return "", ""
 }

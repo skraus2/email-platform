@@ -1,9 +1,12 @@
 package emails
 
 import (
+	"encoding/hex"
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/google/uuid"
 )
 
 func TestValidateIdempotencyKey(t *testing.T) {
@@ -77,5 +80,88 @@ func TestFingerprint(t *testing.T) {
 	d := CreateInput{HTML: "x"}
 	if string(c.Fingerprint()) == string(d.Fingerprint()) {
 		t.Error("text and html with the same value collide")
+	}
+}
+
+func TestRawFingerprintIsStable(t *testing.T) {
+	// Keys stored before template sends existed must keep replaying.
+	in := CreateInput{From: "a@example.test", To: "b@example.test", Subject: "Hi", Text: "Hello", HTML: "<p>Hello</p>"}
+	if got := hex.EncodeToString(in.Fingerprint()); got != "0272c9d4c2cbcec6ccd0dee97e11043a74b2aa8f015482402a1e6d170e4a59c6" {
+		t.Fatalf("raw fingerprint changed: %s", got)
+	}
+}
+
+func TestTemplateFingerprint(t *testing.T) {
+	id := uuid.MustParse("0192f0aa-0000-7000-8000-000000000001")
+	base := CreateInput{From: "a@example.test", To: "b@example.test", TemplateID: id, TemplateVersion: 0,
+		Variables: []byte(`{"name":"Ada","n":1.50,"vip":true}`)}
+	fp, err := base.TemplateFingerprint()
+	if err != nil || len(fp) != 32 {
+		t.Fatalf("fingerprint %x %v", fp, err)
+	}
+	// Formatting and key order of the variables do not matter.
+	same := base
+	same.Variables = []byte(" {\n \"vip\" : true, \"n\":1.50 ,\"name\":\"Ada\"}")
+	if fp2, _ := same.TemplateFingerprint(); string(fp2) != string(fp) {
+		t.Error("formatting changed the fingerprint")
+	}
+	// Absent and empty variables are the same request.
+	a, b := base, base
+	a.Variables, b.Variables = nil, []byte(`{}`)
+	fa, _ := a.TemplateFingerprint()
+	fb, _ := b.TemplateFingerprint()
+	if string(fa) != string(fb) {
+		t.Error("absent vs empty variables differ")
+	}
+	for name, change := range map[string]func(*CreateInput){
+		"from":      func(in *CreateInput) { in.From = "c@example.test" },
+		"to":        func(in *CreateInput) { in.To = "c@example.test" },
+		"template":  func(in *CreateInput) { in.TemplateID = uuid.New() },
+		"version":   func(in *CreateInput) { in.TemplateVersion = 1 },
+		"variables": func(in *CreateInput) { in.Variables = []byte(`{"name":"Bob","n":1.50,"vip":true}`) },
+		"number":    func(in *CreateInput) { in.Variables = []byte(`{"name":"Ada","n":1.5,"vip":true}`) },
+		"type":      func(in *CreateInput) { in.Variables = []byte(`{"name":"Ada","n":"1.50","vip":true}`) },
+	} {
+		in := base
+		change(&in)
+		if f, _ := in.TemplateFingerprint(); string(f) == string(fp) {
+			t.Errorf("changing %s did not change the fingerprint", name)
+		}
+	}
+	// A template request never collides with a raw one.
+	raw := CreateInput{From: base.From, To: base.To}
+	if string(raw.Fingerprint()) == string(fp) {
+		t.Error("raw and template fingerprints collide")
+	}
+	for _, bad := range []string{`[]`, `{"a":1,"a":2}`, `{"a":1} x`, `null`} {
+		in := base
+		in.Variables = []byte(bad)
+		if _, err := in.TemplateFingerprint(); err == nil {
+			t.Errorf("%s: no error", bad)
+		}
+	}
+}
+
+func TestValidateTemplateForm(t *testing.T) {
+	ok := CreateInput{From: "a@example.test", To: "b@example.test", TemplateID: uuid.New(), TemplateVersion: 2}
+	if err := ok.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	for name, tc := range map[string]struct {
+		change func(*CreateInput)
+		field  string
+	}{
+		"subject with template": {func(in *CreateInput) { in.Subject = "x" }, "subject"},
+		"text with template":    {func(in *CreateInput) { in.Text = "x" }, "text"},
+		"html with template":    {func(in *CreateInput) { in.HTML = "x" }, "html"},
+		"negative version":      {func(in *CreateInput) { in.TemplateVersion = -1 }, "template_version"},
+		"bad to":                {func(in *CreateInput) { in.To = "nope" }, "to"},
+	} {
+		in := ok
+		tc.change(&in)
+		var ve *ValidationError
+		if err := in.Validate(); !errors.As(err, &ve) || ve.Field != tc.field {
+			t.Errorf("%s: %v, want error on %s", name, err, tc.field)
+		}
 	}
 }

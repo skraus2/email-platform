@@ -135,13 +135,16 @@ func TestListEmailsEmptyPageIsAnArray(t *testing.T) {
 func TestListEmailsPassesFilters(t *testing.T) {
 	s, svc := listEmailsServer(t, principal)
 	rec, _ := getList(t, s, "/v1/emails?status=failed&status=bounced&recipient=Customer@Example.test"+
-		"&created_after=2026-10-01T00:00:00Z&created_before=2026-10-15T12:00:00%2B02:00")
+		"&created_after=2026-10-01T00:00:00Z&created_before=2026-10-15T12:00:00%2B02:00&template_id="+tmplID)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("code %d: %s", rec.Code, rec.Body.String())
 	}
 	f := svc.askedFilter
 	if !slices.Equal(f.Statuses, []string{"failed", "bounced"}) || f.Recipient != "Customer@Example.test" {
 		t.Fatalf("filter %+v", f)
+	}
+	if f.TemplateID == nil || f.TemplateID.String() != tmplID {
+		t.Fatalf("template_id %v", f.TemplateID)
 	}
 	if f.CreatedAfter == nil || !f.CreatedAfter.Equal(time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)) {
 		t.Fatalf("created_after %v", f.CreatedAfter)
@@ -174,7 +177,8 @@ func TestListEmailsRejects(t *testing.T) {
 		{"created_after=2026-10-02T00:00:00Z&created_before=2026-10-02T00:00:00Z", "invalid_filter"},
 		{"created_after=2026-10-03T00:00:00Z&created_before=2026-10-02T00:00:00Z", "invalid_filter"},
 		{secret + "=1", "invalid_filter"},
-		{"template_id=" + uuid.NewString(), "invalid_filter"},
+		{"template_id=" + secret, "invalid_filter"},
+		{"template_id=" + uuid.NewString() + "&template_id=" + uuid.NewString(), "invalid_filter"},
 		{"limit=%zz", "invalid_filter"},
 	} {
 		rec, _ := getList(t, s, "/v1/emails?"+tc.query)
