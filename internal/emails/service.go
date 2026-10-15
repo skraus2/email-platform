@@ -336,7 +336,8 @@ func (s *Service) render(ctx context.Context, projectID uuid.UUID, in CreateInpu
 // the same key. Otherwise the refusal is returned unchanged.
 func winnerAfterRefusal(ctx context.Context, q *store.Queries, key *store.GetIdempotencyKeyParams, fingerprint []byte, refusal error) (uuid.UUID, error) {
 	var limited *RateLimitError
-	if key == nil || !(errors.Is(refusal, ErrSenderNotVerified) || errors.Is(refusal, ErrRecipientSuppressed) || errors.As(refusal, &limited)) {
+	retrySafe := errors.Is(refusal, ErrSenderNotVerified) || errors.Is(refusal, ErrRecipientSuppressed) || errors.As(refusal, &limited)
+	if key == nil || !retrySafe {
 		return uuid.Nil, refusal
 	}
 	id, found, err := matchKey(ctx, q, *key, fingerprint)
