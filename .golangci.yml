@@ -5,6 +5,7 @@ run:
   build-tags:
     - integration # lint integration tests too
     - load # and the load test program
+    - smoke # and the smoke test webhook receiver
 
 linters:
   default: standard # errcheck, govet, ineffassign, staticcheck, unused
