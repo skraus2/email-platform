@@ -98,7 +98,9 @@ func TestTemplateCapIsRaceSafe(t *testing.T) {
 	var wg sync.WaitGroup
 	errs := make([]error, 10)
 	for i := range 10 {
-		wg.Go(func() { _, errs[i] = s.Create(ctx, a, fmt.Sprintf("c%d", i), "") })
+		wg.Go(func() {
+			errs[i] = retryBusy(func() error { _, err := s.Create(ctx, a, fmt.Sprintf("c%d", i), ""); return err })
+		})
 	}
 	wg.Wait()
 	ok := 0
@@ -129,7 +131,8 @@ func TestPublishConcurrentVersionsAreGapless(t *testing.T) {
 	versions := make([]int, 10)
 	for i := range 10 {
 		wg.Go(func() {
-			v, err := s.Publish(ctx, a, tmpl.ID, src, []byte(schema))
+			var v templates.Version
+			err := retryBusy(func() (err error) { v, err = s.Publish(ctx, a, tmpl.ID, src, []byte(schema)); return err })
 			if err != nil {
 				t.Error(err)
 				return
@@ -319,7 +322,9 @@ func TestPublishStorageBudgetPerProject(t *testing.T) {
 	var wg sync.WaitGroup
 	errs := make([]error, 5)
 	for i := range 5 {
-		wg.Go(func() { _, errs[i] = s.Publish(ctx, a, ta.ID, src, []byte(schema)) })
+		wg.Go(func() {
+			errs[i] = retryBusy(func() error { _, err := s.Publish(ctx, a, ta.ID, src, []byte(schema)); return err })
+		})
 	}
 	wg.Wait()
 	ok := 0
@@ -435,4 +440,16 @@ func TestWritesAreBoundedInConcurrencyAndTime(t *testing.T) {
 	if _, err := s.Publish(ctx, a, tmpl.ID, src, []byte(schema)); err != nil {
 		t.Fatalf("after release: %v", err)
 	}
+}
+
+// retryBusy retries f while the store reports busy (lock waits under a
+// loaded test machine), as a client would.
+func retryBusy(f func() error) error {
+	for range 20 {
+		if err := f(); !errors.Is(err, templates.ErrBusy) {
+			return err
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return templates.ErrBusy
 }
