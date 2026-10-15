@@ -248,9 +248,7 @@ func Load(lookup LookupFunc) (Config, error) {
 	cfg.TemplateMaxVersions, errs = intInRange(get, "TEMPLATE_MAX_VERSIONS", "500", 1, 10_000, errs)
 	cfg.TemplateMaxStorageBytes, errs = intInRange(get, "TEMPLATE_MAX_STORAGE_BYTES", "52428800", 1<<20, 10<<30, errs)
 	cfg.TemplateWritesPerMinute, errs = intInRange(get, "TEMPLATE_WRITES_PER_MINUTE", "60", 1, 100_000, errs)
-	switch addr := get("ADMIN_HTTP_ADDR", "127.0.0.1:8081"); {
-	case addr == "off":
-	default:
+	if addr := get("ADMIN_HTTP_ADDR", "127.0.0.1:8081"); addr != "off" {
 		if err := validAdminAddr(addr, cfg.Env == EnvProduction); err != nil {
 			errs = append(errs, fmt.Errorf("ADMIN_HTTP_ADDR: %w", err))
 		} else {
