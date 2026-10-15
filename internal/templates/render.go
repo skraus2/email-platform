@@ -27,7 +27,7 @@ type Rendered struct {
 // schema and renders all parts. Errors are *Error with code
 // variables_invalid or render_failed; they name variables, never values.
 func (c *Compiled) Render(raw []byte) (Rendered, error) {
-	data, err := c.variables(raw)
+	data, err := variables(c.schema, raw)
 	if err != nil {
 		return Rendered{}, err
 	}
@@ -76,9 +76,11 @@ func renderError(part string, err error) error {
 }
 
 // zeroData is the data with every declared variable at its zero value.
-func (c *Compiled) zeroData() map[string]any {
-	data := make(map[string]any, len(c.schema))
-	for name, v := range c.schema {
+func (c *Compiled) zeroData() map[string]any { return zeroData(c.schema) }
+
+func zeroData(schema Schema) map[string]any {
+	data := make(map[string]any, len(schema))
+	for name, v := range schema {
 		data[name] = zeroValue(v.Type)
 	}
 	return data
@@ -95,16 +97,24 @@ func zeroValue(typ string) any {
 	}
 }
 
+// ValidateVariables checks raw variables against a schema without compiling
+// the template, so invalid requests cost no template work. Errors are *Error
+// (variables_invalid).
+func ValidateVariables(schema Schema, raw []byte) error {
+	_, err := variables(schema, raw)
+	return err
+}
+
 // variables decodes and checks the request variables.
-func (c *Compiled) variables(raw []byte) (map[string]any, error) {
+func variables(schema Schema, raw []byte) (map[string]any, error) {
 	bad := func(field, format string, args ...any) error {
 		return fail(CodeVariablesInvalid, field, format, args...)
 	}
-	data := c.zeroData()
-	seen := make(map[string]bool, len(c.schema))
+	data := zeroData(schema)
+	seen := make(map[string]bool, len(schema))
 	if len(bytes.TrimSpace(raw)) > 0 {
 		err := decodeObject(raw, func(name string, dec *json.Decoder) error {
-			v, declared := c.schema[name]
+			v, declared := schema[name]
 			if !declared {
 				return bad("variables", "a variable is not declared by this template version")
 			}
@@ -152,7 +162,7 @@ func (c *Compiled) variables(raw []byte) (map[string]any, error) {
 			return nil, bad("variables", "must be a JSON object")
 		}
 	}
-	for name, v := range c.schema {
+	for name, v := range schema {
 		if v.Required && !seen[name] {
 			return nil, bad("variables."+name, "is required")
 		}

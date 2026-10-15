@@ -122,6 +122,7 @@ func TestCreateEmailTemplateForm(t *testing.T) {
 	}{
 		{`{"from":"a@example.test","to":"b@example.test","template_id":"` + tmplID + `","template_version":"published","variables":{"name":"Ada"}}`, 0, `{"name":"Ada"}`},
 		{`{"from":"a@example.test","to":"b@example.test","template_id":"` + tmplID + `","template_version":3}`, 3, ""},
+		{`{"from":"a@example.test","to":"b@example.test","template_id":"` + strings.ToUpper(tmplID) + `","template_version":3}`, 3, ""},
 	} {
 		svc := &fakeEmails{}
 		s, _ := emailServer(t, svc, principal)
@@ -145,10 +146,11 @@ func TestCreateEmailTemplateErrors(t *testing.T) {
 		{emails.ErrTemplateNotFound, "template_not_found"},
 		{&templates.Error{Code: templates.CodeVariablesInvalid, Field: "variables.name", Reason: "is required"}, "variables_invalid"},
 		{&templates.Error{Code: templates.CodeRenderFailed, Field: "subject", Reason: "too long"}, "render_failed"},
+		{emails.ErrRenderBusy, "service_unavailable"},
 	} {
 		s, _ := emailServer(t, &fakeEmails{err: tc.err}, principal)
 		rec := post(t, s, body, nil)
-		if rec.Code != http.StatusUnprocessableEntity {
+		if want := map[bool]int{true: 503, false: 422}[tc.code == "service_unavailable"]; rec.Code != want {
 			t.Fatalf("%v: %d", tc.err, rec.Code)
 		}
 		assertErrorCode(t, rec, tc.code)
@@ -189,6 +191,8 @@ func TestCreateEmailRejects(t *testing.T) {
 		{"version null", `{"from":"a@example.test","to":"b@example.test","template_id":"` + tmplID + `","template_version":null}`, nil, 422, "validation_failed"},
 		{"template with subject", `{"from":"a@example.test","to":"b@example.test","subject":"s","template_id":"` + tmplID + `","template_version":1}`, nil, 422, "validation_failed"},
 		{"template with text", `{"from":"a@example.test","to":"b@example.test","text":"t","template_id":"` + tmplID + `","template_version":"published"}`, nil, 422, "validation_failed"},
+		{"template with empty subject", `{"from":"a@example.test","to":"b@example.test","subject":"","template_id":"` + tmplID + `","template_version":1}`, nil, 422, "validation_failed"},
+		{"template id with braces", `{"from":"a@example.test","to":"b@example.test","template_id":"{` + tmplID + `}","template_version":1}`, nil, 422, "validation_failed"},
 		{"invalid address", `{"from":"a@example.test","to":"not-an-address","subject":"s","text":"t"}`, nil, 422, "validation_failed"},
 		{"header injection", `{"from":"a@example.test","to":"b@example.test","subject":"Hi\r\nBcc: x@example.test","text":"t"}`, nil, 422, "validation_failed"},
 	}

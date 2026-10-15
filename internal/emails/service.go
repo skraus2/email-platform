@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -76,7 +77,20 @@ type Service struct {
 	listSlots   chan struct{}
 	listWait    time.Duration
 	listTimeout time.Duration
+	// Template sends: compiled versions are cached; at most renderSlots
+	// compile/render at once per process, waiting at most renderWait.
+	compiled    *compiledCache
+	compiles    atomic.Int64
+	renderSlots chan struct{}
+	renderWait  time.Duration
 }
+
+// Template render limits per process.
+const (
+	compiledCacheEntries = 64
+	defaultRenderSlots   = 4
+	defaultRenderWait    = time.Second
+)
 
 // NewService builds a Service that accepts at most perMinute sends per
 // project and minute (values below 1 are treated as 1).
@@ -84,6 +98,8 @@ func NewService(pool *pgxpool.Pool, enq Enqueuer, logger *slog.Logger, perMinute
 	return &Service{
 		pool: pool, enq: enq, logger: logger, perMinute: max(perMinute, 1),
 		listSlots: make(chan struct{}, defaultListSlots), listWait: defaultListWait, listTimeout: defaultListTimeout,
+		compiled:    newCompiledCache(compiledCacheEntries),
+		renderSlots: make(chan struct{}, defaultRenderSlots), renderWait: defaultRenderWait,
 	}
 }
 
@@ -145,7 +161,11 @@ func (s *Service) Create(ctx context.Context, projectID uuid.UUID, in CreateInpu
 			}
 		}
 		if err := s.refuse(ctx, q, projectID, in, false); err != nil {
-			return Email{}, err
+			id, err := winnerAfterRefusal(ctx, q, key, fingerprint, err)
+			if err != nil {
+				return Email{}, err
+			}
+			return s.replay(ctx, projectID, id)
 		}
 		r, version, err := s.render(ctx, projectID, in)
 		if err != nil {
@@ -177,20 +197,7 @@ func (s *Service) Create(ctx context.Context, projectID uuid.UUID, in CreateInpu
 		// project hammering the API cannot tie up connections for others.
 		// The checks after the key claim below stay authoritative.
 		if err := s.refuse(ctx, q, projectID, in, false); err != nil {
-			var limited *RateLimitError
-			if key != nil && (errors.Is(err, ErrSenderNotVerified) || errors.Is(err, ErrRecipientSuppressed) || errors.As(err, &limited)) {
-				// A concurrent request with the same key may have committed
-				// (and filled the window) after the lookup above: replay it
-				// rather than refuse a duplicate of an accepted request.
-				// Not covered: a winner that has not committed yet when a
-				// suppression is added, or one counting in the next minute;
-				// the refusal is then retry-safe with the same key.
-				id, found, kerr := matchKey(ctx, q, *key, fingerprint)
-				if kerr != nil || found {
-					replayOf = id
-					return kerr
-				}
-			}
+			replayOf, err = winnerAfterRefusal(ctx, q, key, fingerprint, err)
 			return err
 		}
 		var err error
@@ -267,9 +274,14 @@ func (s *Service) replay(ctx context.Context, projectID, id uuid.UUID) (Email, e
 // template without versions).
 var ErrTemplateNotFound = errors.New("template not found")
 
+// ErrRenderBusy: all template render slots stayed taken for the wait time.
+var ErrRenderBusy = errors.New("template rendering busy")
+
 // render resolves the requested version of a template of the project and
-// renders it with the request variables. Variable and output errors are
-// *templates.Error; variables are never logged.
+// renders it with the request variables. Variables are checked against the
+// version's schema before any template work; compiled versions are cached.
+// Variable and output errors are *templates.Error; variables are never
+// logged.
 func (s *Service) render(ctx context.Context, projectID uuid.UUID, in CreateInput) (templates.Rendered, int, error) {
 	v, err := templates.Resolve(ctx, store.New(s.pool), projectID, in.TemplateID, in.TemplateVersion)
 	if errors.Is(err, templates.ErrNotFound) {
@@ -278,15 +290,63 @@ func (s *Service) render(ctx context.Context, projectID uuid.UUID, in CreateInpu
 	if err != nil {
 		return templates.Rendered{}, 0, fmt.Errorf("resolve template: %w", err)
 	}
-	c, err := v.Compile()
+	// A stored version is server state: its problems are internal errors,
+	// never client errors (not wrapped, so no *templates.Error escapes).
+	schema, err := templates.ParseSchema(v.Schema)
 	if err != nil {
-		return templates.Rendered{}, 0, fmt.Errorf("compile stored template: %w", err)
+		return templates.Rendered{}, 0, fmt.Errorf("stored schema of template %s version %d: %v", v.TemplateID, v.Version, err) //nolint:errorlint // deliberately not wrapped
+	}
+	if err := templates.ValidateVariables(schema, in.Variables); err != nil {
+		return templates.Rendered{}, 0, err
+	}
+
+	wait := time.NewTimer(s.renderWait)
+	defer wait.Stop()
+	slots := s.renderSlots
+	select {
+	case slots <- struct{}{}:
+		defer func() { <-slots }()
+	case <-wait.C:
+		return templates.Rendered{}, 0, ErrRenderBusy
+	case <-ctx.Done():
+		return templates.Rendered{}, 0, fmt.Errorf("render template: %w", ctx.Err())
+	}
+	key := compiledKey{project: projectID, template: v.TemplateID, version: v.Version}
+	c := s.compiled.get(key)
+	if c == nil {
+		s.compiles.Add(1)
+		if c, err = v.Compile(); err != nil {
+			return templates.Rendered{}, 0, fmt.Errorf("compile stored template %s version %d: %v", v.TemplateID, v.Version, err) //nolint:errorlint // deliberately not wrapped
+		}
+		s.compiled.put(key, c)
 	}
 	r, err := c.Render(in.Variables)
 	if err != nil {
 		return templates.Rendered{}, 0, err
 	}
 	return r, v.Version, nil
+}
+
+// winnerAfterRefusal: with a key, a refusal (sender, suppression, rate limit)
+// may hide a concurrent request with the same key that committed — and
+// filled the window — after the key lookup. Its email is returned for a
+// replay rather than refusing a duplicate of an accepted request. Not
+// covered: a winner that has not committed yet when a suppression is added,
+// or one counting in the next minute; the refusal is then retry-safe with
+// the same key. Otherwise the refusal is returned unchanged.
+func winnerAfterRefusal(ctx context.Context, q *store.Queries, key *store.GetIdempotencyKeyParams, fingerprint []byte, refusal error) (uuid.UUID, error) {
+	var limited *RateLimitError
+	if key == nil || !(errors.Is(refusal, ErrSenderNotVerified) || errors.Is(refusal, ErrRecipientSuppressed) || errors.As(refusal, &limited)) {
+		return uuid.Nil, refusal
+	}
+	id, found, err := matchKey(ctx, q, *key, fingerprint)
+	switch {
+	case err != nil:
+		return uuid.Nil, err
+	case found:
+		return id, nil
+	}
+	return uuid.Nil, refusal
 }
 
 // refuse checks the sender identity (when required), suppression and the

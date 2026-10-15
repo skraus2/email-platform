@@ -58,8 +58,9 @@ paths:
         Two forms: raw (`subject` plus `text` and/or `html`) or template
         (`template_id`, `template_version`, `variables`). Mixing them gives
         `422 validation_failed`. In the template form the version is resolved
-        (`"published"` = highest version at this moment) and rendered before
-        the checks above; unknown templates, templates of other projects,
+        (`"published"` = highest version at this moment) and rendered after
+        the checks above (validation, idempotency replay, sender,
+        suppression, rate limit); unknown templates, templates of other projects,
         unknown versions, and `"published"` on a template without versions
         all give the same `422 template_not_found`;
         variables that do not match the version's schema give
@@ -67,7 +68,10 @@ paths:
         1–255 characters without line breaks, bodies at most 512 KiB) gives
         `422 render_failed`. An idempotent replay is answered before any
         rendering, so a retry stays a replay even after a newer version was
-        published.
+        published. The rendered subject is kept with the email (bodies are
+        deleted after sending), so do not put secrets or one-time codes into
+        subject variables. `503` can also mean the server is busy rendering
+        other templates; retry with the same `Idempotency-Key`.
 
         A `503` (or a lost connection) means the outcome is unknown: the
         email may have been accepted. Retry with the same `Idempotency-Key`

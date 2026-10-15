@@ -3,9 +3,12 @@
 package emails_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -50,7 +53,8 @@ func TestTemplateSendStoresRenderedContentAndReference(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	pool, projectID := setup(t)
-	svc := newService(t, pool, nil)
+	var logs bytes.Buffer
+	svc := newService(t, pool, &logs)
 	id := publishTemplate(t, pool, projectID, v1Source)
 
 	e, err := svc.Create(ctx, projectID, templateInput(id, 0, `{"name":"<Ada>"}`))
@@ -71,11 +75,15 @@ func TestTemplateSendStoresRenderedContentAndReference(t *testing.T) {
 	if err != nil || got.TemplateID == nil || *got.TemplateVersion != 1 {
 		t.Fatalf("get %+v %v", got, err)
 	}
-	// Variables are not stored anywhere.
-	var n int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM emails e JOIN email_contents c ON c.email_id = e.id
-		WHERE e.id = $1 AND (e.subject LIKE '%"name"%' OR c.text_body LIKE '%"name"%')`, e.ID).Scan(&n); err != nil || n != 0 {
-		t.Fatalf("variables stored? %d %v", n, err)
+	// Variable values never reach the logs.
+	if _, err := svc.Create(ctx, projectID, templateInput(id, 0, `{"name":"Zq9-secret-value"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Create(ctx, projectID, templateInput(id, 0, `{"name":1,"zz-secret-key":"Zq9-secret-value"}`)); err == nil {
+		t.Fatal("invalid variables accepted")
+	}
+	if strings.Contains(logs.String(), "Zq9-secret") || strings.Contains(logs.String(), "zz-secret-key") {
+		t.Fatalf("variables in logs: %s", logs.String())
 	}
 }
 
@@ -152,14 +160,15 @@ func TestTemplateSendChecksSuppressionAndSender(t *testing.T) {
 	svc := newService(t, pool, nil)
 	svc.RequireVerifiedSenders()
 	id := publishTemplate(t, pool, projectID, v1Source)
-	if _, err := svc.Create(ctx, projectID, templateInput(id, 0, `{"name":"a"}`)); !errors.Is(err, emails.ErrSenderNotVerified) {
+	// Variables that could not render: the refusal must come first.
+	if _, err := svc.Create(ctx, projectID, templateInput(id, 0, `{}`)); !errors.Is(err, emails.ErrSenderNotVerified) {
 		t.Fatalf("unverified sender: %v", err)
 	}
 	svc2 := newService(t, pool, nil)
 	if _, err := emails.AddSuppression(ctx, store.New(pool), projectID, "customer@example.test", "manual"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc2.Create(ctx, projectID, templateInput(id, 0, `{"name":"a"}`)); !errors.Is(err, emails.ErrRecipientSuppressed) {
+	if _, err := svc2.Create(ctx, projectID, templateInput(id, 0, `{}`)); !errors.Is(err, emails.ErrRecipientSuppressed) {
 		t.Fatalf("suppressed: %v", err)
 	}
 }
@@ -208,5 +217,76 @@ func TestTemplateSendIdempotency(t *testing.T) {
 	}
 	if c := counts(t, pool); c.emails != 1 {
 		t.Fatalf("%d emails, want 1", c.emails)
+	}
+}
+
+func TestTemplateSendCompilesOnlyValidRequestsOnce(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	pool, projectID := setup(t)
+	svc := newService(t, pool, nil)
+	id := publishTemplate(t, pool, projectID, v1Source)
+	for _, vars := range []string{`{}`, `{"name":1}`, `{"name":"a","x":1}`, `[]`} {
+		if _, err := svc.Create(ctx, projectID, templateInput(id, 0, vars)); !isCode(templates.CodeVariablesInvalid)(err) {
+			t.Fatalf("%s: %v", vars, err)
+		}
+	}
+	if n := svc.Compiles(); n != 0 {
+		t.Fatalf("invalid variables compiled the template %d times", n)
+	}
+	for range 3 {
+		if _, err := svc.Create(ctx, projectID, templateInput(id, 1, `{"name":"a"}`)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := svc.Compiles(); n != 1 {
+		t.Fatalf("compiled %d times for three sends of one version, want 1", n)
+	}
+	// A cached version is never served to another project.
+	other, err := auth.CreateProject(ctx, store.New(pool), "other")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Create(ctx, other.ID, templateInput(id, 1, `{"name":"a"}`)); !isNotFound(err) {
+		t.Fatalf("other project with a cached version: %v", err)
+	}
+}
+
+func TestTemplateRendersAreBounded(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	pool, projectID := setup(t)
+	svc := newService(t, pool, nil)
+	id := publishTemplate(t, pool, projectID, v1Source)
+	svc.SetRenderLimits(1, 50*time.Millisecond)
+	release := svc.HoldRenderSlot()
+	if _, err := svc.Create(ctx, projectID, templateInput(id, 0, `{"name":"a"}`)); !errors.Is(err, emails.ErrRenderBusy) {
+		t.Fatalf("no render slot: %v", err)
+	}
+	release()
+	if _, err := svc.Create(ctx, projectID, templateInput(id, 0, `{"name":"a"}`)); err != nil {
+		t.Fatalf("after release: %v", err)
+	}
+	if c := counts(t, pool); c.emails != 1 {
+		t.Fatalf("%d emails, want 1 (busy refusal stores nothing)", c.emails)
+	}
+}
+
+func TestTemplatePreCheckReplaysConcurrentWinner(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	pool, projectID := setup(t)
+	svc := limitedService(t, pool, 1)
+	id := publishTemplate(t, pool, projectID, v1Source)
+	in := templateInput(id, 0, `{"name":"a"}`)
+	in.IdempotencyKey = "k-1"
+	first, err := svc.Create(ctx, projectID, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The window is full now; the duplicate must replay, not be refused.
+	again, err := svc.Create(ctx, projectID, in)
+	if err != nil || !again.Replayed || again.ID != first.ID {
+		t.Fatalf("duplicate in a full window: %+v %v", again, err)
 	}
 }

@@ -37,6 +37,28 @@ func seedPlanData(t *testing.T, pool *pgxpool.Pool) uuid.UUID {
 	return id
 }
 
+// seedTemplateSends gives one rarely used template a few emails of the
+// project and returns its id.
+func seedTemplateSends(t *testing.T, pool *pgxpool.Pool, project uuid.UUID) uuid.UUID {
+	t.Helper()
+	ctx := context.Background()
+	var id uuid.UUID
+	if err := pool.QueryRow(ctx, `INSERT INTO templates (project_id, slug, latest_version) VALUES ($1, 'rare', 1) RETURNING id`, project).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO template_versions (template_id, project_id, version, subject, text_body) VALUES ($1, $2, 1, 's', 't')`, id, project); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO emails (project_id, sender, recipient, subject, template_id, template_version)
+		SELECT $1, 'noreply@example.test', 'x@example.test', 'Hi', $2, 1 FROM generate_series(1, 3)`, project, id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, "ANALYZE emails"); err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
 // The list queries run as unnamed statements (Unprepared), so every
 // execution is planned with its values: the first page and a recipient
 // filter scan only the project's own index range.
@@ -47,6 +69,7 @@ func TestEmailListQueriesPlanWithActualValues(t *testing.T) {
 	ctx := context.Background()
 	var after *time.Time
 	var noTemplate *uuid.UUID
+	tmpl := seedTemplateSends(t, pool, project)
 	for name, tc := range map[string]struct {
 		query string
 		args  []any
@@ -55,6 +78,9 @@ func TestEmailListQueriesPlanWithActualValues(t *testing.T) {
 		"first page": {listProjectEmails,
 			[]any{project, uuid.Max, uuid.Nil, []string{}, after, after, noTemplate, int32(51)},
 			[]string{"emails_project_id_idx", "(project_id = "}},
+		"by template": {listProjectEmails,
+			[]any{project, uuid.Max, uuid.Nil, []string{}, after, after, &tmpl, int32(51)},
+			[]string{"emails_project_template_idx", "(template_id = "}},
 		"by recipient": {listProjectEmailsByRecipient,
 			[]any{project, "USER7@example.test", uuid.Max, uuid.Nil, []string{}, after, after, noTemplate, int32(51)},
 			[]string{"emails_project_recipient_idx", "lower(recipient)"}},

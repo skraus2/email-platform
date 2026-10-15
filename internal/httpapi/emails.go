@@ -39,9 +39,9 @@ type EmailService interface {
 type createEmailRequest struct {
 	From            string          `json:"from"`
 	To              string          `json:"to"`
-	Subject         string          `json:"subject"`
-	Text            string          `json:"text"`
-	HTML            string          `json:"html"`
+	Subject         *string         `json:"subject"`
+	Text            *string         `json:"text"`
+	HTML            *string         `json:"html"`
 	TemplateID      json.RawMessage `json:"template_id"`
 	TemplateVersion json.RawMessage `json:"template_version"`
 	Variables       json.RawMessage `json:"variables"`
@@ -69,7 +69,7 @@ func (s *Server) handleCreateEmail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	in := emails.CreateInput{
-		From: req.From, To: req.To, Subject: req.Subject, Text: req.Text, HTML: req.HTML,
+		From: req.From, To: req.To, Subject: deref(req.Subject), Text: deref(req.Text), HTML: deref(req.HTML),
 		IdempotencyKey: idemKey,
 	}
 	if field, msg := parseTemplateForm(req, &in); field != "" {
@@ -88,6 +88,9 @@ func (s *Server) handleCreateEmail(w http.ResponseWriter, r *http.Request) {
 		return
 	case errors.As(err, &te):
 		writeError(w, http.StatusUnprocessableEntity, te.Code, te.Error())
+		return
+	case errors.Is(err, emails.ErrRenderBusy):
+		writeUnavailable(w)
 		return
 	case errors.Is(err, emails.ErrTemplateNotFound):
 		writeError(w, http.StatusUnprocessableEntity, "template_not_found",
@@ -244,8 +247,18 @@ func parseTemplateForm(req createEmailRequest, in *emails.CreateInput) (string, 
 		return "template_id", "must be a UUID"
 	}
 	tid, err := uuid.Parse(id)
-	if err != nil || tid == uuid.Nil || tid.String() != id {
+	if err != nil || tid == uuid.Nil || len(id) != 36 {
 		return "template_id", "must be a UUID"
+	}
+	// The subject and bodies come from the template; sending them at all,
+	// even empty, is a mixed request.
+	for _, f := range []struct {
+		name string
+		v    *string
+	}{{"subject", req.Subject}, {"text", req.Text}, {"html", req.HTML}} {
+		if f.v != nil {
+			return f.name, "must not be combined with template_id"
+		}
 	}
 	in.TemplateID = tid
 	if !present(req.TemplateVersion) {
@@ -263,4 +276,11 @@ func parseTemplateForm(req createEmailRequest, in *emails.CreateInput) (string, 
 	}
 	in.Variables = req.Variables
 	return "", ""
+}
+
+func deref(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }

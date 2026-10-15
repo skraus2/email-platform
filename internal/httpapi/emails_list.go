@@ -115,7 +115,7 @@ func parseListQuery(query url.Values) (f emails.ListFilter, limit, status int, c
 	}
 	if v, ok := query["template_id"]; ok {
 		id, err := uuid.Parse(v[0])
-		if len(v) != 1 || err != nil || id.String() != v[0] {
+		if len(v) != 1 || err != nil || len(v[0]) != 36 {
 			return bad("invalid_filter", "template_id must be a single UUID")
 		}
 		f.TemplateID = &id

@@ -13,3 +13,18 @@ func (s *Service) HoldListSlot() func() {
 	s.listSlots <- struct{}{}
 	return func() { <-s.listSlots }
 }
+
+// Compiles reports how many stored template versions were compiled.
+func (s *Service) Compiles() int64 { return s.compiles.Load() }
+
+// SetRenderLimits overrides the template render limits for tests.
+func (s *Service) SetRenderLimits(slots int, wait time.Duration) {
+	s.renderSlots = make(chan struct{}, slots)
+	s.renderWait = wait
+}
+
+// HoldRenderSlot occupies one render slot until the returned func is called.
+func (s *Service) HoldRenderSlot() func() {
+	s.renderSlots <- struct{}{}
+	return func() { <-s.renderSlots }
+}
