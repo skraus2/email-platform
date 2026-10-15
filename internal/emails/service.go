@@ -485,7 +485,10 @@ func (s *Service) List(ctx context.Context, projectID uuid.UUID, f ListFilter, l
 	case <-ctx.Done():
 		return nil, false, fmt.Errorf("list emails: %w", ctx.Err())
 	}
-	qctx, cancel := context.WithTimeout(ctx, s.listTimeout)
+	// The client deadline has a margin over the server's statement timeout,
+	// so a slow query normally ends with the server's cancel and the
+	// connection stays reusable.
+	qctx, cancel := context.WithTimeout(ctx, s.listTimeout+time.Second)
 	defer cancel()
 
 	before := f.After

@@ -92,9 +92,16 @@ func TestListIsBoundedInConcurrencyAndTime(t *testing.T) {
 		t.Fatalf("after release: %v", err)
 	}
 
-	// A query running past the timeout is cancelled and reported as busy.
-	svc.SetListLimits(1, time.Second, time.Nanosecond)
-	if _, _, err := svc.List(ctx, projectID, emails.ListFilter{}, 10); !errors.Is(err, emails.ErrListBusy) {
+	// A query running past the timeout is cancelled by the server and
+	// reported as busy: a filter that matches nothing scans all of the
+	// project's 50 000 emails, far longer than 1 ms.
+	if _, err := pool.Exec(ctx, `INSERT INTO emails (project_id, sender, recipient, subject)
+		SELECT $1, 'a@example.test', 'b@example.test', 's' FROM generate_series(1, 50000)`, projectID); err != nil {
+		t.Fatal(err)
+	}
+	svc.SetListLimits(1, time.Second, time.Millisecond)
+	old := time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
+	if _, _, err := svc.List(ctx, projectID, emails.ListFilter{CreatedBefore: &old}, 10); !errors.Is(err, emails.ErrListBusy) {
 		t.Fatalf("timeout: err %v, want ErrListBusy", err)
 	}
 	// The caller's own cancellation is not turned into busy.

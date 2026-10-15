@@ -89,8 +89,9 @@ func allowHosts(listenHost string, next http.Handler) http.Handler {
 		host := r.Host
 		if h, _, err := net.SplitHostPort(host); err == nil {
 			host = h
+		} else if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
+			host = host[1 : len(host)-1]
 		}
-		host = strings.Trim(host, "[]")
 		ip, err := netip.ParseAddr(host)
 		ok := strings.EqualFold(host, "localhost") || (err == nil && ip.IsLoopback()) ||
 			(listenHost != "" && strings.EqualFold(host, strings.Trim(listenHost, "[]")))

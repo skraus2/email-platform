@@ -160,13 +160,13 @@ func run() error {
 		remaining-- // its Serve error was already received
 	}
 	for range remaining {
-		if err := <-serveErr; !errors.Is(err, http.ErrServerClosed) && failed == nil {
-			failed = fmt.Errorf("http server: %w", err)
+		if err := <-serveErr; !errors.Is(err, http.ErrServerClosed) {
+			failed = errors.Join(failed, fmt.Errorf("http server: %w", err))
 		}
 	}
 	for _, err := range shutdownErrs {
-		if err != nil && failed == nil {
-			failed = fmt.Errorf("graceful shutdown: %w", err)
+		if err != nil {
+			failed = errors.Join(failed, fmt.Errorf("graceful shutdown: %w", err))
 		}
 	}
 	if failed != nil {

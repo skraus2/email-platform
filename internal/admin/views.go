@@ -66,8 +66,9 @@ func slot(ctx context.Context, slots chan struct{}) (release func(), err error) 
 	}
 }
 
-// bounded runs fn with a search slot under a server-side statement timeout.
-func (v *Views) bounded(ctx context.Context, fn func(q *store.Queries) error) error {
+// bounded runs fn with a search slot under a server-side statement timeout;
+// fn must run its queries with the context it is given.
+func (v *Views) bounded(ctx context.Context, fn func(ctx context.Context, q *store.Queries) error) error {
 	release, err := slot(ctx, v.searches)
 	if err != nil {
 		return err
@@ -75,7 +76,7 @@ func (v *Views) bounded(ctx context.Context, fn func(q *store.Queries) error) er
 	defer release()
 	sctx, cancel := context.WithTimeout(ctx, searchTimeout+time.Second)
 	defer cancel()
-	err = store.ReadOnlyWithTimeout(sctx, v.pool, searchTimeout, fn)
+	err = store.ReadOnlyWithTimeout(sctx, v.pool, searchTimeout, func(q *store.Queries) error { return fn(sctx, q) })
 	if err != nil && ctx.Err() == nil && (sctx.Err() != nil || store.StatementTimedOut(err)) {
 		return ErrViewBusy
 	}
@@ -193,7 +194,7 @@ func (v *Views) SearchEmails(ctx context.Context, f EmailFilter, limit int) ([]E
 		}
 	}
 	var rows []store.AdminSearchEmailsRow
-	err := v.bounded(ctx, func(q *store.Queries) (err error) {
+	err := v.bounded(ctx, func(ctx context.Context, q *store.Queries) (err error) {
 		rows, err = q.AdminSearchEmails(ctx, p)
 		return err
 	})
@@ -251,7 +252,7 @@ func (v *Views) EmailDeliveries(ctx context.Context, id, cursor uuid.UUID, limit
 		return nil, false, err
 	}
 	var rows []store.AdminEmailDeliveriesRow
-	err = v.bounded(ctx, func(q *store.Queries) (err error) {
+	err = v.bounded(ctx, func(ctx context.Context, q *store.Queries) (err error) {
 		rows, err = q.AdminEmailDeliveries(ctx, store.AdminEmailDeliveriesParams{
 			EmailID: id, ProjectID: e.ProjectID, AfterID: cursor, RowLimit: int32(limit + 1), //nolint:gosec // bounded
 		})
