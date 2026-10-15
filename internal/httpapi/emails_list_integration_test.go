@@ -138,11 +138,12 @@ func TestListEmailsFilters(t *testing.T) {
 		WHERE id = ANY($1::uuid[])`, bounced); err != nil {
 		t.Fatal(err)
 	}
-	// Spread creation times: failed[0] early October, the rest mid-month.
+	// Spread creation times (all before the ids were generated): failed[0]
+	// on 1 October, the rest on 10 October.
 	if _, err := s.pool.Exec(ctx, `UPDATE emails SET created_at = '2026-10-01T10:00:00Z' WHERE id = $1`, failed[0]); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.pool.Exec(ctx, `UPDATE emails SET created_at = '2026-10-15T10:00:00Z' WHERE id <> $1 AND project_id = $2`, failed[0], p); err != nil {
+	if _, err := s.pool.Exec(ctx, `UPDATE emails SET created_at = '2026-10-10T10:00:00Z' WHERE id <> $1 AND project_id = $2`, failed[0], p); err != nil {
 		t.Fatal(err)
 	}
 
@@ -155,10 +156,10 @@ func TestListEmailsFilters(t *testing.T) {
 		{"status=delivered", nil},
 		{"recipient=customer@example.test", append(append([]string{}, queued...), reverse(failed)...)},
 		{"recipient=CUSTOMER@EXAMPLE.TEST&status=queued", queued},
-		{"created_after=2026-10-10T00:00:00Z", append(append(append([]string{}, queued...), bounced...), failed[1])},
-		{"created_before=2026-10-15T10:00:00Z", failed[:1]},
+		{"created_after=2026-10-05T00:00:00Z", append(append(append([]string{}, queued...), bounced...), failed[1])},
+		{"created_before=2026-10-10T10:00:00Z", failed[:1]},
 		{"created_after=2026-10-01T10:00:00Z&created_before=2026-10-01T10:00:00.000001Z", failed[:1]},
-		{"created_after=2026-10-01T10:00:00.000001Z&created_before=2026-10-15T10:00:00Z", nil},
+		{"created_after=2026-10-01T10:00:00.000001Z&created_before=2026-10-10T10:00:00Z", nil},
 	} {
 		got := s.listIDs(t, token, tc.query, 2)
 		if strings.Join(got, ",") != strings.Join(tc.want, ",") {
