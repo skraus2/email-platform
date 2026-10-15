@@ -50,6 +50,10 @@ func (s *Server) handleGetEmail(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal_error", "internal error")
 		return
 	}
+	writeJSON(w, http.StatusOK, toEmailResponse(e))
+}
+
+func toEmailResponse(e emails.Email) emailResponse {
 	resp := emailResponse{
 		ID: e.ID.String(), Status: e.Status, From: e.From, To: e.To, Subject: e.Subject,
 		Attempts: e.Attempts, ErrorCode: e.ErrorCode,
@@ -59,5 +63,5 @@ func (s *Server) handleGetEmail(w http.ResponseWriter, r *http.Request) {
 		f := e.FinishedAt.UTC()
 		resp.FinishedAt = &f
 	}
-	writeJSON(w, http.StatusOK, resp)
+	return resp
 }

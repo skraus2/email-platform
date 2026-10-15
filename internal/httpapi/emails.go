@@ -26,6 +26,7 @@ const maxRequestBytes = 1 << 20
 type EmailService interface {
 	Create(ctx context.Context, projectID uuid.UUID, in emails.CreateInput) (emails.Email, error)
 	Get(ctx context.Context, projectID, id uuid.UUID) (emails.Email, error)
+	List(ctx context.Context, projectID uuid.UUID, f emails.ListFilter, limit int) ([]emails.Email, bool, error)
 	Events(ctx context.Context, projectID, id, after uuid.UUID, limit int) ([]events.Event, bool, error)
 }
 

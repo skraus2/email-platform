@@ -92,6 +92,19 @@ WHERE project_id = $1 AND (sqlc.narg(status)::text IS NULL OR status = sqlc.narg
 ORDER BY created_at DESC, id DESC
 LIMIT $2;
 
+-- name: ListProjectEmails :many
+-- One page of a project's emails, newest first (ids are UUIDv7). The nil
+-- UUID as cursor means "from the newest"; an empty status list means any.
+SELECT * FROM emails
+WHERE project_id = sqlc.arg(project_id)
+  AND (sqlc.arg(after)::uuid = '00000000-0000-0000-0000-000000000000'::uuid OR id < sqlc.arg(after)::uuid)
+  AND (cardinality(sqlc.arg(statuses)::text[]) = 0 OR status = ANY (sqlc.arg(statuses)::text[]))
+  AND (sqlc.narg(recipient)::text IS NULL OR lower(recipient) = lower(sqlc.narg(recipient)::text))
+  AND (sqlc.narg(created_after)::timestamptz IS NULL OR created_at >= sqlc.narg(created_after)::timestamptz)
+  AND (sqlc.narg(created_before)::timestamptz IS NULL OR created_at < sqlc.narg(created_before)::timestamptz)
+ORDER BY id DESC
+LIMIT sqlc.arg(row_limit);
+
 -- name: CountProviderHandoffs :one
 -- Messages handed to the provider within the last 24 hours (daily cap).
 SELECT count(*) FROM emails

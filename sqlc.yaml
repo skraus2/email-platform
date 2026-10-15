@@ -18,6 +18,8 @@ sql:
       - db/migrations/00012_event_receive_time.sql
       - db/migrations/00013_webhook_deliveries.sql
       - db/migrations/00014_webhook_delivery_activity_index.sql
+      - db/migrations/00015_email_provider_handoff_index.sql
+      - db/migrations/00016_email_list_indexes.sql
     queries: db/queries
     gen:
       go:

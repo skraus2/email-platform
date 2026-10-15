@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"time"
 
 	"github.com/google/uuid"
@@ -280,6 +281,51 @@ func (s *Service) Get(ctx context.Context, projectID, id uuid.UUID) (Email, erro
 		return Email{}, fmt.Errorf("get email: %w", err)
 	}
 	return fromRow(row), nil
+}
+
+// MaxEmailPage bounds one page of a project's email list.
+const MaxEmailPage = 100
+
+// ListFilter narrows a project's email list. Zero values mean "any".
+type ListFilter struct {
+	Statuses      []string
+	Recipient     string     // exact address, case-insensitive
+	CreatedAfter  *time.Time // inclusive
+	CreatedBefore *time.Time // exclusive
+	// After is the cursor: only emails with a smaller id follow (uuid.Nil:
+	// from the newest).
+	After uuid.UUID
+}
+
+// IsStatus reports whether s is an email status.
+func IsStatus(s string) bool { return slices.Contains(statuses, s) }
+
+// List returns up to limit (1–MaxEmailPage) emails of the project, newest
+// first, matching f. more reports whether further emails follow.
+func (s *Service) List(ctx context.Context, projectID uuid.UUID, f ListFilter, limit int) (page []Email, more bool, err error) {
+	if limit < 1 || limit > MaxEmailPage {
+		return nil, false, fmt.Errorf("email page size must be between 1 and %d", MaxEmailPage)
+	}
+	params := store.ListProjectEmailsParams{
+		ProjectID: projectID, After: f.After, Statuses: f.Statuses,
+		CreatedAfter: f.CreatedAfter, CreatedBefore: f.CreatedBefore,
+		RowLimit: int32(limit + 1), //nolint:gosec // bounded above
+	}
+	if params.Statuses == nil {
+		params.Statuses = []string{}
+	}
+	if f.Recipient != "" {
+		params.Recipient = &f.Recipient
+	}
+	rows, err := store.New(s.pool).ListProjectEmails(ctx, params)
+	if err != nil {
+		return nil, false, fmt.Errorf("list emails: %w", err)
+	}
+	page = make([]Email, 0, min(len(rows), limit))
+	for _, r := range rows[:min(len(rows), limit)] {
+		page = append(page, fromRow(r))
+	}
+	return page, len(rows) > limit, nil
 }
 
 // MaxEventPage bounds one page of an email's event history.

@@ -48,6 +48,10 @@ func (f *fakeEmails) Get(context.Context, uuid.UUID, uuid.UUID) (emails.Email, e
 	return emails.Email{}, emails.ErrNotFound
 }
 
+func (f *fakeEmails) List(context.Context, uuid.UUID, emails.ListFilter, int) ([]emails.Email, bool, error) {
+	return nil, false, nil
+}
+
 func (f *fakeEmails) Events(context.Context, uuid.UUID, uuid.UUID, uuid.UUID, int) ([]events.Event, bool, error) {
 	return nil, false, emails.ErrNotFound
 }
