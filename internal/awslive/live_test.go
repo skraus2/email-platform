@@ -9,11 +9,17 @@
 // Recipients are the SES mailbox simulator (usable in the sandbox, outside
 // the daily quota and reputation metrics, billed like any send), plus an
 // optional verified mailbox in SES_LIVE_TO.
+//
+// The test runs its own event poller, which consumes every message on the
+// queue and drops events for emails it does not know. It therefore refuses
+// any configuration set, topic or queue whose name does not start with
+// testResourcePrefix, so it can never drain the queue of a real worker.
 package awslive_test
 
 import (
 	"context"
 	"log/slog"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -28,6 +34,7 @@ import (
 	"github.com/skraus2/email-platform/internal/emails"
 	"github.com/skraus2/email-platform/internal/events/ses"
 	"github.com/skraus2/email-platform/internal/jobs"
+	"github.com/skraus2/email-platform/internal/logging"
 	"github.com/skraus2/email-platform/internal/store"
 	"github.com/skraus2/email-platform/internal/testdb"
 )
@@ -35,6 +42,13 @@ import (
 // eventTimeout bounds the wait for SES events. Deliveries to the simulator
 // usually arrive within a minute; complaints can take longer.
 const eventTimeout = 10 * time.Minute
+
+// testResourcePrefix marks the AWS resources reserved for this test.
+const testResourcePrefix = "email-platform-test"
+
+// rank orders the statuses an SES email moves through; an email past the
+// expected rank, or failed, can never reach it.
+var rank = map[string]int{"submitted": 0, "delivered": 1, "bounced": 2, "complained": 3}
 
 type scenario struct {
 	to         string
@@ -56,6 +70,8 @@ func TestLiveSESSendAndEvents(t *testing.T) {
 	if cfg.MailProvider != "ses" || cfg.SES.Endpoint != "" || cfg.SES.SQSEndpoint != "" {
 		t.Fatal("needs MAIL_PROVIDER=ses against AWS (no SES_ENDPOINT/SQS_ENDPOINT)")
 	}
+	checkTestResources(t, cfg.SES)
+	checkEnvironment(t)
 	from := os.Getenv("SES_LIVE_FROM")
 	if from == "" {
 		t.Fatal("SES_LIVE_FROM must name a sender verified in SES")
@@ -105,10 +121,10 @@ func TestLiveSESSendAndEvents(t *testing.T) {
 		}
 		if err := dispatcher.SendEmail(ctx, jobs.SendEmailArgs{EmailID: e.ID, ProjectID: e.ProjectID},
 			jobs.Attempt{JobID: int64(i + 1), Number: 1, MaxAttempts: 1}); err != nil {
-			t.Fatalf("send to %s: %v", sc.to, err)
+			t.Fatalf("send to %s: %v", logging.MaskEmail(sc.to), err)
 		}
 		if s := status(t, pool, e); s != "submitted" {
-			t.Fatalf("send to %s: status %s, want submitted", sc.to, s)
+			t.Fatalf("send to %s: status %s, want submitted", logging.MaskEmail(sc.to), s)
 		}
 		sent[i] = e
 	}
@@ -130,9 +146,17 @@ func TestLiveSESSendAndEvents(t *testing.T) {
 
 	deadline := time.Now().Add(eventTimeout)
 	for i, sc := range scenarios {
-		for status(t, pool, sent[i]) != sc.status {
+		to := logging.MaskEmail(sc.to)
+		for {
+			s := status(t, pool, sent[i])
+			if s == sc.status {
+				break
+			}
+			if r, ok := rank[s]; !ok || r > rank[sc.status] {
+				t.Fatalf("%s: status %s can never become %s", to, s, sc.status)
+			}
 			if time.Now().After(deadline) {
-				t.Fatalf("%s: status %s after %v, want %s", sc.to, status(t, pool, sent[i]), eventTimeout, sc.status)
+				t.Fatalf("%s: status %s after %v, want %s", to, s, eventTimeout, sc.status)
 			}
 			time.Sleep(2 * time.Second)
 		}
@@ -144,16 +168,49 @@ func TestLiveSESSendAndEvents(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		t.Logf("%s: %s", sc.to, strings.Join(types, " → "))
+		t.Logf("%s: %s", logging.MaskEmail(sc.to), strings.Join(types, " → "))
 		var reason string
 		err = pool.QueryRow(ctx, "SELECT reason FROM suppressions WHERE project_id = $1 AND recipient = $2",
 			project.ID, sc.to).Scan(&reason)
 		switch {
 		case sc.suppressed == "" && err == nil:
-			t.Fatalf("%s: suppressed (%s), want not suppressed", sc.to, reason)
+			t.Fatalf("%s: suppressed (%s), want not suppressed", to, reason)
 		case sc.suppressed != "" && (err != nil || reason != sc.suppressed):
-			t.Fatalf("%s: suppression %q (%v), want %s", sc.to, reason, err, sc.suppressed)
+			t.Fatalf("%s: suppression %q (%v), want %s", to, reason, err, sc.suppressed)
 		}
+	}
+}
+
+// checkTestResources refuses resources not reserved for this test.
+func checkTestResources(t *testing.T, c config.SES) {
+	t.Helper()
+	for name, v := range map[string]string{
+		"SES_CONFIGURATION_SET": c.ConfigurationSet,
+		"SES_EVENTS_QUEUE_URL":  c.EventsQueueURL[strings.LastIndexByte(c.EventsQueueURL, '/')+1:],
+		"SES_EVENTS_TOPIC_ARN":  c.EventsTopicARN[strings.LastIndexByte(c.EventsTopicARN, ':')+1:],
+	} {
+		if !strings.HasPrefix(v, testResourcePrefix) {
+			t.Fatalf("%s names %q: only resources named %s… may be used (the test drains its queue)", name, v, testResourcePrefix)
+		}
+	}
+}
+
+// checkEnvironment refuses long-lived access keys, extra trusted roots and
+// proxies, and a database that is not local (the test creates and drops
+// throwaway databases on it).
+func checkEnvironment(t *testing.T) {
+	t.Helper()
+	if os.Getenv("AWS_ACCESS_KEY_ID") != "" && os.Getenv("AWS_SESSION_TOKEN") == "" {
+		t.Fatal("long-lived access keys refused: use short-lived role credentials (AWS_PROFILE with SSO or an assumed role)")
+	}
+	for _, k := range []string{"AWS_CA_BUNDLE", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"} {
+		if os.Getenv(k) != "" {
+			t.Fatalf("%s is set: unset it for the live test", k)
+		}
+	}
+	u, err := url.Parse(os.Getenv(testdb.EnvVar))
+	if err != nil || (u.Hostname() != "localhost" && u.Hostname() != "127.0.0.1" && u.Hostname() != "::1") {
+		t.Fatalf("%s must point at the local PostgreSQL", testdb.EnvVar)
 	}
 }
 
