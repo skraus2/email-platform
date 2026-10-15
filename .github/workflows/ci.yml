@@ -62,6 +62,8 @@ jobs:
         run: go tool -modfile=tools/sqlc/go.mod sqlc diff
       - name: actionlint
         run: go tool -modfile=tools/actionlint/go.mod actionlint
+      - name: live AWS tests excluded from every gate
+        run: ./scripts/check-awslive.sh
       - name: Unit tests
         run: go test -race ./...
       - name: Migrations

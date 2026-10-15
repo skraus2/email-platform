@@ -68,7 +68,7 @@ fmt-check: ## Fail if any file is not formatted
 	$(PNPM) run format:check
 
 .PHONY: lint
-lint: lint-go lint-web lint-ci sqlc-check ## Run all linters
+lint: lint-go lint-web lint-ci sqlc-check lint-awslive ## Run all linters
 
 .PHONY: sqlc
 sqlc: ## Regenerate internal/store from db/queries + db/migrations
@@ -82,6 +82,14 @@ sqlc-check: ## Fail if internal/store is out of date (incl. orphaned files)
 .PHONY: lint-ci
 lint-ci: ## Lint GitHub Actions workflows (pinned actionlint)
 	go tool -modfile=tools/actionlint/go.mod actionlint
+
+.PHONY: lint-awslive
+lint-awslive: ## Prove the live AWS tests are excluded from every gate
+	./scripts/check-awslive.sh
+
+.PHONY: vet-awslive
+vet-awslive: ## Type-check the live AWS tests (never runs them, no AWS access)
+	go vet -tags=awslive ./internal/awslive/
 
 .PHONY: lint-go
 lint-go: ## golangci-lint (incl. integration-tagged files)
