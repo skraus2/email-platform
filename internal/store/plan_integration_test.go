@@ -46,16 +46,17 @@ func TestEmailListQueriesPlanWithActualValues(t *testing.T) {
 	project := seedPlanData(t, pool)
 	ctx := context.Background()
 	var after *time.Time
+	var noTemplate *uuid.UUID
 	for name, tc := range map[string]struct {
 		query string
 		args  []any
 		want  []string
 	}{
 		"first page": {listProjectEmails,
-			[]any{project, uuid.Max, uuid.Nil, []string{}, after, after, int32(51)},
+			[]any{project, uuid.Max, uuid.Nil, []string{}, after, after, noTemplate, int32(51)},
 			[]string{"emails_project_id_idx", "(project_id = "}},
 		"by recipient": {listProjectEmailsByRecipient,
-			[]any{project, "USER7@example.test", uuid.Max, uuid.Nil, []string{}, after, after, int32(51)},
+			[]any{project, "USER7@example.test", uuid.Max, uuid.Nil, []string{}, after, after, noTemplate, int32(51)},
 			[]string{"emails_project_recipient_idx", "lower(recipient)"}},
 	} {
 		rows, err := pool.Query(ctx, "EXPLAIN "+tc.query, append([]any{pgx.QueryExecModeDescribeExec}, tc.args...)...)
