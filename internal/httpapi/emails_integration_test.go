@@ -62,7 +62,7 @@ func newStackWith(t *testing.T, perMinute int, requireSender bool) *stack {
 	api := httpapi.New(httpapi.Deps{
 		Logger:    logger,
 		Emails:    svc,
-		Templates: templates.NewStore(pool, 200, 500, 50<<20),
+		Templates: templates.NewStore(pool, 200, 500, 50<<20, 1_000_000),
 		Authenticate: func(ctx context.Context, token string) (auth.Principal, error) {
 			return auth.Authenticate(ctx, q.GetActiveKeyByPrefix, token)
 		},

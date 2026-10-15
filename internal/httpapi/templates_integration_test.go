@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -51,6 +52,7 @@ func TestTemplateLifecycleOverHTTP(t *testing.T) {
 		t.Fatalf("create: %d %v", code, body)
 	}
 	id := body["id"].(string)
+	assertTime(t, body, "created_at")
 	if code, body := s.do(t, "POST", "/v1/templates", token, `{"slug":"welcome"}`); code != 409 || errorCode(body) != "slug_taken" {
 		t.Fatalf("duplicate: %d %v", code, body)
 	}
@@ -74,6 +76,7 @@ func TestTemplateLifecycleOverHTTP(t *testing.T) {
 	if code != 201 || body["version"] != float64(1) || body["template_id"] != id {
 		t.Fatalf("publish v1: %d %v", code, body)
 	}
+	assertTime(t, body, "created_at")
 	if code, body = s.do(t, "POST", "/v1/templates/"+id+"/versions", token, `{"subject":"v2","text":"v2"}`); code != 201 || body["version"] != float64(2) {
 		t.Fatalf("publish v2: %d %v", code, body)
 	}
@@ -100,6 +103,9 @@ func TestTemplateLifecycleOverHTTP(t *testing.T) {
 	}
 	if string(got.Variables) != `{"name":{"type":"string","required":true,"max_length":1000}}` {
 		t.Fatalf("variables %s", got.Variables)
+	}
+	if !strings.Contains(raw, `"html":"<p>\n  {{.name}}\n</p>"`) {
+		t.Errorf("html is escaped or altered in the JSON: %s", raw)
 	}
 	code, body = s.do(t, "GET", "/v1/templates/"+id+"/versions/2", token, "")
 	if code != 200 || body["html"] != nil || body["variables"] == nil {
@@ -195,5 +201,13 @@ func TestPublishBodyLimits(t *testing.T) {
 	if code, body := s.do(t, "POST", "/v1/templates/"+id+"/versions", token,
 		`{"subject":"s","text":"`+strings.Repeat("a", 3<<20)+`"}`); code != 413 || errorCode(body) != "payload_too_large" {
 		t.Fatalf("oversized request: %d %v", code, body)
+	}
+}
+
+func assertTime(t *testing.T, body map[string]any, key string) {
+	t.Helper()
+	v, _ := body[key].(string)
+	if _, err := time.Parse(time.RFC3339Nano, v); err != nil {
+		t.Errorf("%s = %v, want an RFC 3339 time", key, body[key])
 	}
 }

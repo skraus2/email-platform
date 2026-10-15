@@ -169,13 +169,17 @@ func (s *Server) handleGetVersion(w http.ResponseWriter, r *http.Request) {
 		html := v.Source.HTML
 		resp.HTML = &html
 	}
-	writeJSON(w, http.StatusOK, resp)
+	// No HTML escaping inside the JSON: template sources are full of < and
+	// >, which would grow sixfold as \u003c (the response is JSON with
+	// nosniff, never rendered).
+	writeJSONUnescaped(w, http.StatusOK, resp)
 }
 
 // writeTemplateError maps template errors to the contract. Client errors
 // carry no submitted values; anything else is logged without content.
 func (s *Server) writeTemplateError(w http.ResponseWriter, r *http.Request, op string, err error) {
 	var te *templates.Error
+	var rl *templates.RateLimitError
 	switch {
 	case errors.As(err, &te):
 		writeError(w, http.StatusUnprocessableEntity, te.Code, te.Error())
@@ -187,6 +191,12 @@ func (s *Server) writeTemplateError(w http.ResponseWriter, r *http.Request, op s
 		writeError(w, http.StatusUnprocessableEntity, "template_limit_reached", "the project has reached its template limit")
 	case errors.Is(err, templates.ErrVersionLimit):
 		writeError(w, http.StatusUnprocessableEntity, "version_limit_reached", "the template has reached its version limit")
+	case errors.Is(err, templates.ErrBusy):
+		writeUnavailable(w)
+	case errors.As(err, &rl):
+		w.Header().Set("Retry-After", strconv.Itoa(int(rl.RetryAfter/time.Second)))
+		writeError(w, http.StatusTooManyRequests, "rate_limited",
+			"the project's template write limit is exhausted; retry after the time in Retry-After")
 	case errors.Is(err, templates.ErrStorageLimit):
 		writeError(w, http.StatusUnprocessableEntity, "template_storage_limit_reached",
 			"the project has reached its template storage limit")

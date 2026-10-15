@@ -10,7 +10,9 @@ import (
 	"log/slog"
 	"mime"
 	"net/http"
+	"reflect"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -146,6 +148,9 @@ func decodeStrictLimit(w http.ResponseWriter, r *http.Request, v any, limit int6
 	if err != nil {
 		return http.StatusBadRequest, "invalid_json", "could not read request body"
 	}
+	if err := exactKeys(body, v); err != nil {
+		return http.StatusBadRequest, "invalid_json", "request body must be a JSON object matching the schema: " + err.Error()
+	}
 	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(v); err != nil {
@@ -173,4 +178,42 @@ func jsonProblem(err error) string {
 		// json reports unknown fields as `json: unknown field "name"`.
 		return "unknown or invalid field"
 	}
+}
+
+// exactKeys checks the top-level keys of a JSON object against the json tags
+// of the struct v points to: encoding/json alone would match keys
+// case-insensitively and silently keep the last of duplicate keys, so two
+// readers of the same body could see different values.
+func exactKeys(body []byte, v any) error {
+	allowed := map[string]bool{}
+	t := reflect.TypeOf(v).Elem()
+	for i := range t.NumField() {
+		if name, _, _ := strings.Cut(t.Field(i).Tag.Get("json"), ","); name != "" && name != "-" {
+			allowed[name] = true
+		}
+	}
+	dec := json.NewDecoder(bytes.NewReader(body))
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
+		return errors.New("expected an object")
+	}
+	seen := map[string]bool{}
+	for dec.More() {
+		tok, err := dec.Token()
+		if err != nil {
+			return errors.New("malformed object")
+		}
+		key, _ := tok.(string)
+		switch {
+		case !allowed[key]:
+			return errors.New("unknown field (field names are case-sensitive)")
+		case seen[key]:
+			return errors.New("duplicate field")
+		}
+		seen[key] = true
+		var skip json.RawMessage
+		if err := dec.Decode(&skip); err != nil {
+			return errors.New("malformed value")
+		}
+	}
+	return nil
 }

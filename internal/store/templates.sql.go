@@ -12,6 +12,28 @@ import (
 	"github.com/google/uuid"
 )
 
+const countTemplateWrite = `-- name: CountTemplateWrite :one
+INSERT INTO template_write_windows AS w (project_id, window_start, count)
+VALUES ($1, date_trunc('minute', now()), 1)
+ON CONFLICT (project_id, window_start) DO UPDATE SET count = w.count + 1
+RETURNING w.count,
+    ceil(extract(epoch FROM (w.window_start + interval '1 minute') - clock_timestamp()))::integer AS retry_after_seconds
+`
+
+type CountTemplateWriteRow struct {
+	Count             int32
+	RetryAfterSeconds int32
+}
+
+// Counts one template write attempt in the current minute of the project and
+// returns the new count and the seconds until the window ends.
+func (q *Queries) CountTemplateWrite(ctx context.Context, projectID uuid.UUID) (CountTemplateWriteRow, error) {
+	row := q.db.QueryRow(ctx, countTemplateWrite, projectID)
+	var i CountTemplateWriteRow
+	err := row.Scan(&i.Count, &i.RetryAfterSeconds)
+	return i, err
+}
+
 const countTemplates = `-- name: CountTemplates :one
 SELECT count(*) FROM templates WHERE project_id = $1
 `
@@ -21,6 +43,19 @@ func (q *Queries) CountTemplates(ctx context.Context, projectID uuid.UUID) (int6
 	var count int64
 	err := row.Scan(&count)
 	return count, err
+}
+
+const deleteTemplateWriteWindowsBefore = `-- name: DeleteTemplateWriteWindowsBefore :execrows
+DELETE FROM template_write_windows WHERE window_start < now() - interval '1 hour'
+`
+
+// Maintenance (all projects): windows that ended long ago.
+func (q *Queries) DeleteTemplateWriteWindowsBefore(ctx context.Context) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteTemplateWriteWindowsBefore)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const getTemplate = `-- name: GetTemplate :one
@@ -205,6 +240,16 @@ func (q *Queries) NextTemplateVersion(ctx context.Context, arg NextTemplateVersi
 	var latest_version int32
 	err := row.Scan(&latest_version)
 	return latest_version, err
+}
+
+const setTemplateLockTimeout = `-- name: SetTemplateLockTimeout :exec
+SET LOCAL lock_timeout = '3s'
+`
+
+// Bounds waits for the project and template row locks in this transaction.
+func (q *Queries) SetTemplateLockTimeout(ctx context.Context) error {
+	_, err := q.db.Exec(ctx, setTemplateLockTimeout)
+	return err
 }
 
 const templateStorageBytes = `-- name: TemplateStorageBytes :one

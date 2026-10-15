@@ -121,6 +121,12 @@ type TemplateVersion struct {
 	CreatedAt  time.Time
 }
 
+type TemplateWriteWindow struct {
+	ProjectID   uuid.UUID
+	WindowStart time.Time
+	Count       int32
+}
+
 type WebhookDelivery struct {
 	ID             uuid.UUID
 	ProjectID      uuid.UUID

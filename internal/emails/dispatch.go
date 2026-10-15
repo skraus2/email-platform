@@ -384,6 +384,11 @@ func (d *Dispatcher) Cleanup(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("cleanup rate limit windows: %w", err)
 	}
+	templateWindows, err := store.New(d.pool).DeleteTemplateWriteWindowsBefore(ctx)
+	if err != nil {
+		return fmt.Errorf("cleanup template write windows: %w", err)
+	}
+	windows += templateWindows
 	if expired > 0 || deleted > 0 || keys > 0 || windows > 0 {
 		d.logger.InfoContext(ctx, "email cleanup", slog.Int64("expired", expired),
 			slog.Int64("contents_deleted", deleted), slog.Int64("idempotency_keys_deleted", keys), slog.Int64("rate_limit_windows_deleted", windows))

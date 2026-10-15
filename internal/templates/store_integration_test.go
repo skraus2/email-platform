@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -44,7 +45,7 @@ func TestCreateTemplate(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	pool, a, b := setup(t)
-	s := templates.NewStore(pool, 200, 500, 1<<20)
+	s := templates.NewStore(pool, 200, 500, 1<<20, 1_000_000)
 
 	tmpl, err := s.Create(ctx, a, "welcome", "Welcome mail")
 	if err != nil {
@@ -87,7 +88,7 @@ func TestTemplateCapIsRaceSafe(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	pool, a, _ := setup(t)
-	s := templates.NewStore(pool, 3, 500, 1<<20)
+	s := templates.NewStore(pool, 3, 500, 1<<20, 1_000_000)
 	for i := range 2 {
 		if _, err := s.Create(ctx, a, fmt.Sprintf("t%d", i), ""); err != nil {
 			t.Fatal(err)
@@ -117,7 +118,7 @@ func TestPublishConcurrentVersionsAreGapless(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	pool, a, _ := setup(t)
-	s := templates.NewStore(pool, 200, 500, 1<<20)
+	s := templates.NewStore(pool, 200, 500, 1<<20, 1_000_000)
 	tmpl, err := s.Create(ctx, a, "welcome", "")
 	if err != nil {
 		t.Fatal(err)
@@ -149,7 +150,7 @@ func TestPublishLimitsAndErrors(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	pool, a, b := setup(t)
-	s := templates.NewStore(pool, 200, 2, 1<<20)
+	s := templates.NewStore(pool, 200, 2, 1<<20, 1_000_000)
 	tmpl, err := s.Create(ctx, a, "welcome", "")
 	if err != nil {
 		t.Fatal(err)
@@ -187,7 +188,7 @@ func TestVersionsAreImmutableAndRetrievableUnchanged(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	pool, a, b := setup(t)
-	s := templates.NewStore(pool, 200, 500, 1<<20)
+	s := templates.NewStore(pool, 200, 500, 1<<20, 1_000_000)
 	tmpl, err := s.Create(ctx, a, "welcome", "")
 	if err != nil {
 		t.Fatal(err)
@@ -263,7 +264,7 @@ func TestEmailTemplateReferenceStaysInProject(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	pool, a, b := setup(t)
-	s := templates.NewStore(pool, 200, 500, 1<<20)
+	s := templates.NewStore(pool, 200, 500, 1<<20, 1_000_000)
 	tmpl, err := s.Create(ctx, a, "welcome", "")
 	if err != nil {
 		t.Fatal(err)
@@ -303,7 +304,7 @@ func TestPublishStorageBudgetPerProject(t *testing.T) {
 	// Stored schemas count as jsonb text, a few bytes longer than the
 	// canonical form; the margin stays far below a third version.
 	size := int64(len(src.Subject) + len(src.Text) + len(src.HTML) + len(parsed.Canonical()))
-	s := templates.NewStore(pool, 200, 500, 2*size+20)
+	s := templates.NewStore(pool, 200, 500, 2*size+20, 1_000_000)
 	ta, err := s.Create(ctx, a, "a", "")
 	if err != nil {
 		t.Fatal(err)
@@ -333,5 +334,98 @@ func TestPublishStorageBudgetPerProject(t *testing.T) {
 	// Another project has its own budget.
 	if _, err := s.Publish(ctx, b, tb.ID, src, []byte(schema)); err != nil {
 		t.Fatalf("other project: %v", err)
+	}
+}
+
+func TestWriteRateLimitCountsEveryAttempt(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	pool, a, b := setup(t)
+	s := templates.NewStore(pool, 200, 500, 1<<20, 3)
+	tmpl, err := s.Create(ctx, a, "t", "") // 1
+	if err != nil {
+		t.Fatal(err)
+	}
+	var te *templates.Error
+	if _, err := s.Publish(ctx, a, tmpl.ID, templates.Source{Subject: "x", Text: "{{.nope}}"}, nil); !errors.As(err, &te) { // 2, refused
+		t.Fatal(err)
+	}
+	if _, err := s.Publish(ctx, a, tmpl.ID, src, []byte(schema)); err != nil { // 3
+		t.Fatal(err)
+	}
+	var rl *templates.RateLimitError
+	if _, err := s.Publish(ctx, a, tmpl.ID, src, []byte(schema)); !errors.As(err, &rl) || rl.RetryAfter < time.Second || rl.RetryAfter > time.Minute {
+		t.Fatalf("4th write: %v", err)
+	}
+	if _, err := s.Create(ctx, a, "u", ""); !errors.As(err, &rl) {
+		t.Fatalf("create over the limit: %v", err)
+	}
+	// Other projects have their own budget.
+	if _, err := s.Create(ctx, b, "t", ""); err != nil {
+		t.Fatalf("other project: %v", err)
+	}
+}
+
+func TestForeignPublishIsRefusedBeforeCompiling(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	pool, a, b := setup(t)
+	s := templates.NewStore(pool, 200, 500, 1<<20, 1_000_000)
+	tmpl, err := s.Create(ctx, a, "t", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// An invalid source to someone else's template is "not found", not
+	// "invalid": nothing is parsed for it.
+	bad := templates.Source{Subject: "x", Text: "{{range .x}}{{end}}"}
+	if _, err := s.Publish(ctx, b, tmpl.ID, bad, nil); !errors.Is(err, templates.ErrNotFound) {
+		t.Fatalf("foreign: %v", err)
+	}
+}
+
+func TestWritesAreBoundedInConcurrencyAndTime(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	pool, a, _ := setup(t)
+	s := templates.NewStore(pool, 200, 500, 1<<20, 1_000_000)
+	tmpl, err := s.Create(ctx, a, "t", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// All slots taken: the write waits briefly, then is busy.
+	s.SetWriteLimits(1, 50*time.Millisecond, 10*time.Second)
+	release := s.HoldWriteSlot()
+	if _, err := s.Publish(ctx, a, tmpl.ID, src, []byte(schema)); !errors.Is(err, templates.ErrBusy) {
+		t.Fatalf("no slot: %v", err)
+	}
+	release()
+
+	// A held project lock makes the write give up after the lock timeout.
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, "SELECT 1 FROM projects WHERE id = $1 FOR NO KEY UPDATE", a); err != nil {
+		t.Fatal(err)
+	}
+	s.SetWriteLimits(1, time.Second, 10*time.Second)
+	start := time.Now()
+	if _, err := s.Publish(ctx, a, tmpl.ID, src, []byte(schema)); !errors.Is(err, templates.ErrBusy) {
+		t.Fatalf("lock held: %v", err)
+	}
+	if waited := time.Since(start); waited < 2*time.Second || waited > 8*time.Second {
+		t.Fatalf("gave up after %v, want about the 3s lock timeout", waited)
+	}
+	// The write time limit applies as well.
+	s.SetWriteLimits(1, time.Second, 200*time.Millisecond)
+	if _, err := s.Create(ctx, a, "v", ""); !errors.Is(err, templates.ErrBusy) {
+		t.Fatalf("time limit: %v", err)
+	}
+	_ = tx.Rollback(ctx)
+	s.SetWriteLimits(1, time.Second, 10*time.Second)
+	if _, err := s.Publish(ctx, a, tmpl.ID, src, []byte(schema)); err != nil {
+		t.Fatalf("after release: %v", err)
 	}
 }

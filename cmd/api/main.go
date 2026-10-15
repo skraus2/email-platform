@@ -65,7 +65,7 @@ func run() error {
 	api := httpapi.New(httpapi.Deps{
 		Logger:    logger,
 		Emails:    service,
-		Templates: templates.NewStore(pool, cfg.TemplateMaxPerProject, cfg.TemplateMaxVersions, int64(cfg.TemplateMaxStorageBytes)),
+		Templates: templates.NewStore(pool, cfg.TemplateMaxPerProject, cfg.TemplateMaxVersions, int64(cfg.TemplateMaxStorageBytes), cfg.TemplateWritesPerMinute),
 		Authenticate: func(ctx context.Context, token string) (auth.Principal, error) {
 			return auth.Authenticate(ctx, queries.GetActiveKeyByPrefix, token)
 		},

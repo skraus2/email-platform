@@ -312,7 +312,10 @@ paths:
       operationId: createTemplate
       summary: Create a template of the authenticated project
       description: |
-        Requires scope `templates:write`. The slug is unique per project
+        Requires scope `templates:write`. Template creates and publishes of
+        a project are limited to 60 per minute by default, counting every
+        attempt (`429 rate_limited` with `Retry-After`); when the server is
+        busy with other template writes it answers `503`. The slug is unique per project
         (`409 slug_taken`). A project holds at most 200 templates by default
         (`422 template_limit_reached`). A new template has no version yet.
       requestBody:
@@ -342,6 +345,10 @@ paths:
           $ref: "#/components/responses/UnsupportedMediaType"
         "422":
           $ref: "#/components/responses/UnprocessableEntity"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
         "500":
           $ref: "#/components/responses/InternalError"
         "503":
@@ -431,6 +438,10 @@ paths:
           $ref: "#/components/responses/UnsupportedMediaType"
         "422":
           $ref: "#/components/responses/UnprocessableEntity"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
         "500":
           $ref: "#/components/responses/InternalError"
         "503":
@@ -1065,7 +1076,7 @@ components:
           schema:
             $ref: "#/components/schemas/Error"
     TooManyRequests:
-      description: "`rate_limited`: the project's send rate limit is exhausted; retry after `Retry-After` seconds."
+      description: "`rate_limited`: the project's send rate limit (or, for template writes, its template write limit) is exhausted; retry after `Retry-After` seconds."
       headers:
         Retry-After:
           description: Seconds until the current rate-limit window ends (1–60).
@@ -1084,7 +1095,7 @@ components:
           schema:
             $ref: "#/components/schemas/Error"
     PayloadTooLarge:
-      description: "`payload_too_large`: request body larger than 1 MiB."
+      description: "`payload_too_large`: request body larger than 1 MiB (3 MiB for publishing a template version)."
       content:
         application/json:
           schema:

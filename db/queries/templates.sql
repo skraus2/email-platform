@@ -38,3 +38,20 @@ SELECT * FROM template_versions WHERE template_id = $1 AND project_id = $2 AND v
 SELECT version, created_at FROM template_versions
 WHERE template_id = $1 AND project_id = $2
 ORDER BY version DESC;
+
+-- name: CountTemplateWrite :one
+-- Counts one template write attempt in the current minute of the project and
+-- returns the new count and the seconds until the window ends.
+INSERT INTO template_write_windows AS w (project_id, window_start, count)
+VALUES ($1, date_trunc('minute', now()), 1)
+ON CONFLICT (project_id, window_start) DO UPDATE SET count = w.count + 1
+RETURNING w.count,
+    ceil(extract(epoch FROM (w.window_start + interval '1 minute') - clock_timestamp()))::integer AS retry_after_seconds;
+
+-- name: DeleteTemplateWriteWindowsBefore :execrows
+-- Maintenance (all projects): windows that ended long ago.
+DELETE FROM template_write_windows WHERE window_start < now() - interval '1 hour';
+
+-- name: SetTemplateLockTimeout :exec
+-- Bounds waits for the project and template row locks in this transaction.
+SET LOCAL lock_timeout = '3s';

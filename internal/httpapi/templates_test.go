@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -71,6 +72,8 @@ func TestTemplateErrorMapping(t *testing.T) {
 		{&templates.Error{Code: templates.CodeValidation, Field: "variables.x", Reason: "bad"}, 422, "validation_failed"},
 		{fmt.Errorf("x: %w", &pgconn.PgError{Code: "57P03"}), 503, "service_unavailable"},
 		{errors.New("boom secret-detail"), 500, "internal_error"},
+		{templates.ErrBusy, 503, "service_unavailable"},
+		{&templates.RateLimitError{RetryAfter: 17 * time.Second}, 429, "rate_limited"},
 	} {
 		for _, call := range []struct{ method, path, body string }{
 			{"POST", "/v1/templates", `{"slug":"a"}`},
@@ -84,6 +87,12 @@ func TestTemplateErrorMapping(t *testing.T) {
 				continue
 			}
 			assertErrorCode(t, rec, tc.errCode)
+			if tc.status == 429 && rec.Header().Get("Retry-After") != "17" {
+				t.Errorf("Retry-After = %q, want 17", rec.Header().Get("Retry-After"))
+			}
+			if tc.status == 503 && rec.Header().Get("Retry-After") == "" {
+				t.Error("503 without Retry-After")
+			}
 			if strings.Contains(rec.Body.String(), "secret-detail") {
 				t.Errorf("leaks internal error: %s", rec.Body)
 			}
@@ -121,5 +130,21 @@ func TestTemplateRoutesRejectMalformedPaths(t *testing.T) {
 		if rec, _ := templateCall(t, called, m.method, m.path, ""); rec.Code != 405 {
 			t.Errorf("%s %s: %d, want 405", m.method, m.path, rec.Code)
 		}
+	}
+}
+
+func TestRequestFieldsAreExactAndUnique(t *testing.T) {
+	for _, body := range []string{
+		`{"slug":"a","SLUG":"b"}`,
+		`{"Slug":"a"}`,
+		`{"slug":"a","slug":"b"}`,
+		`{"sl\u0075g":"a","slug":"b"}`,
+	} {
+		rec, _ := templateCall(t, failingTemplates{errors.New("service must not be called")}, "POST", "/v1/templates", body)
+		if rec.Code != 400 {
+			t.Errorf("%s: %d, want 400", body, rec.Code)
+			continue
+		}
+		assertErrorCode(t, rec, "invalid_json")
 	}
 }

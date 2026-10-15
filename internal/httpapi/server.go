@@ -143,13 +143,20 @@ func writeError(w http.ResponseWriter, status int, code, message string) {
 	writeJSON(w, status, map[string]body{"error": {Code: code, Message: message}})
 }
 
-func writeJSON(w http.ResponseWriter, status int, v any) {
+func writeJSON(w http.ResponseWriter, status int, v any) { writeJSONWith(w, status, v, true) }
+
+// writeJSONUnescaped is writeJSON without escaping <, > and & in strings.
+func writeJSONUnescaped(w http.ResponseWriter, status int, v any) { writeJSONWith(w, status, v, false) }
+
+func writeJSONWith(w http.ResponseWriter, status int, v any, escapeHTML bool) {
 	h := w.Header()
 	h.Set("Content-Type", "application/json")
 	h.Set("Cache-Control", "no-store")
 	h.Set("X-Content-Type-Options", "nosniff")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v) // client gone; nothing useful to do
+	enc := json.NewEncoder(w)
+	enc.SetEscapeHTML(escapeHTML)
+	_ = enc.Encode(v) // client gone; nothing useful to do
 }
 
 // writeUnavailable answers "dependency down, retry later" with a short
