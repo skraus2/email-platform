@@ -11,6 +11,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/service/sesv2"
 
+	"github.com/skraus2/email-platform/internal/awsconfig"
 	"github.com/skraus2/email-platform/internal/testaws"
 )
 
@@ -36,11 +37,19 @@ func TestSESIgnoresAmbientEndpointOverrides(t *testing.T) {
 	if err := os.WriteFile(profile, []byte("[default]\nendpoint_url = http://127.0.0.1:1\nservices = redirect\n\n[services redirect]\nsesv2 =\n  endpoint_url = http://127.0.0.1:2\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	for _, k := range []string{
+		"AWS_PROFILE", "AWS_SESSION_TOKEN", "AWS_ROLE_ARN", "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_ENDPOINT_URL",
+		"AWS_ENDPOINT_URL_SESV2", "AWS_USE_FIPS_ENDPOINT", "AWS_USE_DUALSTACK_ENDPOINT", "AWS_CA_BUNDLE",
+	} {
+		t.Setenv(k, "")
+		_ = os.Unsetenv(k)
+	}
 	t.Setenv("AWS_CONFIG_FILE", profile)
 	t.Setenv("AWS_SHARED_CREDENTIALS_FILE", filepath.Join(dir, "credentials"))
 	t.Setenv("AWS_EC2_METADATA_DISABLED", "true")
-	t.Setenv("AWS_ACCESS_KEY_ID", "AKIAIOSFODNN7EXAMPLE")
-	t.Setenv("AWS_SECRET_ACCESS_KEY", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
+	t.Setenv("AWS_ACCESS_KEY_ID", awsconfig.StubAccessKeyID)
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "local-stub-secret")
+	t.Setenv(awsconfig.IgnoreEndpointsEnv, "true")
 
 	for name, env := range map[string]map[string]string{
 		"profile":          {},

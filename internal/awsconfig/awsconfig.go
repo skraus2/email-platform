@@ -51,28 +51,45 @@ func ValidateEndpoint(raw string) error {
 	return nil
 }
 
+// IgnoreEndpointsEnv must be "true" on the AWS path. The SDK otherwise takes
+// endpoint overrides from AWS_ENDPOINT_URL* and the shared config for every
+// client it builds, including the STS and SSO clients that fetch role
+// credentials, so a stray setting could send signed requests, tokens and
+// message content to another host. The environment variable wins over any
+// profile setting.
+const IgnoreEndpointsEnv = "AWS_IGNORE_CONFIGURED_ENDPOINT_URLS"
+
 // Load returns the configuration for region. With an endpoint (a local
 // stub) it uses fixed fake credentials and never the default chain, so no
 // real credential can reach a stub; without one it uses the default chain
-// (IAM role, environment, shared files). SDK retries are off in both cases:
-// the platform retries itself, and a transparently retried send could go
-// out twice.
+// (IAM role, environment, shared files) and refuses to run unless configured
+// endpoint overrides are ignored (IgnoreEndpointsEnv). SDK retries are off in
+// both cases: the platform retries itself, and a transparently retried send
+// could go out twice.
 //
-// BaseEndpoint is the validated endpoint, or nil for AWS. The SDK also reads
-// endpoint overrides from AWS_ENDPOINT_URL* and the shared config while
-// building a service client, so every client must set its BaseEndpoint from
-// this value as its last option.
+// BaseEndpoint is the validated endpoint, or nil for AWS. Every service
+// client sets its BaseEndpoint from this value as its last option.
 func Load(ctx context.Context, region, endpoint string) (aws.Config, error) {
+	return load(ctx, region, endpoint)
+}
+
+// load lets tests add SDK load options (an HTTP client that records hosts).
+func load(ctx context.Context, region, endpoint string, extra ...func(*config.LoadOptions) error) (aws.Config, error) {
 	if !ValidRegion(region) {
 		return aws.Config{}, fmt.Errorf("invalid AWS region %q", region)
 	}
 	noRetry := func() aws.Retryer { return aws.NopRetryer{} }
 	if endpoint == "" {
-		cfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(region), config.WithRetryer(noRetry))
+		opts := append([]func(*config.LoadOptions) error{config.WithRegion(region), config.WithRetryer(noRetry)}, extra...)
+		cfg, err := config.LoadDefaultConfig(ctx, opts...)
 		if err != nil {
 			return aws.Config{}, fmt.Errorf("load AWS configuration: %w", err)
 		}
-		cfg.BaseEndpoint = nil // never an unchecked override from the environment or a profile
+		// Credentials are fetched lazily, so nothing has been sent yet.
+		if ignore, found, err := config.GetIgnoreConfiguredEndpoints(ctx, cfg.ConfigSources); err != nil || !found || !ignore {
+			return aws.Config{}, fmt.Errorf("%s=true is required: configured endpoint overrides could redirect signed AWS requests", IgnoreEndpointsEnv)
+		}
+		cfg.BaseEndpoint = nil
 		return cfg, nil
 	}
 	if err := ValidateEndpoint(endpoint); err != nil {

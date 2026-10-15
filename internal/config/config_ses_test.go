@@ -15,6 +15,8 @@ func sesEnv(extra map[string]string) map[string]string {
 		"SES_CONFIGURATION_SET": "platform-events",
 		"SES_EVENTS_QUEUE_URL":  "https://sqs.eu-central-1.amazonaws.com/123456789012/ses-events",
 		"SES_EVENTS_TOPIC_ARN":  "arn:aws:sns:eu-central-1:123456789012:ses-events",
+
+		"AWS_IGNORE_CONFIGURED_ENDPOINT_URLS": "true",
 	}
 	for k, v := range extra {
 		if v == "" {
@@ -104,9 +106,23 @@ func TestLoadRejectsIncompleteSESOptIn(t *testing.T) {
 }
 
 func TestLoadSESInProductionWithoutStubs(t *testing.T) {
-	cfg, err := Load(env(sesEnv(map[string]string{
+	prod := map[string]string{
 		"APP_ENV": "production", "DATABASE_URL": "postgres://ep:s3cret@db.internal:5432/ep?sslmode=require",
-	})))
+	}
+	// The SDK would otherwise honour AWS_ENDPOINT_URL* and profile endpoint
+	// overrides for every client it builds.
+	for _, v := range []string{"", "false", "TRUE"} {
+		prod["AWS_IGNORE_CONFIGURED_ENDPOINT_URLS"] = v
+		m := sesEnv(prod)
+		if v == "" {
+			delete(m, "AWS_IGNORE_CONFIGURED_ENDPOINT_URLS")
+		}
+		if _, err := Load(env(m)); err == nil || !strings.Contains(err.Error(), "AWS_IGNORE_CONFIGURED_ENDPOINT_URLS") {
+			t.Fatalf("%q: err = %v, want refusal naming AWS_IGNORE_CONFIGURED_ENDPOINT_URLS", v, err)
+		}
+	}
+	prod["AWS_IGNORE_CONFIGURED_ENDPOINT_URLS"] = "true"
+	cfg, err := Load(env(sesEnv(prod)))
 	if err != nil || cfg.SES.Endpoint != "" || cfg.SES.SQSEndpoint != "" {
 		t.Fatalf("production SES config = %+v, %v", cfg.SES, err)
 	}

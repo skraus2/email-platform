@@ -146,7 +146,7 @@ func sesClass(status int, code, text, sender string) string {
 	case authCodes[code] || status == http.StatusUnauthorized || status == http.StatusForbidden:
 		return ClassAuth
 	case code == "MailFromDomainNotVerifiedException",
-		code == "MessageRejected" && strings.Contains(text, "not verified") && strings.Contains(text, strings.ToLower(sender)):
+		code == "MessageRejected" && strings.Contains(text, "not verified") && namesIdentity(text, strings.ToLower(sender)):
 		return ClassSenderUnverified
 	case status >= 500 || status == http.StatusRequestTimeout:
 		return ClassAPIUnavailable
@@ -155,4 +155,19 @@ func sesClass(status int, code, text, sender string) string {
 	default:
 		return ClassProtocol // a success status whose body could not be read
 	}
+}
+
+// namesIdentity reports whether the identity list after the last colon of a
+// lower-cased "not verified" rejection contains address exactly.
+func namesIdentity(text, address string) bool {
+	i := strings.LastIndex(text, ":")
+	if i < 0 {
+		return false
+	}
+	for _, id := range strings.Split(text[i+1:], ",") {
+		if strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(id), ".")) == address {
+			return true
+		}
+	}
+	return false
 }

@@ -307,6 +307,12 @@ func loadSES(get func(string, string) string, env string, errs []error) (SES, []
 			}
 		}
 	}
+	// Against AWS the SDK would honour endpoint overrides from
+	// AWS_ENDPOINT_URL* and the shared config for every client it builds
+	// (including the credential clients), bypassing the checks above.
+	if c.Endpoint == "" && get(awsconfig.IgnoreEndpointsEnv, "") != "true" {
+		errs = append(errs, fmt.Errorf("%s=true is required with SES against AWS (configured endpoint overrides could redirect signed requests)", awsconfig.IgnoreEndpointsEnv))
+	}
 	// Half a stub setup would send through real SES while believing it is
 	// local.
 	if env != EnvProduction && (c.Endpoint == "") != (c.SQSEndpoint == "") {
