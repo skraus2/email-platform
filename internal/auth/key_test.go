@@ -3,6 +3,7 @@ package auth
 import (
 	"bytes"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -125,7 +126,13 @@ func TestScopes(t *testing.T) {
 	if err := ValidateScopes([]string{ScopeEmailsSend, ScopeEmailsRead}); err != nil {
 		t.Fatal(err)
 	}
-	for _, bad := range [][]string{nil, {}, {"emails:delete"}, {ScopeEmailsSend, ScopeEmailsSend}} {
+	if err := ValidateScopes([]string{ScopeTemplatesRead, ScopeTemplatesWrite}); err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(DefaultScopes, ScopeTemplatesWrite) || slices.Contains(DefaultScopes, ScopeTemplatesRead) {
+		t.Fatal("new keys must not get template scopes unless asked")
+	}
+	for _, bad := range [][]string{nil, {}, {"emails:delete"}, {"templates:delete"}, {"Templates:read"}, {ScopeEmailsSend, ScopeEmailsSend}} {
 		if err := ValidateScopes(bad); err == nil {
 			t.Errorf("ValidateScopes(%v) = nil, want error", bad)
 		}

@@ -5,7 +5,7 @@
 //	admin project list
 //	admin project disable -id <uuid>
 //	admin project enable -id <uuid>
-//	admin key create -project <uuid> [-scopes emails:send,emails:read]
+//	admin key create -project <uuid> [-scopes emails:send,emails:read,templates:read,templates:write]
 //	admin key list -project <uuid>
 //	admin key revoke -prefix <prefix>
 //	admin email list -project <uuid> [-status failed] [-limit 50]
@@ -53,7 +53,7 @@ const usage = `usage:
   admin project list
   admin project disable -id <uuid>
   admin project enable -id <uuid>
-  admin key create -project <uuid> [-scopes emails:send,emails:read]
+  admin key create -project <uuid> [-scopes emails:send,emails:read,templates:read,templates:write]
   admin key list -project <uuid>
   admin key revoke -prefix <prefix>
   admin email list -project <uuid> [-status failed] [-limit 50]
@@ -100,7 +100,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	name := fs.String("name", "", "project name")
 	id := fs.String("id", "", "project, sender identity or webhook endpoint id")
 	project := fs.String("project", "", "project id")
-	scopes := fs.String("scopes", "", "comma-separated scopes (default: all)")
+	scopes := fs.String("scopes", "", "comma-separated scopes (default: emails:send,emails:read)")
 	prefix := fs.String("prefix", "", "key prefix")
 	status := fs.String("status", "", "only emails with this status")
 	limit := fs.Int("limit", emails.DefaultAdminListLimit, "maximum number of emails")

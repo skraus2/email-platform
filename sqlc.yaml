@@ -22,6 +22,7 @@ sql:
       - db/migrations/00016_email_list_indexes.sql
       - db/migrations/00017_templates.sql
       - db/migrations/00018_template_storage_index.sql
+      - db/migrations/00019_template_scopes.sql
     queries: db/queries
     gen:
       go:

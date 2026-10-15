@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"mime"
@@ -131,10 +132,16 @@ func writeInvalidIdempotencyKey(w http.ResponseWriter) {
 // decodeStrict reads exactly one JSON object with known fields only. It
 // returns a non-zero status with error code and message on failure.
 func decodeStrict(w http.ResponseWriter, r *http.Request, v any) (int, string, string) {
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxRequestBytes))
+	return decodeStrictLimit(w, r, v, maxRequestBytes)
+}
+
+// decodeStrictLimit is decodeStrict with a body limit of limit bytes (a
+// whole number of MiB).
+func decodeStrictLimit(w http.ResponseWriter, r *http.Request, v any, limit int64) (int, string, string) {
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, limit))
 	var tooBig *http.MaxBytesError
 	if errors.As(err, &tooBig) {
-		return http.StatusRequestEntityTooLarge, "payload_too_large", "request body must be at most 1 MiB"
+		return http.StatusRequestEntityTooLarge, "payload_too_large", fmt.Sprintf("request body must be at most %d MiB", limit>>20)
 	}
 	if err != nil {
 		return http.StatusBadRequest, "invalid_json", "could not read request body"

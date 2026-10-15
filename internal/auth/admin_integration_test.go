@@ -69,6 +69,10 @@ func TestCreateKeyValidatesInput(t *testing.T) {
 	if _, _, err := auth.CreateKey(ctx, q, p.ID, []string{"emails:delete"}); err == nil {
 		t.Fatal("unknown scope accepted")
 	}
+	// The database accepts every known scope (the CHECK constraint follows).
+	if _, _, err := auth.CreateKey(ctx, q, p.ID, auth.KnownScopes); err != nil {
+		t.Fatalf("all known scopes: %v", err)
+	}
 	if _, err := auth.CreateProject(ctx, q, ""); err == nil {
 		t.Fatal("empty project name accepted")
 	}

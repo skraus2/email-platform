@@ -57,6 +57,12 @@ type Config struct {
 
 	// APIRateLimitPerMinute caps accepted sends per project and minute.
 	APIRateLimitPerMinute int
+
+	// Template caps: templates per project, versions per template, and the
+	// bytes of template source and schemas a project stores.
+	TemplateMaxPerProject   int
+	TemplateMaxVersions     int
+	TemplateMaxStorageBytes int
 	// ProviderRatePerSecond caps messages per second the worker process
 	// hands to the provider.
 	ProviderRatePerSecond float64
@@ -225,6 +231,9 @@ func Load(lookup LookupFunc) (Config, error) {
 	}
 	cfg.ProviderRatePerSecond, errs = rateInRange(get, "PROVIDER_RATE_PER_SECOND", "10", errs)
 	cfg.APIRateLimitPerMinute, errs = intInRange(get, "API_RATE_LIMIT_PER_MINUTE", "600", 1, 1_000_000, errs)
+	cfg.TemplateMaxPerProject, errs = intInRange(get, "TEMPLATE_MAX_PER_PROJECT", "200", 1, 10_000, errs)
+	cfg.TemplateMaxVersions, errs = intInRange(get, "TEMPLATE_MAX_VERSIONS", "500", 1, 10_000, errs)
+	cfg.TemplateMaxStorageBytes, errs = intInRange(get, "TEMPLATE_MAX_STORAGE_BYTES", "52428800", 1<<20, 10<<30, errs)
 	cfg.SendMaxAttempts, errs = intInRange(get, "SEND_MAX_ATTEMPTS", "8", 1, maxSendAttempts, errs)
 	cfg.RetryBaseDelay, errs = positiveDuration(get, "RETRY_BASE_DELAY", "30s", errs)
 	if cfg.RetryBaseDelay > 0 && cfg.RetryBaseDelay < time.Second {

@@ -31,6 +31,7 @@ type Deps struct {
 	Checks       []Check
 	Authenticate Authenticator
 	Emails       EmailService
+	Templates    TemplateService
 }
 
 // Server holds the HTTP handler and readiness state.
@@ -39,13 +40,14 @@ type Server struct {
 	checks       []Check
 	authenticate Authenticator
 	emails       EmailService
+	templates    TemplateService
 	draining     atomic.Bool
 	handler      http.Handler
 }
 
 // New builds the API handler.
 func New(d Deps) *Server {
-	s := &Server{logger: d.Logger, checks: d.Checks, authenticate: d.Authenticate, emails: d.Emails}
+	s := &Server{logger: d.Logger, checks: d.Checks, authenticate: d.Authenticate, emails: d.Emails, templates: d.Templates}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
@@ -61,6 +63,14 @@ func New(d Deps) *Server {
 	mux.HandleFunc("/v1/emails/{id}", methodNotAllowed(http.MethodGet))
 	mux.HandleFunc("GET /v1/emails/{id}/events", s.requireScope(auth.ScopeEmailsRead, s.handleListEvents))
 	mux.HandleFunc("/v1/emails/{id}/events", methodNotAllowed(http.MethodGet))
+	mux.HandleFunc("POST /v1/templates", s.requireScope(auth.ScopeTemplatesWrite, s.handleCreateTemplate))
+	mux.HandleFunc("/v1/templates", methodNotAllowed(http.MethodPost))
+	mux.HandleFunc("GET /v1/templates/{id}", s.requireScope(auth.ScopeTemplatesRead, s.handleGetTemplate))
+	mux.HandleFunc("/v1/templates/{id}", methodNotAllowed(http.MethodGet))
+	mux.HandleFunc("POST /v1/templates/{id}/versions", s.requireScope(auth.ScopeTemplatesWrite, s.handlePublishVersion))
+	mux.HandleFunc("/v1/templates/{id}/versions", methodNotAllowed(http.MethodPost))
+	mux.HandleFunc("GET /v1/templates/{id}/versions/{version}", s.requireScope(auth.ScopeTemplatesRead, s.handleGetVersion))
+	mux.HandleFunc("/v1/templates/{id}/versions/{version}", methodNotAllowed(http.MethodGet))
 	mux.HandleFunc("/", handleNotFound)
 
 	s.handler = requestLogger(s.logger, mux)

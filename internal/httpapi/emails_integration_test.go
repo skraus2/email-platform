@@ -23,6 +23,7 @@ import (
 	"github.com/skraus2/email-platform/internal/httpapi"
 	"github.com/skraus2/email-platform/internal/jobs"
 	"github.com/skraus2/email-platform/internal/store"
+	"github.com/skraus2/email-platform/internal/templates"
 	"github.com/skraus2/email-platform/internal/testdb"
 )
 
@@ -59,8 +60,9 @@ func newStackWith(t *testing.T, perMinute int, requireSender bool) *stack {
 		svc.RequireVerifiedSenders()
 	}
 	api := httpapi.New(httpapi.Deps{
-		Logger: logger,
-		Emails: svc,
+		Logger:    logger,
+		Emails:    svc,
+		Templates: templates.NewStore(pool, 200, 500, 50<<20),
 		Authenticate: func(ctx context.Context, token string) (auth.Principal, error) {
 			return auth.Authenticate(ctx, q.GetActiveKeyByPrefix, token)
 		},

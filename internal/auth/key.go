@@ -16,6 +16,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -28,9 +29,14 @@ const (
 
 // Scopes a key can carry.
 const (
-	ScopeEmailsSend = "emails:send"
-	ScopeEmailsRead = "emails:read"
+	ScopeEmailsSend     = "emails:send"
+	ScopeEmailsRead     = "emails:read"
+	ScopeTemplatesRead  = "templates:read"
+	ScopeTemplatesWrite = "templates:write"
 )
+
+// KnownScopes lists every scope a key may carry.
+var KnownScopes = []string{ScopeEmailsSend, ScopeEmailsRead, ScopeTemplatesRead, ScopeTemplatesWrite}
 
 // DefaultScopes is what a new key gets unless the admin narrows it.
 var DefaultScopes = []string{ScopeEmailsSend, ScopeEmailsRead}
@@ -120,7 +126,7 @@ func ValidateScopes(scopes []string) error {
 	}
 	seen := make(map[string]bool, len(scopes))
 	for _, s := range scopes {
-		if s != ScopeEmailsSend && s != ScopeEmailsRead {
+		if !slices.Contains(KnownScopes, s) {
 			return fmt.Errorf("unknown scope %q", s)
 		}
 		if seen[s] {
