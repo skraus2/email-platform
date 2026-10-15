@@ -35,7 +35,7 @@ UPDATE admin_users SET failed_logins = 0, locked_until = NULL WHERE username = $
 -- cannot all pass a lock check that one of them is about to trigger. No row:
 -- the account is locked.
 UPDATE admin_users
-SET failed_logins = failed_logins + 1,
+SET failed_logins = least(failed_logins + 1, 1000),
     locked_until = CASE WHEN failed_logins + 1 >= 5
         THEN now() + least(interval '1 minute' * power(2, least(failed_logins + 1 - 5, 10)), interval '15 minutes')
         ELSE locked_until END
@@ -46,7 +46,7 @@ RETURNING failed_logins;
 -- One more consecutive failure; from the fifth on, the account is locked for
 -- 1, 2, 4 … minutes, at most 15.
 UPDATE admin_users
-SET failed_logins = failed_logins + 1,
+SET failed_logins = least(failed_logins + 1, 1000),
     locked_until = CASE WHEN failed_logins + 1 >= 5
         THEN now() + least(interval '1 minute' * power(2, least(failed_logins + 1 - 5, 10)), interval '15 minutes')
         ELSE locked_until END
@@ -57,15 +57,19 @@ RETURNING failed_logins,
 -- name: RecordAdminLoginSuccess :exec
 UPDATE admin_users SET failed_logins = 0, locked_until = NULL WHERE id = $1;
 
+-- name: LockAdminUserForLogin :one
+-- Locks the account row in the state the password was verified against
+-- (enabled, password unchanged). A concurrent password change or disable
+-- holds a conflicting lock until it commits; afterwards the row no longer
+-- matches, so no session can be created that would outlive it.
+SELECT id FROM admin_users
+WHERE id = $1 AND disabled_at IS NULL AND password_changed_at = $2
+FOR UPDATE;
+
 -- name: InsertAdminSession :one
--- Only while the account is still enabled and its password unchanged since
--- it was verified: a session must not outlive a concurrent password change
--- or disable. Expiry by the database clock.
+-- Expiry by the database clock.
 INSERT INTO admin_sessions (admin_user_id, token_hash, expires_at)
-SELECT u.id, sqlc.arg(token_hash), now() + make_interval(secs => sqlc.arg(max_age_seconds)::float8)
-FROM admin_users u
-WHERE u.id = sqlc.arg(admin_user_id) AND u.disabled_at IS NULL
-  AND u.password_changed_at = sqlc.arg(password_changed_at)
+VALUES ($1, $2, now() + make_interval(secs => sqlc.arg(max_age_seconds)::float8))
 RETURNING *;
 
 -- name: GetAdminSession :one

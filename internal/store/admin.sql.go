@@ -14,7 +14,7 @@ import (
 
 const claimAdminLoginAttempt = `-- name: ClaimAdminLoginAttempt :one
 UPDATE admin_users
-SET failed_logins = failed_logins + 1,
+SET failed_logins = least(failed_logins + 1, 1000),
     locked_until = CASE WHEN failed_logins + 1 >= 5
         THEN now() + least(interval '1 minute' * power(2, least(failed_logins + 1 - 5, 10)), interval '15 minutes')
         ELSE locked_until END
@@ -140,30 +140,19 @@ func (q *Queries) GetAdminUserByUsername(ctx context.Context, username string) (
 
 const insertAdminSession = `-- name: InsertAdminSession :one
 INSERT INTO admin_sessions (admin_user_id, token_hash, expires_at)
-SELECT u.id, $1, now() + make_interval(secs => $2::float8)
-FROM admin_users u
-WHERE u.id = $3 AND u.disabled_at IS NULL
-  AND u.password_changed_at = $4
+VALUES ($1, $2, now() + make_interval(secs => $3::float8))
 RETURNING id, admin_user_id, token_hash, created_at, last_seen_at, expires_at
 `
 
 type InsertAdminSessionParams struct {
-	TokenHash         []byte
-	MaxAgeSeconds     float64
-	AdminUserID       uuid.UUID
-	PasswordChangedAt time.Time
+	AdminUserID   uuid.UUID
+	TokenHash     []byte
+	MaxAgeSeconds float64
 }
 
-// Only while the account is still enabled and its password unchanged since
-// it was verified: a session must not outlive a concurrent password change
-// or disable. Expiry by the database clock.
+// Expiry by the database clock.
 func (q *Queries) InsertAdminSession(ctx context.Context, arg InsertAdminSessionParams) (AdminSession, error) {
-	row := q.db.QueryRow(ctx, insertAdminSession,
-		arg.TokenHash,
-		arg.MaxAgeSeconds,
-		arg.AdminUserID,
-		arg.PasswordChangedAt,
-	)
+	row := q.db.QueryRow(ctx, insertAdminSession, arg.AdminUserID, arg.TokenHash, arg.MaxAgeSeconds)
 	var i AdminSession
 	err := row.Scan(
 		&i.ID,
@@ -216,9 +205,31 @@ func (q *Queries) ListAdminUsers(ctx context.Context) ([]ListAdminUsersRow, erro
 	return items, nil
 }
 
+const lockAdminUserForLogin = `-- name: LockAdminUserForLogin :one
+SELECT id FROM admin_users
+WHERE id = $1 AND disabled_at IS NULL AND password_changed_at = $2
+FOR UPDATE
+`
+
+type LockAdminUserForLoginParams struct {
+	ID                uuid.UUID
+	PasswordChangedAt time.Time
+}
+
+// Locks the account row in the state the password was verified against
+// (enabled, password unchanged). A concurrent password change or disable
+// holds a conflicting lock until it commits; afterwards the row no longer
+// matches, so no session can be created that would outlive it.
+func (q *Queries) LockAdminUserForLogin(ctx context.Context, arg LockAdminUserForLoginParams) (uuid.UUID, error) {
+	row := q.db.QueryRow(ctx, lockAdminUserForLogin, arg.ID, arg.PasswordChangedAt)
+	var id uuid.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
 const recordAdminLoginFailure = `-- name: RecordAdminLoginFailure :one
 UPDATE admin_users
-SET failed_logins = failed_logins + 1,
+SET failed_logins = least(failed_logins + 1, 1000),
     locked_until = CASE WHEN failed_logins + 1 >= 5
         THEN now() + least(interval '1 minute' * power(2, least(failed_logins + 1 - 5, 10)), interval '15 minutes')
         ELSE locked_until END

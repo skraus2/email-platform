@@ -282,7 +282,9 @@ func (s *Service) Login(ctx context.Context, username, password string) (Session
 	case valid:
 		if d := s.unknown.claim(username, time.Now()); d > 0 {
 			s.logger.WarnContext(ctx, "admin login refused: locked")
-			return Session{}, &LockedError{RetryAfter: d}
+			// Whole seconds, like the database path, so the value does not
+			// tell unknown names from real ones.
+			return Session{}, &LockedError{RetryAfter: (d + time.Second - 1).Truncate(time.Second)}
 		}
 	}
 
@@ -303,14 +305,12 @@ func (s *Service) Login(ctx context.Context, username, password string) (Session
 		return Session{}, ErrInvalidCredentials
 	}
 
-	if err := q.RecordAdminLoginSuccess(ctx, user.ID); err != nil {
-		return Session{}, fmt.Errorf("record login success: %w", err)
-	}
-	if outdated { // still inside the hash slot
+	// An outdated hash is replaced (still inside the hash slot, before any
+	// row lock is held).
+	var rehashed string
+	if outdated {
 		if h, err := s.hash(password); err == nil {
-			if err := q.RehashAdminPassword(ctx, store.RehashAdminPasswordParams{ID: user.ID, PasswordHash: h, OldHash: user.PasswordHash}); err != nil {
-				s.logger.WarnContext(ctx, "admin password rehash failed", slog.String("admin_user_id", user.ID.String()), slog.Any("error", err))
-			}
+			rehashed = h
 		}
 	}
 	if s.afterVerify != nil {
@@ -322,18 +322,40 @@ func (s *Service) Login(ctx context.Context, username, password string) (Session
 	}
 	token := base64.RawURLEncoding.EncodeToString(raw)
 	sum := sha256.Sum256([]byte(token))
-	row, err := q.InsertAdminSession(ctx, store.InsertAdminSessionParams{
-		AdminUserID: user.ID, TokenHash: sum[:], MaxAgeSeconds: s.maxAge.Seconds(),
-		PasswordChangedAt: user.PasswordChangedAt,
+	var row store.AdminSession
+	err = pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		tq := store.New(tx)
+		// The account must still be in the state the password was checked
+		// against; a concurrent password change or disable waits here or
+		// has already made this fail.
+		if _, err := tq.LockAdminUserForLogin(ctx, store.LockAdminUserForLoginParams{
+			ID: user.ID, PasswordChangedAt: user.PasswordChangedAt,
+		}); err != nil {
+			return err
+		}
+		if err := tq.RecordAdminLoginSuccess(ctx, user.ID); err != nil {
+			return fmt.Errorf("record login success: %w", err)
+		}
+		if rehashed != "" {
+			if err := tq.RehashAdminPassword(ctx, store.RehashAdminPasswordParams{ID: user.ID, PasswordHash: rehashed, OldHash: user.PasswordHash}); err != nil {
+				return fmt.Errorf("rehash password: %w", err)
+			}
+		}
+		var err error
+		row, err = tq.InsertAdminSession(ctx, store.InsertAdminSessionParams{
+			AdminUserID: user.ID, TokenHash: sum[:], MaxAgeSeconds: s.maxAge.Seconds(),
+		})
+		if err != nil {
+			return fmt.Errorf("insert session: %w", err)
+		}
+		return nil
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
-		// Disabled or password changed since the check: the verified
-		// credentials are no longer valid.
 		s.logger.WarnContext(ctx, "admin login failed: account changed during login", slog.String("admin_user_id", user.ID.String()))
 		return Session{}, ErrInvalidCredentials
 	}
 	if err != nil {
-		return Session{}, fmt.Errorf("insert session: %w", err)
+		return Session{}, err
 	}
 	s.logger.InfoContext(ctx, "admin login", slog.String("admin_user_id", user.ID.String()))
 	return Session{Token: token, ExpiresAt: row.ExpiresAt, UserID: user.ID}, nil

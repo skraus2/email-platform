@@ -322,6 +322,7 @@ func TestParallelGuessesHashAtMostFiveTimes(t *testing.T) {
 	if _, err := s.CreateUser(ctx, "alice", pw); err != nil {
 		t.Fatal(err)
 	}
+	s.SetHashLimits(4, 30*time.Second) // under load nobody may fall out as busy
 	before := s.Hashes()
 	var wg sync.WaitGroup
 	for range 20 {
@@ -374,5 +375,78 @@ func TestPasswordChangeDuringLoginWins(t *testing.T) {
 	var n int
 	if err := pool.QueryRow(ctx, "SELECT count(*) FROM admin_sessions").Scan(&n); err != nil || n != 0 {
 		t.Fatalf("%d sessions survived (%v)", n, err)
+	}
+}
+
+func TestPasswordChangeCommittingDuringLoginWins(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s, pool := newService(t, nil)
+	if _, err := s.CreateUser(ctx, "alice", pw); err != nil {
+		t.Fatal(err)
+	}
+	// The change has deleted the sessions but not committed when the login
+	// creates its session.
+	done := make(chan error, 1)
+	s.AfterVerify(func() {
+		tx, err := pool.Begin(ctx)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		if _, err := tx.Exec(ctx, "UPDATE admin_users SET password_changed_at = now() + interval '1 second' WHERE username = 'alice'"); err != nil {
+			t.Error(err)
+		}
+		if _, err := tx.Exec(ctx, "DELETE FROM admin_sessions WHERE admin_user_id = (SELECT id FROM admin_users WHERE username = 'alice')"); err != nil {
+			t.Error(err)
+		}
+		go func() {
+			time.Sleep(300 * time.Millisecond)
+			done <- tx.Commit(ctx)
+		}()
+	})
+	if _, err := s.Login(ctx, "alice", pw); !errors.Is(err, admin.ErrInvalidCredentials) {
+		t.Fatalf("login while a password change commits: %v", err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM admin_sessions").Scan(&n); err != nil || n != 0 {
+		t.Fatalf("%d sessions survived the password change (%v)", n, err)
+	}
+}
+
+func TestLockExpiryAllowsOneAttempt(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s, pool := newService(t, nil)
+	if _, err := s.CreateUser(ctx, "alice", pw); err != nil {
+		t.Fatal(err)
+	}
+	expire := func() {
+		if _, err := pool.Exec(ctx, "UPDATE admin_users SET failed_logins = 5, locked_until = now() - interval '1 second' WHERE username = 'alice'"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	expire()
+	if _, err := s.Login(ctx, "alice", pw); err != nil {
+		t.Fatalf("correct password after the lock expired: %v", err)
+	}
+	expire()
+	before := s.Hashes()
+	if _, err := s.Login(ctx, "alice", "wrong password!!"); !errors.Is(err, admin.ErrInvalidCredentials) || s.Hashes() != before+1 {
+		t.Fatalf("one wrong attempt after expiry: %v (%d hashes)", err, s.Hashes()-before)
+	}
+	var locked *admin.LockedError
+	if _, err := s.Login(ctx, "alice", pw); !errors.As(err, &locked) || locked.RetryAfter <= 2*time.Minute || locked.RetryAfter > 4*time.Minute {
+		t.Fatalf("after a failed attempt past the lock: %v %v, want locked again", err, locked)
+	}
+	// Retry times are whole seconds for known and unknown names alike.
+	for range 5 {
+		_, _ = s.Login(ctx, "ghost", pw)
+	}
+	if _, err := s.Login(ctx, "ghost", pw); !errors.As(err, &locked) || locked.RetryAfter%time.Second != 0 {
+		t.Fatalf("unknown name retry %v (%v)", locked, err)
 	}
 }
