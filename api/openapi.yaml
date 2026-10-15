@@ -389,7 +389,11 @@ paths:
         cannot inject markup or `javascript:` URLs); `subject` and `text`
         are plain text. `text` is required so every HTML mail has a text
         alternative. A template holds at most 500 versions by default
-        (`422 version_limit_reached`). Unknown templates and templates of
+        (`422 version_limit_reached`), and a project stores at most 50 MiB of
+        template source over all versions by default
+        (`422 template_storage_limit_reached`). Actions right after `<` (dynamic
+        tag names) and inside `srcdoc`, `content` or `http-equiv` attributes
+        are refused as well. Unknown templates and templates of
         other projects return `404`.
       parameters:
         - $ref: "#/components/parameters/TemplateID"
@@ -1092,7 +1096,7 @@ components:
           schema:
             $ref: "#/components/schemas/Error"
     UnprocessableEntity:
-      description: "`validation_failed` (message names the field), `recipient_suppressed` (the recipient is on the project's suppression list), `sender_not_verified` (`from` is not a verified sender address or domain of the project), `template_not_found`, `variables_invalid`, `render_failed`, `template_invalid`, `template_limit_reached`, `version_limit_reached`, `invalid_url` or `endpoint_limit_reached`. Messages name fields or variables, never their values."
+      description: "`validation_failed` (message names the field), `recipient_suppressed` (the recipient is on the project's suppression list), `sender_not_verified` (`from` is not a verified sender address or domain of the project), `template_not_found`, `variables_invalid`, `render_failed`, `template_invalid`, `template_limit_reached`, `version_limit_reached`, `template_storage_limit_reached`, `invalid_url` or `endpoint_limit_reached`. Messages name fields or variables, never their values."
       content:
         application/json:
           schema:

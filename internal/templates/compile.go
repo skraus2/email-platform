@@ -69,6 +69,9 @@ func Compile(src Source, schema Schema) (*Compiled, error) {
 		if err := checkTree("html", h.Tree, len(h.Templates()), schema); err != nil {
 			return nil, err
 		}
+		if err := checkHTMLContexts(src.HTML); err != nil {
+			return nil, err
+		}
 		c.html = h
 	}
 	// html/template computes its escaping on the first execution. Running
@@ -264,3 +267,27 @@ func (w walker) condition(n parse.Node, p *parse.PipeNode) error {
 }
 
 var errTooLarge = errors.New("output too large")
+
+// html/template escapes these contexts but does not make them safe: a value
+// right after "<" becomes a tag (with attributes), srcdoc holds a whole
+// document, and content/http-equiv can trigger refreshes to any URL.
+var (
+	actionAsTagName    = regexp.MustCompile(`<(?:[/!?]\s*)?\{\{`)
+	actionInRiskyValue = regexp.MustCompile(`(?i)<[a-z][^>]*\b(?:srcdoc|content|http-equiv)\s*=\s*(?:"[^"]*\{\{|'[^']*\{\{|[^\s>"']*\{\{)`)
+)
+
+func checkHTMLContexts(src string) error {
+	for _, c := range []struct {
+		re  *regexp.Regexp
+		msg string
+	}{
+		{actionAsTagName, "an action must not follow < (dynamic tag names are not allowed)"},
+		{actionInRiskyValue, "actions are not allowed in srcdoc, content or http-equiv attributes"},
+	} {
+		if loc := c.re.FindStringIndex(src); loc != nil {
+			line := 1 + strings.Count(src[:loc[0]], "\n")
+			return invalidTemplate("html", "line %d: %s", line, c.msg)
+		}
+	}
+	return nil
+}

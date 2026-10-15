@@ -95,22 +95,30 @@ func ParseSchema(raw []byte) (Schema, error) {
 		if err := dec.Decode(&rawVar); err != nil {
 			return bad(field, "must be an object")
 		}
-		var v Var
+		// Decoded with pointers: encoding/json matches keys case-insensitively
+		// and unescaped, so presence must come from the decoder, not the text.
+		var in struct {
+			Type      string `json:"type"`
+			Required  *bool  `json:"required"`
+			MaxLength *int   `json:"max_length"`
+		}
 		vd := json.NewDecoder(bytes.NewReader(rawVar))
 		vd.DisallowUnknownFields()
-		if string(bytes.TrimSpace(rawVar)) == "null" || vd.Decode(&v) != nil {
+		if string(bytes.TrimSpace(rawVar)) == "null" || vd.Decode(&in) != nil {
 			return bad(field, `must be an object with "type", optional "required" and "max_length"`)
 		}
+		v := Var{Type: in.Type, Required: in.Required != nil && *in.Required}
 		switch v.Type {
 		case TypeString:
-			if v.MaxLength == 0 && !bytes.Contains(rawVar, []byte(`"max_length"`)) {
-				v.MaxLength = DefaultMaxLength
+			v.MaxLength = DefaultMaxLength
+			if in.MaxLength != nil {
+				v.MaxLength = *in.MaxLength
 			}
 			if v.MaxLength < 1 || v.MaxLength > MaxMaxLength {
 				return bad(field, "max_length must be between 1 and %d", MaxMaxLength)
 			}
 		case TypeNumber, TypeBoolean:
-			if bytes.Contains(rawVar, []byte(`"max_length"`)) {
+			if in.MaxLength != nil {
 				return bad(field, "max_length applies to strings only")
 			}
 		default:

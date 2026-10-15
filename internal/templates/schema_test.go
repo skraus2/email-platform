@@ -53,12 +53,31 @@ func TestParseSchemaRejects(t *testing.T) {
 		{`{"name":{"type":"number","max_length":10}}`, "variables.name"},
 		{`{"name":{"type":"string","required":"yes"}}`, "variables.name"},
 		{`{"name":{"type":"string"}} {}`, "variables"},
+		{`{"n":{"type":"number","MAX_LENGTH":10}}`, "variables.n"},
+		{`{"n":{"type":"boolean","max_\u006cength":10}}`, "variables.n"},
+		{`{"name":{"type":"string","Max_Length":0}}`, "variables.name"},
 		{`{` + strings.Join(many, ",") + `}`, "variables"},
 	} {
 		_, err := ParseSchema([]byte(tc.raw))
 		var te *Error
 		if !errors.As(err, &te) || te.Code != CodeValidation || te.Field != tc.field {
 			t.Errorf("%s: err %v, want validation error on %s", tc.raw, err, tc.field)
+		}
+	}
+}
+
+func TestParseSchemaRoundTrips(t *testing.T) {
+	for _, raw := range []string{
+		`{"a":{"type":"string","Required":true,"Max_Length":5},"b":{"TYPE":"number"}}`,
+		`{"a":{"type":"boolean"}}`,
+	} {
+		s, err := ParseSchema([]byte(raw))
+		if err != nil {
+			t.Fatalf("%s: %v", raw, err)
+		}
+		again, err := ParseSchema(s.Canonical())
+		if err != nil || string(again.Canonical()) != string(s.Canonical()) {
+			t.Fatalf("%s: canonical %s does not round-trip: %v", raw, s.Canonical(), err)
 		}
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"regexp"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/google/uuid"
@@ -24,6 +25,7 @@ var (
 	ErrSlugTaken     = errors.New("template slug already used in this project")
 	ErrTemplateLimit = errors.New("template limit reached")
 	ErrVersionLimit  = errors.New("version limit reached")
+	ErrStorageLimit  = errors.New("template storage limit reached")
 )
 
 var slugPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
@@ -70,11 +72,14 @@ type Store struct {
 	pool         *pgxpool.Pool
 	maxTemplates int
 	maxVersions  int
+	maxBytes     int64
 }
 
-// NewStore caps templates per project and versions per template.
-func NewStore(pool *pgxpool.Pool, maxTemplates, maxVersions int) *Store {
-	return &Store{pool: pool, maxTemplates: max(maxTemplates, 1), maxVersions: max(maxVersions, 1)}
+// NewStore caps templates per project, versions per template and the bytes
+// of template source a project stores over all versions (versions cannot be
+// deleted, so this bounds what one project can put into the database).
+func NewStore(pool *pgxpool.Pool, maxTemplates, maxVersions int, maxBytes int64) *Store {
+	return &Store{pool: pool, maxTemplates: max(maxTemplates, 1), maxVersions: max(maxVersions, 1), maxBytes: max(maxBytes, 1)}
 }
 
 func templateFromRow(r store.Template) Template {
@@ -97,8 +102,8 @@ func (s *Store) Create(ctx context.Context, projectID uuid.UUID, slug, name stri
 	if !slugPattern.MatchString(slug) {
 		return Template{}, fail(CodeValidation, "slug", "must match ^[a-z0-9][a-z0-9-]{0,62}$")
 	}
-	if utf8.RuneCountInString(name) > MaxNameLength || !utf8.ValidString(name) {
-		return Template{}, fail(CodeValidation, "name", "must be at most %d characters", MaxNameLength)
+	if err := validateName(name); err != nil {
+		return Template{}, err
 	}
 	var t Template
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
@@ -140,9 +145,27 @@ func (s *Store) Publish(ctx context.Context, projectID, templateID uuid.UUID, sr
 	if _, err := Compile(src, schema); err != nil {
 		return Version{}, err
 	}
+	size := int64(len(src.Subject) + len(src.Text) + len(src.HTML))
 	var v Version
 	err = pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		q := store.New(tx)
+		// The project lock (taken before the template row lock, as in
+		// Create) makes the storage check hold under concurrent publishes.
+		if _, err := q.LockProjectForTemplates(ctx, projectID); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return ErrNotFound
+			}
+			return fmt.Errorf("lock project: %w", err)
+		}
+		used, err := q.TemplateStorageBytes(ctx, projectID)
+		if err != nil {
+			return fmt.Errorf("template storage: %w", err)
+		}
+		if used+size > s.maxBytes {
+			// Without revealing whether the template exists elsewhere: the
+			// budget is the caller's own project's.
+			return ErrStorageLimit
+		}
 		next, err := q.NextTemplateVersion(ctx, store.NextTemplateVersionParams{
 			ID: templateID, ProjectID: projectID, MaxVersions: int32(s.maxVersions), //nolint:gosec // capped by config
 		})
@@ -221,4 +244,21 @@ func Resolve(ctx context.Context, q *store.Queries, projectID, id uuid.UUID, ver
 		return Version{}, fmt.Errorf("get template version: %w", err)
 	}
 	return versionFromRow(row), nil
+}
+
+// validateName accepts printable display names: no control or bidi
+// formatting characters, valid UTF-8, at most MaxNameLength characters.
+func validateName(name string) error {
+	if !utf8.ValidString(name) {
+		return fail(CodeValidation, "name", "must be valid UTF-8")
+	}
+	if utf8.RuneCountInString(name) > MaxNameLength {
+		return fail(CodeValidation, "name", "must be at most %d characters", MaxNameLength)
+	}
+	for _, r := range name {
+		if unicode.IsControl(r) || unicode.Is(unicode.Bidi_Control, r) {
+			return fail(CodeValidation, "name", "must not contain control or text-direction characters")
+		}
+	}
+	return nil
 }

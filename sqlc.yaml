@@ -21,6 +21,7 @@ sql:
       - db/migrations/00015_email_provider_handoff_index.sql
       - db/migrations/00016_email_list_indexes.sql
       - db/migrations/00017_templates.sql
+      - db/migrations/00018_template_storage_index.sql
     queries: db/queries
     gen:
       go:

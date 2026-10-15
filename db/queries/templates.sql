@@ -13,6 +13,11 @@ RETURNING *;
 -- name: GetTemplate :one
 SELECT * FROM templates WHERE id = $1 AND project_id = $2;
 
+-- name: TemplateStorageBytes :one
+-- Bytes of template source a project stores (all versions).
+SELECT coalesce(sum(octet_length(subject) + octet_length(text_body) + coalesce(octet_length(html_body), 0)), 0)::bigint
+FROM template_versions WHERE project_id = $1;
+
 -- name: NextTemplateVersion :one
 -- Takes the template row lock, so concurrent publishers number their
 -- versions without gaps; refuses beyond the version cap.

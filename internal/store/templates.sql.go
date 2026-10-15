@@ -206,3 +206,16 @@ func (q *Queries) NextTemplateVersion(ctx context.Context, arg NextTemplateVersi
 	err := row.Scan(&latest_version)
 	return latest_version, err
 }
+
+const templateStorageBytes = `-- name: TemplateStorageBytes :one
+SELECT coalesce(sum(octet_length(subject) + octet_length(text_body) + coalesce(octet_length(html_body), 0)), 0)::bigint
+FROM template_versions WHERE project_id = $1
+`
+
+// Bytes of template source a project stores (all versions).
+func (q *Queries) TemplateStorageBytes(ctx context.Context, projectID uuid.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, templateStorageBytes, projectID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}

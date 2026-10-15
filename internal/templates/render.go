@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 )
@@ -131,6 +132,9 @@ func (c *Compiled) variables(raw []byte) (map[string]any, error) {
 				n, ok := val.(json.Number)
 				if !ok || len(n) > maxNumberLiteralSize {
 					return bad(field, "must be a number")
+				}
+				if _, err := strconv.ParseFloat(string(n), 64); err != nil {
+					return bad(field, "must be a finite number")
 				}
 			case TypeBoolean:
 				if _, ok := val.(bool); !ok {

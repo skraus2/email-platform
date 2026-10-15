@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 
@@ -43,7 +44,7 @@ func TestCreateTemplate(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	pool, a, b := setup(t)
-	s := templates.NewStore(pool, 200, 500)
+	s := templates.NewStore(pool, 200, 500, 1<<20)
 
 	tmpl, err := s.Create(ctx, a, "welcome", "Welcome mail")
 	if err != nil {
@@ -58,11 +59,20 @@ func TestCreateTemplate(t *testing.T) {
 	if _, err := s.Create(ctx, b, "welcome", ""); err != nil {
 		t.Fatalf("same slug in another project: %v", err)
 	}
-	for _, bad := range []string{"", "Welcome", "-x", "a_b", string(make([]byte, 64))} {
+	for _, bad := range []string{"", "Welcome", "-x", "a_b", strings.Repeat("a", 64)} {
 		var te *templates.Error
 		if _, err := s.Create(ctx, a, bad, ""); !errors.As(err, &te) || te.Field != "slug" {
 			t.Errorf("slug %q: %v", bad, err)
 		}
+	}
+	for _, bad := range []string{strings.Repeat("n", 201), "a\x00b", "line\nbreak", "rtl\u202eexe.txt", "\xff"} {
+		var te *templates.Error
+		if _, err := s.Create(ctx, a, "n"+uuid.NewString()[:8], bad); !errors.As(err, &te) || te.Field != "name" {
+			t.Errorf("name %q: %v", bad, err)
+		}
+	}
+	if _, err := s.Create(ctx, a, "long-name", strings.Repeat("ü", 200)); err != nil {
+		t.Errorf("200-character name: %v", err)
 	}
 	if _, err := s.Create(ctx, uuid.New(), "x", ""); !errors.Is(err, templates.ErrNotFound) {
 		t.Fatalf("unknown project: %v", err)
@@ -77,7 +87,7 @@ func TestTemplateCapIsRaceSafe(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	pool, a, _ := setup(t)
-	s := templates.NewStore(pool, 3, 500)
+	s := templates.NewStore(pool, 3, 500, 1<<20)
 	for i := range 2 {
 		if _, err := s.Create(ctx, a, fmt.Sprintf("t%d", i), ""); err != nil {
 			t.Fatal(err)
@@ -107,7 +117,7 @@ func TestPublishConcurrentVersionsAreGapless(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	pool, a, _ := setup(t)
-	s := templates.NewStore(pool, 200, 500)
+	s := templates.NewStore(pool, 200, 500, 1<<20)
 	tmpl, err := s.Create(ctx, a, "welcome", "")
 	if err != nil {
 		t.Fatal(err)
@@ -139,7 +149,7 @@ func TestPublishLimitsAndErrors(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	pool, a, b := setup(t)
-	s := templates.NewStore(pool, 200, 2)
+	s := templates.NewStore(pool, 200, 2, 1<<20)
 	tmpl, err := s.Create(ctx, a, "welcome", "")
 	if err != nil {
 		t.Fatal(err)
@@ -177,7 +187,7 @@ func TestVersionsAreImmutableAndRetrievableUnchanged(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	pool, a, b := setup(t)
-	s := templates.NewStore(pool, 200, 500)
+	s := templates.NewStore(pool, 200, 500, 1<<20)
 	tmpl, err := s.Create(ctx, a, "welcome", "")
 	if err != nil {
 		t.Fatal(err)
@@ -253,7 +263,7 @@ func TestEmailTemplateReferenceStaysInProject(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	pool, a, b := setup(t)
-	s := templates.NewStore(pool, 200, 500)
+	s := templates.NewStore(pool, 200, 500, 1<<20)
 	tmpl, err := s.Create(ctx, a, "welcome", "")
 	if err != nil {
 		t.Fatal(err)
@@ -279,5 +289,43 @@ func TestEmailTemplateReferenceStaysInProject(t *testing.T) {
 		if !errors.As(err, &pgErr) || (pgErr.Code != "23503" && pgErr.Code != "23514") {
 			t.Errorf("%s: %v, want FK or CHECK violation", name, err)
 		}
+	}
+}
+
+func TestPublishStorageBudgetPerProject(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	pool, a, b := setup(t)
+	size := int64(len(src.Subject) + len(src.Text) + len(src.HTML))
+	s := templates.NewStore(pool, 200, 500, 2*size)
+	ta, err := s.Create(ctx, a, "a", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tb, err := s.Create(ctx, b, "b", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	errs := make([]error, 5)
+	for i := range 5 {
+		wg.Go(func() { _, errs[i] = s.Publish(ctx, a, ta.ID, src, []byte(schema)) })
+	}
+	wg.Wait()
+	ok := 0
+	for _, err := range errs {
+		switch {
+		case err == nil:
+			ok++
+		case !errors.Is(err, templates.ErrStorageLimit):
+			t.Fatalf("unexpected: %v", err)
+		}
+	}
+	if ok != 2 {
+		t.Fatalf("%d concurrent publishes fit a budget of two versions", ok)
+	}
+	// Another project has its own budget.
+	if _, err := s.Publish(ctx, b, tb.ID, src, []byte(schema)); err != nil {
+		t.Fatalf("other project: %v", err)
 	}
 }
