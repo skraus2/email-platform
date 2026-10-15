@@ -3,6 +3,7 @@ package emails
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -389,10 +390,10 @@ func uuidV7Floor(t time.Time) uuid.UUID {
 	if ms < 0 {
 		return uuid.Nil
 	}
+	var b [8]byte
+	binary.BigEndian.PutUint64(b[:], uint64(ms)) //nolint:gosec // ms >= 0 checked above
 	var u uuid.UUID
-	for i := range 6 {
-		u[i] = byte(ms >> (40 - 8*i))
-	}
+	copy(u[:6], b[2:]) // 48-bit millisecond timestamp
 	u[6] = 0x70
 	u[8] = 0x80
 	return u
