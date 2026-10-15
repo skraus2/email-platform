@@ -43,7 +43,7 @@ func newAdminStack(t *testing.T) *adminStack {
 }
 
 // call sends a request to base with the given Authorization value.
-func call(t *testing.T, base, method, path, authorization, body string, hdr ...string) (*http.Response, map[string]any, string) {
+func call(t *testing.T, base, method, path, authorization, body string, hdr ...string) (reply, map[string]any, string) {
 	t.Helper()
 	req, err := http.NewRequestWithContext(context.Background(), method, base+path, strings.NewReader(body))
 	if err != nil {
@@ -66,7 +66,13 @@ func call(t *testing.T, base, method, path, authorization, body string, hdr ...s
 	raw, _ := io.ReadAll(resp.Body)
 	var m map[string]any
 	_ = json.Unmarshal(raw, &m)
-	return resp, m, string(raw)
+	return reply{StatusCode: resp.StatusCode, Header: resp.Header}, m, string(raw)
+}
+
+// reply is the status and headers of a response whose body was read.
+type reply struct {
+	StatusCode int
+	Header     http.Header
 }
 
 func (a *adminStack) login(t *testing.T) string {
