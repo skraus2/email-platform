@@ -19,7 +19,6 @@ package awslive_test
 import (
 	"context"
 	"log/slog"
-	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -29,6 +28,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/skraus2/email-platform/internal/auth"
+	"github.com/skraus2/email-platform/internal/awsconfig"
 	"github.com/skraus2/email-platform/internal/config"
 	"github.com/skraus2/email-platform/internal/delivery"
 	"github.com/skraus2/email-platform/internal/emails"
@@ -71,7 +71,7 @@ func TestLiveSESSendAndEvents(t *testing.T) {
 		t.Fatal("needs MAIL_PROVIDER=ses against AWS (no SES_ENDPOINT/SQS_ENDPOINT)")
 	}
 	checkTestResources(t, cfg.SES)
-	checkEnvironment(t)
+	checkEnvironment(t, cfg.SES.Region)
 	from := os.Getenv("SES_LIVE_FROM")
 	if from == "" {
 		t.Fatal("SES_LIVE_FROM must name a sender verified in SES")
@@ -195,22 +195,43 @@ func checkTestResources(t *testing.T, c config.SES) {
 	}
 }
 
-// checkEnvironment refuses long-lived access keys, extra trusted roots and
+// checkEnvironment refuses long-lived credentials, extra trusted roots and
 // proxies, and a database that is not local (the test creates and drops
 // throwaway databases on it).
-func checkEnvironment(t *testing.T) {
+func checkEnvironment(t *testing.T, region string) {
 	t.Helper()
-	if os.Getenv("AWS_ACCESS_KEY_ID") != "" && os.Getenv("AWS_SESSION_TOKEN") == "" {
-		t.Fatal("long-lived access keys refused: use short-lived role credentials (AWS_PROFILE with SSO or an assumed role)")
-	}
-	for _, k := range []string{"AWS_CA_BUNDLE", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"} {
+	for _, k := range []string{
+		"AWS_CA_BUNDLE", "SSL_CERT_FILE", "SSL_CERT_DIR", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy",
+	} {
 		if os.Getenv(k) != "" {
 			t.Fatalf("%s is set: unset it for the live test", k)
 		}
 	}
-	u, err := url.Parse(os.Getenv(testdb.EnvVar))
-	if err != nil || (u.Hostname() != "localhost" && u.Hostname() != "127.0.0.1" && u.Hostname() != "::1") {
-		t.Fatalf("%s must point at the local PostgreSQL", testdb.EnvVar)
+	// The credentials the SDK would use, whatever their source: only
+	// short-lived role credentials (SSO, assumed role) are accepted.
+	cfg, err := awsconfig.Load(context.Background(), region, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	creds, err := cfg.Credentials.Retrieve(context.Background())
+	if err != nil {
+		t.Fatalf("no AWS credentials: %v", err)
+	}
+	if !creds.CanExpire {
+		t.Fatal("long-lived credentials refused: use short-lived role credentials (AWS_PROFILE with SSO or an assumed role)")
+	}
+	db, err := pgx.ParseConfig(os.Getenv(testdb.EnvVar))
+	if err != nil {
+		t.Fatalf("%s: %v", testdb.EnvVar, err)
+	}
+	hosts := []string{db.Host}
+	for _, f := range db.Fallbacks {
+		hosts = append(hosts, f.Host)
+	}
+	for _, h := range hosts {
+		if h != "localhost" && h != "127.0.0.1" && h != "::1" && !strings.HasPrefix(h, "/") {
+			t.Fatalf("%s must point at the local PostgreSQL (host %q)", testdb.EnvVar, h)
+		}
 	}
 }
 
