@@ -29,8 +29,10 @@ const (
 	keyLen  = 32
 	// Upper bounds for parameters read from a stored hash, so a corrupted
 	// row cannot make one login allocate gigabytes or spin for minutes.
-	maxMemory = 1024 * 1024
-	maxTime   = 10
+	maxMemory  = 256 * 1024
+	maxTime    = 10
+	maxThreads = 16
+	maxBytes   = 64 // salt and key
 )
 
 // Password length limits (characters).
@@ -85,16 +87,16 @@ func VerifyPassword(encoded, pw string, current Params) (ok, outdated bool, err 
 		fmt.Sprintf("m=%d,t=%d,p=%d", p.Memory, p.Time, threads) != parts[3] {
 		return false, false, errMalformedHash
 	}
-	if p.Memory < 8 || p.Memory > maxMemory || p.Time < 1 || p.Time > maxTime || threads < 1 || threads > 255 {
+	if p.Memory < 8 || p.Memory > maxMemory || p.Time < 1 || p.Time > maxTime || threads < 1 || threads > maxThreads {
 		return false, false, errMalformedHash
 	}
 	p.Threads = uint8(threads)
 	salt, err := b64.DecodeString(parts[4])
-	if err != nil || len(salt) < 8 {
+	if err != nil || len(salt) < 8 || len(salt) > maxBytes {
 		return false, false, errMalformedHash
 	}
 	want, err := b64.DecodeString(parts[5])
-	if err != nil || len(want) < 16 {
+	if err != nil || len(want) < 16 || len(want) > maxBytes {
 		return false, false, errMalformedHash
 	}
 	got := argon2.IDKey([]byte(pw), salt, p.Time, p.Memory, p.Threads, uint32(len(want))) //nolint:gosec // bounded by decoding

@@ -3,7 +3,7 @@ package admin
 import "time"
 
 // UseParams lowers the hashing cost for tests (the dummy hash follows).
-func (s *Service) UseParams(p Params) { s.params = p }
+func (s *Service) UseParams(p Params) { s.setParams(p) }
 
 // Hashes reports how many password hashes were computed.
 func (s *Service) Hashes() int64 { return s.hashes.Load() }
@@ -19,3 +19,7 @@ func (s *Service) HoldHashSlot() func() {
 	s.hashSlots <- struct{}{}
 	return func() { <-s.hashSlots }
 }
+
+// AfterVerify runs f after a successful password check, before the session
+// is created (for race tests).
+func (s *Service) AfterVerify(f func()) { s.afterVerify = f }

@@ -12,6 +12,27 @@ import (
 	"github.com/google/uuid"
 )
 
+const claimAdminLoginAttempt = `-- name: ClaimAdminLoginAttempt :one
+UPDATE admin_users
+SET failed_logins = failed_logins + 1,
+    locked_until = CASE WHEN failed_logins + 1 >= 5
+        THEN now() + least(interval '1 minute' * power(2, least(failed_logins + 1 - 5, 10)), interval '15 minutes')
+        ELSE locked_until END
+WHERE id = $1 AND (locked_until IS NULL OR locked_until <= now())
+RETURNING failed_logins
+`
+
+// Counts an attempt as a failure before the password is checked (a success
+// resets the count), atomically with the lock check: concurrent attempts
+// cannot all pass a lock check that one of them is about to trigger. No row:
+// the account is locked.
+func (q *Queries) ClaimAdminLoginAttempt(ctx context.Context, id uuid.UUID) (int32, error) {
+	row := q.db.QueryRow(ctx, claimAdminLoginAttempt, id)
+	var failed_logins int32
+	err := row.Scan(&failed_logins)
+	return failed_logins, err
+}
+
 const createAdminUser = `-- name: CreateAdminUser :one
 INSERT INTO admin_users (username, password_hash) VALUES ($1, $2)
 RETURNING id, username, password_hash, disabled_at, failed_logins, locked_until, created_at, password_changed_at
@@ -38,16 +59,16 @@ func (q *Queries) CreateAdminUser(ctx context.Context, arg CreateAdminUserParams
 	return i, err
 }
 
-const deleteAdminSession = `-- name: DeleteAdminSession :execrows
+const deleteAdminSession = `-- name: DeleteAdminSession :one
 DELETE FROM admin_sessions WHERE token_hash = $1
+RETURNING admin_user_id
 `
 
-func (q *Queries) DeleteAdminSession(ctx context.Context, tokenHash []byte) (int64, error) {
-	result, err := q.db.Exec(ctx, deleteAdminSession, tokenHash)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
+func (q *Queries) DeleteAdminSession(ctx context.Context, tokenHash []byte) (uuid.UUID, error) {
+	row := q.db.QueryRow(ctx, deleteAdminSession, tokenHash)
+	var admin_user_id uuid.UUID
+	err := row.Scan(&admin_user_id)
+	return admin_user_id, err
 }
 
 const deleteAdminSessionsOfUser = `-- name: DeleteAdminSessionsOfUser :execrows
@@ -98,50 +119,51 @@ func (q *Queries) GetAdminSession(ctx context.Context, arg GetAdminSessionParams
 }
 
 const getAdminUserByUsername = `-- name: GetAdminUserByUsername :one
-SELECT admin_users.id, admin_users.username, admin_users.password_hash, admin_users.disabled_at, admin_users.failed_logins, admin_users.locked_until, admin_users.created_at, admin_users.password_changed_at,
-       coalesce(locked_until > now(), false)::boolean AS locked,
-       coalesce(ceil(extract(epoch FROM locked_until - now())), 0)::integer AS lock_seconds
-FROM admin_users WHERE username = $1
+SELECT id, username, password_hash, disabled_at, failed_logins, locked_until, created_at, password_changed_at FROM admin_users WHERE username = $1
 `
 
-type GetAdminUserByUsernameRow struct {
-	AdminUser   AdminUser
-	Locked      bool
-	LockSeconds int32
-}
-
-// locked and the seconds left come from the database clock, like the lock.
-func (q *Queries) GetAdminUserByUsername(ctx context.Context, username string) (GetAdminUserByUsernameRow, error) {
+func (q *Queries) GetAdminUserByUsername(ctx context.Context, username string) (AdminUser, error) {
 	row := q.db.QueryRow(ctx, getAdminUserByUsername, username)
-	var i GetAdminUserByUsernameRow
+	var i AdminUser
 	err := row.Scan(
-		&i.AdminUser.ID,
-		&i.AdminUser.Username,
-		&i.AdminUser.PasswordHash,
-		&i.AdminUser.DisabledAt,
-		&i.AdminUser.FailedLogins,
-		&i.AdminUser.LockedUntil,
-		&i.AdminUser.CreatedAt,
-		&i.AdminUser.PasswordChangedAt,
-		&i.Locked,
-		&i.LockSeconds,
+		&i.ID,
+		&i.Username,
+		&i.PasswordHash,
+		&i.DisabledAt,
+		&i.FailedLogins,
+		&i.LockedUntil,
+		&i.CreatedAt,
+		&i.PasswordChangedAt,
 	)
 	return i, err
 }
 
 const insertAdminSession = `-- name: InsertAdminSession :one
-INSERT INTO admin_sessions (admin_user_id, token_hash, expires_at) VALUES ($1, $2, $3)
+INSERT INTO admin_sessions (admin_user_id, token_hash, expires_at)
+SELECT u.id, $1, now() + make_interval(secs => $2::float8)
+FROM admin_users u
+WHERE u.id = $3 AND u.disabled_at IS NULL
+  AND u.password_changed_at = $4
 RETURNING id, admin_user_id, token_hash, created_at, last_seen_at, expires_at
 `
 
 type InsertAdminSessionParams struct {
-	AdminUserID uuid.UUID
-	TokenHash   []byte
-	ExpiresAt   time.Time
+	TokenHash         []byte
+	MaxAgeSeconds     float64
+	AdminUserID       uuid.UUID
+	PasswordChangedAt time.Time
 }
 
+// Only while the account is still enabled and its password unchanged since
+// it was verified: a session must not outlive a concurrent password change
+// or disable. Expiry by the database clock.
 func (q *Queries) InsertAdminSession(ctx context.Context, arg InsertAdminSessionParams) (AdminSession, error) {
-	row := q.db.QueryRow(ctx, insertAdminSession, arg.AdminUserID, arg.TokenHash, arg.ExpiresAt)
+	row := q.db.QueryRow(ctx, insertAdminSession,
+		arg.TokenHash,
+		arg.MaxAgeSeconds,
+		arg.AdminUserID,
+		arg.PasswordChangedAt,
+	)
 	var i AdminSession
 	err := row.Scan(
 		&i.ID,
@@ -155,27 +177,34 @@ func (q *Queries) InsertAdminSession(ctx context.Context, arg InsertAdminSession
 }
 
 const listAdminUsers = `-- name: ListAdminUsers :many
-SELECT id, username, password_hash, disabled_at, failed_logins, locked_until, created_at, password_changed_at FROM admin_users ORDER BY username
+SELECT admin_users.id, admin_users.username, admin_users.password_hash, admin_users.disabled_at, admin_users.failed_logins, admin_users.locked_until, admin_users.created_at, admin_users.password_changed_at, coalesce(locked_until > now(), false)::boolean AS locked
+FROM admin_users ORDER BY username
 `
 
-func (q *Queries) ListAdminUsers(ctx context.Context) ([]AdminUser, error) {
+type ListAdminUsersRow struct {
+	AdminUser AdminUser
+	Locked    bool
+}
+
+func (q *Queries) ListAdminUsers(ctx context.Context) ([]ListAdminUsersRow, error) {
 	rows, err := q.db.Query(ctx, listAdminUsers)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []AdminUser{}
+	items := []ListAdminUsersRow{}
 	for rows.Next() {
-		var i AdminUser
+		var i ListAdminUsersRow
 		if err := rows.Scan(
-			&i.ID,
-			&i.Username,
-			&i.PasswordHash,
-			&i.DisabledAt,
-			&i.FailedLogins,
-			&i.LockedUntil,
-			&i.CreatedAt,
-			&i.PasswordChangedAt,
+			&i.AdminUser.ID,
+			&i.AdminUser.Username,
+			&i.AdminUser.PasswordHash,
+			&i.AdminUser.DisabledAt,
+			&i.AdminUser.FailedLogins,
+			&i.AdminUser.LockedUntil,
+			&i.AdminUser.CreatedAt,
+			&i.AdminUser.PasswordChangedAt,
+			&i.Locked,
 		); err != nil {
 			return nil, err
 		}

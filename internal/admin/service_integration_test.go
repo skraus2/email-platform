@@ -8,6 +8,7 @@ import (
 	"errors"
 	"log/slog"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -63,8 +64,8 @@ func TestCreateUserAndLogin(t *testing.T) {
 		t.Fatalf("session %+v", sess)
 	}
 	var tokens int
-	if err := pool.QueryRow(ctx, "SELECT count(*) FROM admin_sessions WHERE token_hash = convert_to($1, 'UTF8')", sess.Token).Scan(&tokens); err != nil || tokens != 0 {
-		t.Fatalf("token stored in clear (%d, %v)", tokens, err)
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM admin_sessions WHERE token_hash = sha256(convert_to($1, 'UTF8')) AND admin_user_id = $2", sess.Token, u.ID).Scan(&tokens); err != nil || tokens != 1 {
+		t.Fatalf("session not stored as the SHA-256 of its token (%d, %v)", tokens, err)
 	}
 	p, err := s.Authenticate(ctx, sess.Token)
 	if err != nil || p.UserID != u.ID || p.Username != "alice" {
@@ -72,6 +73,9 @@ func TestCreateUserAndLogin(t *testing.T) {
 	}
 	if err := s.Logout(ctx, sess.Token); err != nil {
 		t.Fatal(err)
+	}
+	if !strings.Contains(logs.String(), `"msg":"admin logout","admin_user_id":"`+u.ID.String()) {
+		t.Fatalf("logout not logged with the account id: %s", logs.String())
 	}
 	if _, err := s.Authenticate(ctx, sess.Token); !errors.Is(err, admin.ErrUnauthenticated) {
 		t.Fatalf("after logout: %v", err)
@@ -119,7 +123,7 @@ func TestLoginFailuresLookAlike(t *testing.T) {
 func TestLockoutAndUnlock(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	s, _ := newService(t, nil)
+	s, pool := newService(t, nil)
 	if _, err := s.CreateUser(ctx, "alice", pw); err != nil {
 		t.Fatal(err)
 	}
@@ -162,6 +166,36 @@ func TestLockoutAndUnlock(t *testing.T) {
 	}
 	if _, err := s.Login(ctx, "alice", "another long password"); err != nil {
 		t.Fatalf("after set-password: %v", err)
+	}
+	for range 5 {
+		_, _ = s.Login(ctx, "alice", "wrong password!!")
+	}
+	if err := s.SetDisabled(ctx, "alice", false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Login(ctx, "alice", "another long password"); err != nil {
+		t.Fatalf("after enable: %v", err)
+	}
+	// A successful login resets the count: 4 + success + 4 failures stay
+	// unlocked.
+	for range 4 {
+		_, _ = s.Login(ctx, "alice", "wrong password!!")
+	}
+	if _, err := s.Login(ctx, "alice", "another long password"); err != nil {
+		t.Fatal(err)
+	}
+	for range 4 {
+		_, _ = s.Login(ctx, "alice", "wrong password!!")
+	}
+	if _, err := s.Login(ctx, "alice", "another long password"); err != nil {
+		t.Fatalf("counter not reset by the earlier success: %v", err)
+	}
+	// The database lock formula is capped at 15 minutes.
+	if _, err := pool.Exec(ctx, "UPDATE admin_users SET failed_logins = 30, locked_until = now() + interval '1 minute' WHERE username = 'alice'"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Login(ctx, "alice", pw); !errors.As(err, &locked) || locked.RetryAfter > 15*time.Minute || locked.RetryAfter < 14*time.Minute {
+		t.Fatalf("cap: %v %v", err, locked)
 	}
 	for _, name := range []string{"nobody"} {
 		if err := s.Unlock(ctx, name); !errors.Is(err, admin.ErrUserNotFound) {
@@ -217,13 +251,13 @@ func TestSessionExpiry(t *testing.T) {
 	}
 	idle, _ := s.Login(ctx, "alice", pw)
 	absolute, _ := s.Login(ctx, "alice", pw)
-	if _, err := pool.Exec(ctx, "UPDATE admin_sessions SET last_seen_at = now() - interval '31 minutes' WHERE expires_at = $1", idle.ExpiresAt); err != nil {
+	if _, err := pool.Exec(ctx, "UPDATE admin_sessions SET last_seen_at = now() - interval '31 minutes' WHERE token_hash = sha256(convert_to($1, 'UTF8'))", idle.Token); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.Authenticate(ctx, idle.Token); !errors.Is(err, admin.ErrUnauthenticated) {
 		t.Fatalf("idle session: %v", err)
 	}
-	if _, err := pool.Exec(ctx, "UPDATE admin_sessions SET created_at = now() - interval '13 hours', expires_at = now() - interval '1 second' WHERE expires_at = $1", absolute.ExpiresAt); err != nil {
+	if _, err := pool.Exec(ctx, "UPDATE admin_sessions SET created_at = now() - interval '13 hours', expires_at = now() - interval '1 second' WHERE token_hash = sha256(convert_to($1, 'UTF8'))", absolute.Token); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.Authenticate(ctx, absolute.Token); !errors.Is(err, admin.ErrUnauthenticated) {
@@ -231,14 +265,14 @@ func TestSessionExpiry(t *testing.T) {
 	}
 	// Use slides the idle timeout (at most once a minute).
 	live, _ := s.Login(ctx, "alice", pw)
-	if _, err := pool.Exec(ctx, "UPDATE admin_sessions SET last_seen_at = now() - interval '29 minutes' WHERE expires_at = $1", live.ExpiresAt); err != nil {
+	if _, err := pool.Exec(ctx, "UPDATE admin_sessions SET last_seen_at = now() - interval '29 minutes' WHERE token_hash = sha256(convert_to($1, 'UTF8'))", live.Token); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.Authenticate(ctx, live.Token); err != nil {
 		t.Fatal(err)
 	}
 	var age time.Duration
-	if err := pool.QueryRow(ctx, "SELECT now() - last_seen_at FROM admin_sessions WHERE expires_at = $1", live.ExpiresAt).Scan(&age); err != nil || age > time.Minute {
+	if err := pool.QueryRow(ctx, "SELECT now() - last_seen_at FROM admin_sessions WHERE token_hash = sha256(convert_to($1, 'UTF8'))", live.Token).Scan(&age); err != nil || age > time.Minute {
 		t.Fatalf("idle timeout not refreshed: %v %v", age, err)
 	}
 }
@@ -278,5 +312,67 @@ func TestLoginHashingIsBounded(t *testing.T) {
 	release()
 	if _, err := s.Login(ctx, "alice", pw); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestParallelGuessesHashAtMostFiveTimes(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s, _ := newService(t, nil)
+	if _, err := s.CreateUser(ctx, "alice", pw); err != nil {
+		t.Fatal(err)
+	}
+	before := s.Hashes()
+	var wg sync.WaitGroup
+	for range 20 {
+		wg.Go(func() { _, _ = s.Login(ctx, "alice", "wrong password!!") })
+	}
+	wg.Wait()
+	if n := s.Hashes() - before; n > 5 {
+		t.Fatalf("%d parallel guesses were verified, want at most 5", n)
+	}
+	var locked *admin.LockedError
+	if _, err := s.Login(ctx, "alice", pw); !errors.As(err, &locked) {
+		t.Fatalf("not locked after the burst: %v", err)
+	}
+	// Unknown names: the same bound.
+	before = s.Hashes()
+	for range 20 {
+		wg.Go(func() { _, _ = s.Login(ctx, "ghost", pw) })
+	}
+	wg.Wait()
+	if n := s.Hashes() - before; n > 5 {
+		t.Fatalf("%d parallel guesses for an unknown name were hashed, want at most 5", n)
+	}
+}
+
+func TestPasswordChangeDuringLoginWins(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s, pool := newService(t, nil)
+	if _, err := s.CreateUser(ctx, "alice", pw); err != nil {
+		t.Fatal(err)
+	}
+	// The password changes (and sessions are ended) after the old password
+	// was verified but before the session is created.
+	s.AfterVerify(func() {
+		if err := s.SetPassword(ctx, "alice", "another long password"); err != nil {
+			t.Error(err)
+		}
+	})
+	if _, err := s.Login(ctx, "alice", pw); !errors.Is(err, admin.ErrInvalidCredentials) {
+		t.Fatalf("login racing a password change: %v", err)
+	}
+	s.AfterVerify(func() {
+		if err := s.SetDisabled(ctx, "alice", true); err != nil {
+			t.Error(err)
+		}
+	})
+	if _, err := s.Login(ctx, "alice", "another long password"); !errors.Is(err, admin.ErrInvalidCredentials) {
+		t.Fatalf("login racing a disable: %v", err)
+	}
+	var n int
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM admin_sessions").Scan(&n); err != nil || n != 0 {
+		t.Fatalf("%d sessions survived (%v)", n, err)
 	}
 }

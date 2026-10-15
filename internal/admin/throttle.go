@@ -43,20 +43,10 @@ func newThrottle(maxNames int) *throttle {
 	return &throttle{max: maxNames, order: list.New(), items: map[string]*list.Element{}}
 }
 
-// locked returns how long name stays locked at now (0 = not locked).
-func (t *throttle) locked(name string, now time.Time) time.Duration {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if e, ok := t.items[name]; ok {
-		if d := e.Value.(*throttled).lockedUntil.Sub(now); d > 0 {
-			return d
-		}
-	}
-	return 0
-}
-
-// fail records one failure for name at now.
-func (t *throttle) fail(name string, now time.Time) {
+// claim records an attempt for name at now as a failure, atomically with
+// the lock check. It returns how long name stays locked if it already was
+// (the attempt then extends the lock), else 0.
+func (t *throttle) claim(name string, now time.Time) time.Duration {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	e, ok := t.items[name]
@@ -71,8 +61,13 @@ func (t *throttle) fail(name string, now time.Time) {
 	}
 	t.order.MoveToFront(e)
 	v := e.Value.(*throttled)
+	wasLocked := v.lockedUntil.After(now)
 	v.failures++
 	if d := lockDuration(v.failures); d > 0 {
 		v.lockedUntil = now.Add(d)
 	}
+	if wasLocked {
+		return v.lockedUntil.Sub(now)
+	}
+	return 0
 }

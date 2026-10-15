@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -70,18 +69,32 @@ type Service struct {
 	hashWait  time.Duration
 	hashes    atomic.Int64
 	unknown   *throttle
-	dummyOnce sync.Once
 	dummy     string
+	// afterVerify runs between password check and session creation (tests).
+	afterVerify func()
 }
 
 // NewService builds a Service whose sessions end after idle without use or
 // maxAge after login.
 func NewService(pool *pgxpool.Pool, logger *slog.Logger, idle, maxAge time.Duration) *Service {
-	return &Service{
-		pool: pool, logger: logger, idle: idle, maxAge: maxAge, params: DefaultParams,
+	s := &Service{
+		pool: pool, logger: logger, idle: idle, maxAge: maxAge,
 		hashSlots: make(chan struct{}, defaultHashSlots), hashWait: defaultHashWait,
 		unknown: newThrottle(unknownNames),
 	}
+	s.setParams(DefaultParams)
+	return s
+}
+
+// setParams sets the hashing cost and builds the dummy hash with it, up
+// front, so the first unknown-name login costs the same as later ones.
+func (s *Service) setParams(p Params) {
+	s.params = p
+	h, err := HashPassword("not a real password: "+uuid.NewString(), p)
+	if err != nil {
+		panic(fmt.Sprintf("dummy hash: %v", err)) // crypto/rand failure
+	}
+	s.dummy = h
 }
 
 // User is an admin account as listed.
@@ -118,19 +131,6 @@ func (s *Service) verify(encoded, pw string) (bool, bool, error) {
 	return VerifyPassword(encoded, pw, s.params)
 }
 
-// dummyHash is verified for unknown and disabled users, so their logins
-// cost the same as real ones.
-func (s *Service) dummyHash() string {
-	s.dummyOnce.Do(func() {
-		h, err := HashPassword("not a real password: "+uuid.NewString(), s.params)
-		if err != nil {
-			panic(fmt.Sprintf("dummy hash: %v", err)) // crypto/rand failure
-		}
-		s.dummy = h
-	})
-	return s.dummy
-}
-
 // CreateUser adds an enabled account.
 func (s *Service) CreateUser(ctx context.Context, username, password string) (User, error) {
 	if err := ValidateUsername(username); err != nil {
@@ -151,13 +151,13 @@ func (s *Service) CreateUser(ctx context.Context, username, password string) (Us
 	if err != nil {
 		return User{}, fmt.Errorf("create admin user: %w", err)
 	}
-	return userFromRow(row, time.Now()), nil
+	return userFromRow(row, false), nil
 }
 
-func userFromRow(r store.AdminUser, now time.Time) User {
+func userFromRow(r store.AdminUser, locked bool) User {
 	return User{
 		ID: r.ID, Username: r.Username, Disabled: r.DisabledAt != nil,
-		Locked: r.LockedUntil != nil && r.LockedUntil.After(now), CreatedAt: r.CreatedAt, PasswordSetAt: r.PasswordChangedAt,
+		Locked: locked, CreatedAt: r.CreatedAt, PasswordSetAt: r.PasswordChangedAt,
 	}
 }
 
@@ -167,10 +167,9 @@ func (s *Service) ListUsers(ctx context.Context) ([]User, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list admin users: %w", err)
 	}
-	now := time.Now()
 	out := make([]User, 0, len(rows))
 	for _, r := range rows {
-		out = append(out, userFromRow(r, now))
+		out = append(out, userFromRow(r.AdminUser, r.Locked))
 	}
 	return out, nil
 }
@@ -239,76 +238,83 @@ func (s *Service) Unlock(ctx context.Context, username string) error {
 // Logs carry the account id only, never names of failed attempts,
 // passwords or tokens.
 func (s *Service) Login(ctx context.Context, username, password string) (Session, error) {
-	now := time.Now()
 	q := store.New(s.pool)
+	// Names that cannot exist get the same answer and cost, without lookup
+	// or throttle entry (so they cannot fill the throttle).
+	valid := ValidateUsername(username) == nil && len(password) <= 4*MaxPasswordLength
 	var user *store.AdminUser
-	locked := false
-	if ValidateUsername(username) == nil && len(password) <= 4*MaxPasswordLength {
+	if valid {
 		row, err := q.GetAdminUserByUsername(ctx, username)
 		switch {
 		case err == nil:
-			user, locked = &row.AdminUser, row.Locked
+			user = &row
 		case !errors.Is(err, pgx.ErrNoRows):
 			return Session{}, fmt.Errorf("get admin user: %w", err)
 		}
-	}
-
-	// Locked names fail before any hashing, and each attempt extends the
-	// lock.
-	if user == nil {
-		if d := s.unknown.locked(username, now); d > 0 {
-			s.unknown.fail(username, now)
-			return Session{}, &LockedError{RetryAfter: s.unknown.locked(username, now)}
-		}
-	} else if locked {
-		f, err := q.RecordAdminLoginFailure(ctx, user.ID)
-		if err != nil {
-			return Session{}, fmt.Errorf("record login failure: %w", err)
-		}
-		s.logger.WarnContext(ctx, "admin login refused: locked", slog.String("admin_user_id", user.ID.String()))
-		return Session{}, &LockedError{RetryAfter: time.Duration(max(f.LockSeconds, 1)) * time.Second}
 	}
 
 	wait := time.NewTimer(s.hashWait)
 	defer wait.Stop()
 	select {
 	case s.hashSlots <- struct{}{}:
+		defer func() { <-s.hashSlots }()
 	case <-wait.C:
 		return Session{}, ErrBusy
 	case <-ctx.Done():
 		return Session{}, ctx.Err()
 	}
-	encoded := s.dummyHash()
+
+	// The attempt counts as a failure before any hashing, in the same step
+	// as the lock check, so a burst of parallel guesses cannot pass the
+	// check before the first failures are recorded. A success resets it.
+	switch {
+	case user != nil:
+		if _, err := q.ClaimAdminLoginAttempt(ctx, user.ID); errors.Is(err, pgx.ErrNoRows) {
+			f, err := q.RecordAdminLoginFailure(ctx, user.ID) // attempts during a lock extend it
+			if err != nil {
+				return Session{}, fmt.Errorf("record login failure: %w", err)
+			}
+			s.logger.WarnContext(ctx, "admin login refused: locked", slog.String("admin_user_id", user.ID.String()))
+			return Session{}, &LockedError{RetryAfter: time.Duration(max(f.LockSeconds, 1)) * time.Second}
+		} else if err != nil {
+			return Session{}, fmt.Errorf("claim login attempt: %w", err)
+		}
+	case valid:
+		if d := s.unknown.claim(username, time.Now()); d > 0 {
+			s.logger.WarnContext(ctx, "admin login refused: locked")
+			return Session{}, &LockedError{RetryAfter: d}
+		}
+	}
+
+	encoded := s.dummy
 	if user != nil && user.DisabledAt == nil {
 		encoded = user.PasswordHash
 	}
 	ok, outdated, err := s.verify(encoded, password)
-	<-s.hashSlots
 	if err != nil {
 		return Session{}, fmt.Errorf("verify password: %w", err)
 	}
 	if user == nil || user.DisabledAt != nil || !ok {
-		if user == nil {
-			s.unknown.fail(username, now)
+		if user != nil {
+			s.logger.WarnContext(ctx, "admin login failed", slog.String("admin_user_id", user.ID.String()))
+		} else {
 			s.logger.WarnContext(ctx, "admin login failed")
-			return Session{}, ErrInvalidCredentials
 		}
-		if _, err := q.RecordAdminLoginFailure(ctx, user.ID); err != nil {
-			return Session{}, fmt.Errorf("record login failure: %w", err)
-		}
-		s.logger.WarnContext(ctx, "admin login failed", slog.String("admin_user_id", user.ID.String()))
 		return Session{}, ErrInvalidCredentials
 	}
 
 	if err := q.RecordAdminLoginSuccess(ctx, user.ID); err != nil {
 		return Session{}, fmt.Errorf("record login success: %w", err)
 	}
-	if outdated {
+	if outdated { // still inside the hash slot
 		if h, err := s.hash(password); err == nil {
 			if err := q.RehashAdminPassword(ctx, store.RehashAdminPasswordParams{ID: user.ID, PasswordHash: h, OldHash: user.PasswordHash}); err != nil {
 				s.logger.WarnContext(ctx, "admin password rehash failed", slog.String("admin_user_id", user.ID.String()), slog.Any("error", err))
 			}
 		}
+	}
+	if s.afterVerify != nil {
+		s.afterVerify()
 	}
 	raw := make([]byte, tokenBytes)
 	if _, err := rand.Read(raw); err != nil {
@@ -317,8 +323,15 @@ func (s *Service) Login(ctx context.Context, username, password string) (Session
 	token := base64.RawURLEncoding.EncodeToString(raw)
 	sum := sha256.Sum256([]byte(token))
 	row, err := q.InsertAdminSession(ctx, store.InsertAdminSessionParams{
-		AdminUserID: user.ID, TokenHash: sum[:], ExpiresAt: now.Add(s.maxAge),
+		AdminUserID: user.ID, TokenHash: sum[:], MaxAgeSeconds: s.maxAge.Seconds(),
+		PasswordChangedAt: user.PasswordChangedAt,
 	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		// Disabled or password changed since the check: the verified
+		// credentials are no longer valid.
+		s.logger.WarnContext(ctx, "admin login failed: account changed during login", slog.String("admin_user_id", user.ID.String()))
+		return Session{}, ErrInvalidCredentials
+	}
 	if err != nil {
 		return Session{}, fmt.Errorf("insert session: %w", err)
 	}
@@ -357,19 +370,20 @@ func (s *Service) Authenticate(ctx context.Context, token string) (Principal, er
 	return Principal{UserID: row.AdminUserID, Username: row.Username, SessionExpiresAt: row.ExpiresAt}, nil
 }
 
-// Logout deletes the session of token (a no-op for unknown tokens).
+// Logout deletes the session of token; unknown or malformed tokens are
+// ErrUnauthenticated.
 func (s *Service) Logout(ctx context.Context, token string) error {
 	h, ok := tokenHash(token)
 	if !ok {
 		return ErrUnauthenticated
 	}
-	n, err := store.New(s.pool).DeleteAdminSession(ctx, h)
+	userID, err := store.New(s.pool).DeleteAdminSession(ctx, h)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrUnauthenticated
+	}
 	if err != nil {
 		return fmt.Errorf("delete admin session: %w", err)
 	}
-	if n == 0 {
-		return ErrUnauthenticated
-	}
-	s.logger.InfoContext(ctx, "admin logout")
+	s.logger.InfoContext(ctx, "admin logout", slog.String("admin_user_id", userID.String()))
 	return nil
 }
