@@ -85,11 +85,15 @@ type Service struct {
 	renderWait  time.Duration
 }
 
-// Template render limits per process.
+// Template render limits per process. A compile of the largest version
+// briefly holds about 60 MiB of heap, so few run at once; the cache keeps at
+// most 1 MiB of source (about 60 MiB of heap) and skips versions over
+// 64 KiB.
 const (
-	compiledCacheEntries = 64
-	defaultRenderSlots   = 4
-	defaultRenderWait    = time.Second
+	compiledCacheBytes      = 1 << 20
+	compiledCacheEntryBytes = 64 << 10
+	defaultRenderSlots      = 2
+	defaultRenderWait       = time.Second
 )
 
 // NewService builds a Service that accepts at most perMinute sends per
@@ -98,7 +102,7 @@ func NewService(pool *pgxpool.Pool, enq Enqueuer, logger *slog.Logger, perMinute
 	return &Service{
 		pool: pool, enq: enq, logger: logger, perMinute: max(perMinute, 1),
 		listSlots: make(chan struct{}, defaultListSlots), listWait: defaultListWait, listTimeout: defaultListTimeout,
-		compiled:    newCompiledCache(compiledCacheEntries),
+		compiled:    newCompiledCache(compiledCacheBytes, compiledCacheEntryBytes),
 		renderSlots: make(chan struct{}, defaultRenderSlots), renderWait: defaultRenderWait,
 	}
 }
@@ -316,9 +320,9 @@ func (s *Service) render(ctx context.Context, projectID uuid.UUID, in CreateInpu
 	if c == nil {
 		s.compiles.Add(1)
 		if c, err = v.Compile(); err != nil {
-			return templates.Rendered{}, 0, fmt.Errorf("compile stored template %s version %d: %v", v.TemplateID, v.Version, err) //nolint:errorlint // deliberately not wrapped
+			return templates.Rendered{}, 0, fmt.Errorf("%v", err) //nolint:errorlint // deliberately not wrapped: a stored version is server state
 		}
-		s.compiled.put(key, c)
+		s.compiled.put(key, c, len(v.Source.Subject)+len(v.Source.Text)+len(v.Source.HTML))
 	}
 	r, err := c.Render(in.Variables)
 	if err != nil {

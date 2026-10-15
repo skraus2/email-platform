@@ -17,21 +17,27 @@ type compiledKey struct {
 	version           int
 }
 
-// compiledCache keeps the most recently used compiled template versions.
+// compiledCache keeps recently used compiled template versions, bounded by
+// the bytes of their source: a compiled version holds roughly 60 times its
+// source size in parse trees (measured: 1 MiB of dense actions ≈ 59 MiB of
+// heap), so large versions are not cached at all.
 type compiledCache struct {
-	mu    sync.Mutex
-	max   int
-	order *list.List // front = most recent; values are *compiledEntry
-	items map[compiledKey]*list.Element
+	mu            sync.Mutex
+	maxBytes      int
+	maxEntryBytes int
+	bytes         int
+	order         *list.List // front = most recent; values are *compiledEntry
+	items         map[compiledKey]*list.Element
 }
 
 type compiledEntry struct {
-	key compiledKey
-	c   *templates.Compiled
+	key  compiledKey
+	c    *templates.Compiled
+	size int
 }
 
-func newCompiledCache(maxEntries int) *compiledCache {
-	return &compiledCache{max: maxEntries, order: list.New(), items: map[compiledKey]*list.Element{}}
+func newCompiledCache(maxBytes, maxEntryBytes int) *compiledCache {
+	return &compiledCache{maxBytes: maxBytes, maxEntryBytes: maxEntryBytes, order: list.New(), items: map[compiledKey]*list.Element{}}
 }
 
 func (c *compiledCache) get(k compiledKey) *templates.Compiled {
@@ -45,17 +51,24 @@ func (c *compiledCache) get(k compiledKey) *templates.Compiled {
 	return e.Value.(*compiledEntry).c
 }
 
-func (c *compiledCache) put(k compiledKey, compiled *templates.Compiled) {
+// put caches a compiled version whose source is size bytes.
+func (c *compiledCache) put(k compiledKey, compiled *templates.Compiled, size int) {
+	if size > c.maxEntryBytes {
+		return
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if e, ok := c.items[k]; ok {
 		c.order.MoveToFront(e)
 		return
 	}
-	c.items[k] = c.order.PushFront(&compiledEntry{key: k, c: compiled})
-	for c.order.Len() > c.max {
+	c.items[k] = c.order.PushFront(&compiledEntry{key: k, c: compiled, size: size})
+	c.bytes += size
+	for c.bytes > c.maxBytes {
 		last := c.order.Back()
+		e := last.Value.(*compiledEntry)
 		c.order.Remove(last)
-		delete(c.items, last.Value.(*compiledEntry).key)
+		delete(c.items, e.key)
+		c.bytes -= e.size
 	}
 }

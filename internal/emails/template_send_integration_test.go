@@ -76,8 +76,8 @@ func TestTemplateSendStoresRenderedContentAndReference(t *testing.T) {
 		t.Fatalf("get %+v %v", got, err)
 	}
 	// Variable values never reach the logs.
-	if _, err := svc.Create(ctx, projectID, templateInput(id, 0, `{"name":"Zq9-secret-value"}`)); err != nil {
-		t.Fatal(err)
+	if cached, err := svc.Create(ctx, projectID, templateInput(id, 0, `{"name":"Zq9-secret-value"}`)); err != nil || cached.Subject != "Hi Zq9-secret-value" {
+		t.Fatalf("second send (cached version): %+v %v", cached, err)
 	}
 	if _, err := svc.Create(ctx, projectID, templateInput(id, 0, `{"name":1,"zz-secret-key":"Zq9-secret-value"}`)); err == nil {
 		t.Fatal("invalid variables accepted")
@@ -278,15 +278,84 @@ func TestTemplatePreCheckReplaysConcurrentWinner(t *testing.T) {
 	pool, projectID := setup(t)
 	svc := limitedService(t, pool, 1)
 	id := publishTemplate(t, pool, projectID, v1Source)
+	freshWindow(t)
 	in := templateInput(id, 0, `{"name":"a"}`)
-	in.IdempotencyKey = "k-1"
-	first, err := svc.Create(ctx, projectID, in)
+	in.IdempotencyKey = "between"
+	fingerprint, err := in.TemplateFingerprint()
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The window is full now; the duplicate must replay, not be refused.
-	again, err := svc.Create(ctx, projectID, in)
-	if err != nil || !again.Replayed || again.ID != first.ID {
-		t.Fatalf("duplicate in a full window: %+v %v", again, err)
+
+	// Hold the window table so the loser stops in its template pre-check,
+	// after its key lookup found nothing.
+	winner, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = winner.Rollback(ctx) }()
+	if _, err := winner.Exec(ctx, "LOCK TABLE rate_limit_windows IN ACCESS EXCLUSIVE MODE"); err != nil {
+		t.Fatal(err)
+	}
+	type outcome struct {
+		e   emails.Email
+		err error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		e, err := svc.Create(ctx, projectID, in)
+		done <- outcome{e, err}
+	}()
+	deadline := time.Now().Add(10 * time.Second)
+	for count(t, pool, "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'") == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("loser never blocked at the pre-check")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	// The winner commits email, key and a full window while the loser waits.
+	var winnerID uuid.UUID
+	if err := winner.QueryRow(ctx, `INSERT INTO emails (project_id, sender, recipient, subject, template_id, template_version)
+		VALUES ($1, $2, $3, 'Hi a', $4, 1) RETURNING id`, projectID, in.From, in.To, id).Scan(&winnerID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := winner.Exec(ctx, `INSERT INTO idempotency_keys (project_id, operation, key, fingerprint, email_id)
+		VALUES ($1, 'create_email', $2, $3, $4)`, projectID, in.IdempotencyKey, fingerprint, winnerID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := winner.Exec(ctx, `INSERT INTO rate_limit_windows (project_id, window_start, count)
+		VALUES ($1, date_trunc('minute', now()), 1)`, projectID); err != nil {
+		t.Fatal(err)
+	}
+	if err := winner.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-done:
+		if got.err != nil || !got.e.Replayed || got.e.ID != winnerID {
+			t.Fatalf("loser = %+v, %v; want a replay of %s", got.e, got.err, winnerID)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("loser did not finish")
+	}
+}
+
+func TestBrokenStoredVersionIsAServerError(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	pool, projectID := setup(t)
+	svc := newService(t, pool, nil)
+	id := publishTemplate(t, pool, projectID)
+	// Only possible by writing the table directly: a schema the code refuses.
+	if _, err := pool.Exec(ctx, `UPDATE templates SET latest_version = 1 WHERE id = $1`, id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO template_versions (template_id, project_id, version, subject, text_body, variables)
+		VALUES ($1, $2, 1, 's', 't', '{"x":{"type":"date"}}')`, id, projectID); err != nil {
+		t.Fatal(err)
+	}
+	_, err := svc.Create(ctx, projectID, templateInput(id, 0, `{}`))
+	var te *templates.Error
+	if err == nil || errors.As(err, &te) || errors.Is(err, emails.ErrTemplateNotFound) {
+		t.Fatalf("broken stored version: %v, want an internal error", err)
 	}
 }
