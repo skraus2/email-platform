@@ -12,3 +12,7 @@ if [[ -n "${DOCKER_HOST:-}" ]]; then
   echo "refusing to run: DOCKER_HOST is set; these scripts only drive the local Docker engine" >&2
   exit 1
 fi
+# The processes started here must never reach AWS, whatever the caller's
+# shell holds: with the local sink forced, any stray SES_* or SQS_ENDPOINT
+# setting is a startup error instead of an SES-mode worker.
+export MAIL_PROVIDER=mailpit

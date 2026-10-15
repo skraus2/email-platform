@@ -7,7 +7,9 @@
 #      list of known lines (the manual type-check target never runs tests),
 #      and GOFLAGS does not enable it;
 #   3. with the tag sets the gates use, no live test file belongs to any
-#      package.
+#      package;
+#   4. no shipped binary links a test stand-in, and the certificate-fetch
+#      hook is used only by integration-tagged code.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -57,7 +59,7 @@ case "$(go env GOFLAGS)" in
 *awslive*) fail "GOFLAGS enables the awslive tag" ;;
 esac
 
-for tags in "" "integration,load"; do
+for tags in "" "integration,load,smoke"; do
 	listed=$(go list -e -tags="$tags" \
 		-f '{{$d := .Dir}}{{range .GoFiles}}{{$d}}/{{.}}{{"\n"}}{{end}}{{range .TestGoFiles}}{{$d}}/{{.}}{{"\n"}}{{end}}{{range .XTestGoFiles}}{{$d}}/{{.}}{{"\n"}}{{end}}' ./...)
 	for f in "${live_files[@]}"; do
@@ -66,4 +68,17 @@ for tags in "" "integration,load"; do
 		fi
 	done
 done
-echo "check-awslive: ${#live_files[@]} live test file(s) excluded from every gate"
+# Test stand-ins (fake AWS, throwaway databases, the certificate-fetch hook)
+# never reach a shipped binary.
+shipped=$(go list -deps ./cmd/api ./cmd/worker ./cmd/admin ./cmd/migrate)
+for pkg in internal/testaws internal/testdb internal/testmailpit; do
+	if grep -qx "github.com/skraus2/email-platform/$pkg" <<<"$shipped"; then
+		fail "$pkg is linked into a shipped binary"
+	fi
+done
+hook=$(search -l NewPollerWithCertFetch -- '*.go')
+while IFS= read -r f; do
+	[ -z "$f" ] || [[ "$f" == *_test.go ]] || [ "$(head -1 "$f")" = "//go:build integration" ] ||
+		fail "$f uses the certificate-fetch hook outside integration tests"
+done <<<"$hook"
+echo "check-awslive: ${#live_files[@]} live test file(s) excluded from every gate; no test stand-in in a shipped binary"

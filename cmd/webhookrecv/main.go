@@ -18,8 +18,8 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/signal"
 	"strings"
@@ -52,9 +52,9 @@ func run() error {
 	if *out == "" || secretFile == "" {
 		return errors.New("-out and WEBHOOK_SECRET_FILE are required")
 	}
-	host, _, err := net.SplitHostPort(*addr)
-	if err != nil || (host != "127.0.0.1" && host != "::1" && host != "localhost") {
-		return errors.New("-addr must be a loopback host:port")
+	ap, err := netip.ParseAddrPort(*addr)
+	if err != nil || !ap.Addr().IsLoopback() {
+		return errors.New("-addr must be a loopback IP:port")
 	}
 	f, err := os.OpenFile(*out, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {

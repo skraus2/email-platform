@@ -24,6 +24,8 @@ RECV_ADDR="127.0.0.1:${SMOKE_RECV_PORT:-18090}"
 TMP="$(mktemp -d)"
 cleanup() {
   [[ -n "${key:-}" ]] && "$TMP/admin" key revoke -prefix "$(cut -d_ -f2 <<<"$key")" >/dev/null 2>&1 || true
+  # Pending deliveries of this run must not reach whatever binds the port later.
+  [[ -s "$TMP/webhook.out" ]] && "$TMP/admin" webhook disable -project "$project" -id "$(head -1 "$TMP/webhook.out" | cut -f1)" >/dev/null 2>&1 || true
   kill "${API_PID:-}" "${API2_PID:-}" "${WORKER_PID:-}" "${RECV_PID:-}" 2>/dev/null || true
   rm -rf "$TMP"
 }
@@ -40,7 +42,7 @@ HTTP_ADDR="$ADDR2" LOG_FORMAT=json REQUIRE_VERIFIED_SENDER=true "$TMP/api" >"$TM
 API2_PID=$!
 LOG_FORMAT=json "$TMP/worker" >"$TMP/worker.log" 2>&1 &
 WORKER_PID=$!
-WEBHOOK_SECRET_FILE="$TMP/whsec" "$TMP/webhookrecv" -addr "$RECV_ADDR" -out "$TMP/hooks.jsonl" >"$TMP/recv.log" 2>&1 &
+env -u WEBHOOK_KEKS WEBHOOK_SECRET_FILE="$TMP/whsec" "$TMP/webhookrecv" -addr "$RECV_ADDR" -out "$TMP/hooks.jsonl" >"$TMP/recv.log" 2>&1 &
 RECV_PID=$!
 
 # Logs are printed on failure with the run's secrets filtered out (the
@@ -76,6 +78,7 @@ key=$("$TMP/admin" key create -project "$project" 2>"$TMP/admin.err") || fail "a
 [[ "$key" == ep_* ]] || fail "admin did not issue a key"
 # Needles from a file: the key must not appear in grep's command line.
 printf '%s\n' "$key" "smoke-recipient@example.test" "blocked@example.test" "smoke body" "smoke-par-" >"$TMP/needles"
+printf '%s\n' "${WEBHOOK_KEKS#*:}" >>"$TMP/needles"
 # Pass the key via a file, not the command line (visible in ps).
 umask 077
 printf 'Authorization: Bearer %s\n' "$key" >"$TMP/auth.header"
@@ -200,13 +203,15 @@ wait "$WORKER_PID" || fail "worker exited non-zero after SIGTERM"
 grep -q '"shutdown complete"' "$TMP/api.log" || fail "api did not log shutdown complete"
 grep -q '"shutdown complete"' "$TMP/api2.log" || fail "second api did not log shutdown complete"
 grep -q '"shutdown complete"' "$TMP/worker.log" || fail "worker did not log shutdown complete"
-echo "SIGTERM -> api and worker shut down cleanly"
+echo "SIGTERM -> api, worker and receiver shut down cleanly"
+# Exactly one webhook for the first email, also after everything stopped.
+[[ $(grep -c "\"email_id\":\"$id\"" "$TMP/hooks.jsonl") == 1 ]] || fail "more than one webhook for $id"
 
 # After shutdown, so that lines written while stopping are checked too.
 if grep -qiFf "$TMP/needles" "$TMP/api.log" "$TMP/api2.log" "$TMP/worker.log"; then
   echo "SMOKE FAIL: logs contain a secret, idempotency key or personal data" >&2; exit 1
 fi
-echo "logs contain no API key, webhook secret, idempotency key, recipient or body"
+echo "logs contain no API key, webhook secret or KEK, idempotency key, recipient or body"
 
 if grep -q 'email_platform:email_platform@' "$TMP/api.log" "$TMP/api2.log" "$TMP/worker.log"; then
   fail "database password appeared in logs"

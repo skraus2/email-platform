@@ -11,12 +11,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 
+	"github.com/skraus2/email-platform/internal/awsconfig"
 	"github.com/skraus2/email-platform/internal/delivery"
 	"github.com/skraus2/email-platform/internal/emails"
 	"github.com/skraus2/email-platform/internal/events/ses"
@@ -116,7 +118,7 @@ func sesEvent(t *testing.T, eventType, emailID, projectID, messageID string) str
 	return string(b)
 }
 
-// TestSESEndToEnd is the phase acceptance path with every AWS service
+// TestSESEndToEnd is the full send-to-webhook path with every AWS service
 // stubbed on loopback: POST → worker → SES (stub) → submitted → SES event via
 // SNS (signed) and SQS (stub) → poller → projected status, suppression and
 // signed webhooks to the internal app.
@@ -206,8 +208,17 @@ func TestSESEndToEnd(t *testing.T) {
 		st, _ := e["status"].(string)
 		return st
 	}
-	// send posts an email, waits until SES accepted it and returns its id
-	// and the SES message id.
+	hooks := func(id string, want ...string) {
+		t.Helper()
+		waitFor(id+" webhooks", func() bool { return len(receiver.types(t, id)) >= len(want) })
+		if got := receiver.types(t, id); !slices.Equal(got, want) {
+			t.Fatalf("webhooks for %s = %v, want %v", id, got, want)
+		}
+	}
+	// send posts an email, waits until SES accepted it and its submitted
+	// webhook arrived (webhooks carry no ordering guarantee, so the next
+	// event is only published after it), and returns its id and the SES
+	// message id.
 	send := func(to string) (string, string) {
 		t.Helper()
 		code, created := s.do(t, http.MethodPost, "/v1/emails", key,
@@ -217,6 +228,7 @@ func TestSESEndToEnd(t *testing.T) {
 		}
 		id := created["id"].(string)
 		waitFor(id+" submitted", func() bool { return status(id) == "submitted" })
+		hooks(id, "email.submitted")
 		var messageID string
 		if err := s.pool.QueryRow(ctx, "SELECT provider_id FROM emails WHERE id = $1", id).Scan(&messageID); err != nil {
 			t.Fatal(err)
@@ -225,13 +237,6 @@ func TestSESEndToEnd(t *testing.T) {
 	}
 	publish := func(eventType, id, messageID string) {
 		sqsStub.Add(signer.Envelope(t, sesEvent(t, eventType, id, projectID.String(), messageID)))
-	}
-	hooks := func(id string, want ...string) {
-		t.Helper()
-		waitFor(id+" webhooks", func() bool { return len(receiver.types(t, id)) >= len(want) })
-		if got := receiver.types(t, id); !slices.Equal(got, want) {
-			t.Fatalf("webhooks for %s = %v, want %v", id, got, want)
-		}
 	}
 
 	// A sender without a verified identity is refused before anything is
@@ -282,12 +287,29 @@ func TestSESEndToEnd(t *testing.T) {
 	if !slices.Equal(types, []string{"submitted", "complained", "delivered"}) || status(complained) != "complained" {
 		t.Fatalf("history %v, status %s; want submitted, complained, delivered and complained", types, status(complained))
 	}
-	time.Sleep(500 * time.Millisecond) // room for a wrong extra webhook
+	// Every ingest has committed (the queue only drains after it), and with
+	// it any outbox row: two deliveries, none for the late delivery.
+	var outbox int
+	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM webhook_deliveries d JOIN email_events e ON e.id = d.event_id
+		WHERE e.email_id = $1`, complained).Scan(&outbox); err != nil || outbox != 2 {
+		t.Fatalf("%d webhook deliveries for the complained email (%v), want 2", outbox, err)
+	}
 	hooks(complained, "email.submitted", "email.complained")
 
-	// Every AWS request went to the loopback stubs, signed with the fake key.
-	if n := len(sesStub.Sends()); n != 3 {
-		t.Fatalf("SES stub got %d sends, want 3", n)
+	// Every send went to the loopback stub, signed with the fixed fake key.
+	sends := sesStub.Sends()
+	if len(sends) != 3 {
+		t.Fatalf("SES stub got %d sends, want 3", len(sends))
+	}
+	for _, r := range sends {
+		if !strings.Contains(r.Authorization, "Credential="+awsconfig.StubAccessKeyID+"/") {
+			t.Fatalf("SES request signed with %q, want the stub key", r.Authorization)
+		}
+	}
+	for _, r := range sqsStub.Requests() {
+		if !strings.Contains(r.Authorization, "Credential="+awsconfig.StubAccessKeyID+"/") {
+			t.Fatalf("SQS request signed with %q, want the stub key", r.Authorization)
+		}
 	}
 }
 
