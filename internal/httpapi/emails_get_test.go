@@ -60,7 +60,7 @@ func TestGetEmailReturnsOwnEmail(t *testing.T) {
 		"id": e.ID.String(), "status": "captured", "from": "a@example.test", "to": "b@example.test",
 		"subject": "Hi", "created_at": "2026-10-13T12:00:00.000000123Z",
 		"updated_at": "2026-10-13T12:00:01.000000123Z", "finished_at": "2026-10-13T12:00:01.000000123Z",
-		"attempts": float64(2), "error_code": nil,
+		"attempts": float64(2), "error_code": nil, "template_id": nil, "template_version": nil,
 	}
 	if len(body) != len(want) {
 		t.Fatalf("body = %v", body)

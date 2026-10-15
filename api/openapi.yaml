@@ -59,8 +59,9 @@ paths:
         (`template_id`, `template_version`, `variables`). Mixing them gives
         `422 validation_failed`. In the template form the version is resolved
         (`"published"` = highest version at this moment) and rendered before
-        the checks above; unknown templates or versions, and `"published"`
-        on a template without versions, give `422 template_not_found`;
+        the checks above; unknown templates, templates of other projects,
+        unknown versions, and `"published"` on a template without versions
+        all give the same `422 template_not_found`;
         variables that do not match the version's schema give
         `422 variables_invalid`; output that breaks the limits (subject
         1–255 characters without line breaks, bodies at most 512 KiB) gives
@@ -173,6 +174,7 @@ paths:
         - name: template_id
           in: query
           required: false
+          description: Only emails sent from this template (available together with template sends).
           schema:
             type: string
             format: uuid

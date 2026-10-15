@@ -175,6 +175,7 @@ func TestListEmailsPagingConcurrentInserts(t *testing.T) {
 
 	stop := make(chan struct{})
 	var wg sync.WaitGroup
+	t.Cleanup(func() { close(stop); wg.Wait() })
 	wg.Go(func() {
 		for {
 			select {
@@ -193,8 +194,6 @@ func TestListEmailsPagingConcurrentInserts(t *testing.T) {
 	})
 	got := s.listIDs(t, token, "recipient=bulk@example.test", 37)
 	all := s.listIDs(t, token, "", 37)
-	close(stop)
-	wg.Wait()
 
 	if len(got) != len(existing) {
 		t.Fatalf("listed %d of %d pre-existing emails", len(got), len(existing))

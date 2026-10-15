@@ -93,13 +93,29 @@ ORDER BY created_at DESC, id DESC
 LIMIT $2;
 
 -- name: ListProjectEmails :many
--- One page of a project's emails, newest first (ids are UUIDv7). The nil
--- UUID as cursor means "from the newest"; an empty status list means any.
+-- One page of a project's emails, newest first (ids are UUIDv7). The id
+-- bounds are unconditional so that even a generic plan bounds the index
+-- scan: before_id is the cursor (the maximal UUID for the first page),
+-- min_id the smallest id a created_after filter can match (the nil UUID
+-- without one). An empty status list means any status.
 SELECT * FROM emails
 WHERE project_id = sqlc.arg(project_id)
-  AND (sqlc.arg(after)::uuid = '00000000-0000-0000-0000-000000000000'::uuid OR id < sqlc.arg(after)::uuid)
+  AND id < sqlc.arg(before_id)::uuid
+  AND id >= sqlc.arg(min_id)::uuid
   AND (cardinality(sqlc.arg(statuses)::text[]) = 0 OR status = ANY (sqlc.arg(statuses)::text[]))
-  AND (sqlc.narg(recipient)::text IS NULL OR lower(recipient) = lower(sqlc.narg(recipient)::text))
+  AND (sqlc.narg(created_after)::timestamptz IS NULL OR created_at >= sqlc.narg(created_after)::timestamptz)
+  AND (sqlc.narg(created_before)::timestamptz IS NULL OR created_at < sqlc.narg(created_before)::timestamptz)
+ORDER BY id DESC
+LIMIT sqlc.arg(row_limit);
+
+-- name: ListProjectEmailsByRecipient :many
+-- ListProjectEmails for one recipient address (case-insensitive).
+SELECT * FROM emails
+WHERE project_id = sqlc.arg(project_id)
+  AND lower(recipient) = lower(sqlc.arg(recipient)::text)
+  AND id < sqlc.arg(before_id)::uuid
+  AND id >= sqlc.arg(min_id)::uuid
+  AND (cardinality(sqlc.arg(statuses)::text[]) = 0 OR status = ANY (sqlc.arg(statuses)::text[]))
   AND (sqlc.narg(created_after)::timestamptz IS NULL OR created_at >= sqlc.narg(created_after)::timestamptz)
   AND (sqlc.narg(created_before)::timestamptz IS NULL OR created_at < sqlc.narg(created_before)::timestamptz)
 ORDER BY id DESC

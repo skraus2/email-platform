@@ -308,9 +308,9 @@ func (q *Queries) ListEmails(ctx context.Context, arg ListEmailsParams) ([]Email
 const listProjectEmails = `-- name: ListProjectEmails :many
 SELECT id, project_id, sender, recipient, subject, status, provider, provider_id, attempts, last_error, created_at, updated_at, finished_at, error_code FROM emails
 WHERE project_id = $1
-  AND ($2::uuid = '00000000-0000-0000-0000-000000000000'::uuid OR id < $2::uuid)
-  AND (cardinality($3::text[]) = 0 OR status = ANY ($3::text[]))
-  AND ($4::text IS NULL OR lower(recipient) = lower($4::text))
+  AND id < $2::uuid
+  AND id >= $3::uuid
+  AND (cardinality($4::text[]) = 0 OR status = ANY ($4::text[]))
   AND ($5::timestamptz IS NULL OR created_at >= $5::timestamptz)
   AND ($6::timestamptz IS NULL OR created_at < $6::timestamptz)
 ORDER BY id DESC
@@ -319,22 +319,94 @@ LIMIT $7
 
 type ListProjectEmailsParams struct {
 	ProjectID     uuid.UUID
-	After         uuid.UUID
+	BeforeID      uuid.UUID
+	MinID         uuid.UUID
 	Statuses      []string
-	Recipient     *string
 	CreatedAfter  *time.Time
 	CreatedBefore *time.Time
 	RowLimit      int32
 }
 
-// One page of a project's emails, newest first (ids are UUIDv7). The nil
-// UUID as cursor means "from the newest"; an empty status list means any.
+// One page of a project's emails, newest first (ids are UUIDv7). The id
+// bounds are unconditional so that even a generic plan bounds the index
+// scan: before_id is the cursor (the maximal UUID for the first page),
+// min_id the smallest id a created_after filter can match (the nil UUID
+// without one). An empty status list means any status.
 func (q *Queries) ListProjectEmails(ctx context.Context, arg ListProjectEmailsParams) ([]Email, error) {
 	rows, err := q.db.Query(ctx, listProjectEmails,
 		arg.ProjectID,
-		arg.After,
+		arg.BeforeID,
+		arg.MinID,
 		arg.Statuses,
+		arg.CreatedAfter,
+		arg.CreatedBefore,
+		arg.RowLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Email{}
+	for rows.Next() {
+		var i Email
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProjectID,
+			&i.Sender,
+			&i.Recipient,
+			&i.Subject,
+			&i.Status,
+			&i.Provider,
+			&i.ProviderID,
+			&i.Attempts,
+			&i.LastError,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.FinishedAt,
+			&i.ErrorCode,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listProjectEmailsByRecipient = `-- name: ListProjectEmailsByRecipient :many
+SELECT id, project_id, sender, recipient, subject, status, provider, provider_id, attempts, last_error, created_at, updated_at, finished_at, error_code FROM emails
+WHERE project_id = $1
+  AND lower(recipient) = lower($2::text)
+  AND id < $3::uuid
+  AND id >= $4::uuid
+  AND (cardinality($5::text[]) = 0 OR status = ANY ($5::text[]))
+  AND ($6::timestamptz IS NULL OR created_at >= $6::timestamptz)
+  AND ($7::timestamptz IS NULL OR created_at < $7::timestamptz)
+ORDER BY id DESC
+LIMIT $8
+`
+
+type ListProjectEmailsByRecipientParams struct {
+	ProjectID     uuid.UUID
+	Recipient     string
+	BeforeID      uuid.UUID
+	MinID         uuid.UUID
+	Statuses      []string
+	CreatedAfter  *time.Time
+	CreatedBefore *time.Time
+	RowLimit      int32
+}
+
+// ListProjectEmails for one recipient address (case-insensitive).
+func (q *Queries) ListProjectEmailsByRecipient(ctx context.Context, arg ListProjectEmailsByRecipientParams) ([]Email, error) {
+	rows, err := q.db.Query(ctx, listProjectEmailsByRecipient,
+		arg.ProjectID,
 		arg.Recipient,
+		arg.BeforeID,
+		arg.MinID,
+		arg.Statuses,
 		arg.CreatedAfter,
 		arg.CreatedBefore,
 		arg.RowLimit,

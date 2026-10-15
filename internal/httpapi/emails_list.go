@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -42,6 +43,9 @@ func (s *Server) handleListEmails(w http.ResponseWriter, r *http.Request) {
 
 	page, more, err := s.emails.List(r.Context(), p.ProjectID, f, limit)
 	switch {
+	case errors.Is(err, emails.ErrListBusy):
+		writeUnavailable(w)
+		return
 	case database.Unavailable(err):
 		s.logger.ErrorContext(r.Context(), "list emails: database unavailable",
 			slog.String("project_id", p.ProjectID.String()), slog.Any("error", err))

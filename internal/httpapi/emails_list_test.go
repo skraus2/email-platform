@@ -208,6 +208,7 @@ func TestListEmailsDatabaseErrors(t *testing.T) {
 	}{
 		{fmt.Errorf("list: %w", &pgconn.PgError{Code: "57P03"}), http.StatusServiceUnavailable, "service_unavailable"},
 		{errors.New("boom"), http.StatusInternalServerError, "internal_error"},
+		{emails.ErrListBusy, http.StatusServiceUnavailable, "service_unavailable"},
 	} {
 		s, svc := listEmailsServer(t, principal)
 		svc.err = tc.err
