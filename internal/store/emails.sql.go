@@ -85,7 +85,7 @@ func (q *Queries) ExpireOpenEmails(ctx context.Context, createdAt time.Time) ([]
 }
 
 const getEmail = `-- name: GetEmail :one
-SELECT id, project_id, sender, recipient, subject, status, provider, provider_id, attempts, last_error, created_at, updated_at, finished_at, error_code FROM emails WHERE id = $1 AND project_id = $2
+SELECT id, project_id, sender, recipient, subject, status, provider, provider_id, attempts, last_error, created_at, updated_at, finished_at, error_code, template_id, template_version FROM emails WHERE id = $1 AND project_id = $2
 `
 
 type GetEmailParams struct {
@@ -111,6 +111,8 @@ func (q *Queries) GetEmail(ctx context.Context, arg GetEmailParams) (Email, erro
 		&i.UpdatedAt,
 		&i.FinishedAt,
 		&i.ErrorCode,
+		&i.TemplateID,
+		&i.TemplateVersion,
 	)
 	return i, err
 }
@@ -197,7 +199,7 @@ func (q *Queries) HandoffLeavesWindowIn(ctx context.Context, arg HandoffLeavesWi
 const insertEmail = `-- name: InsertEmail :one
 INSERT INTO emails (project_id, sender, recipient, subject)
 VALUES ($1, $2, $3, $4)
-RETURNING id, project_id, sender, recipient, subject, status, provider, provider_id, attempts, last_error, created_at, updated_at, finished_at, error_code
+RETURNING id, project_id, sender, recipient, subject, status, provider, provider_id, attempts, last_error, created_at, updated_at, finished_at, error_code, template_id, template_version
 `
 
 type InsertEmailParams struct {
@@ -230,6 +232,8 @@ func (q *Queries) InsertEmail(ctx context.Context, arg InsertEmailParams) (Email
 		&i.UpdatedAt,
 		&i.FinishedAt,
 		&i.ErrorCode,
+		&i.TemplateID,
+		&i.TemplateVersion,
 	)
 	return i, err
 }
@@ -257,7 +261,7 @@ func (q *Queries) InsertEmailContent(ctx context.Context, arg InsertEmailContent
 }
 
 const listEmails = `-- name: ListEmails :many
-SELECT id, project_id, sender, recipient, subject, status, provider, provider_id, attempts, last_error, created_at, updated_at, finished_at, error_code FROM emails
+SELECT id, project_id, sender, recipient, subject, status, provider, provider_id, attempts, last_error, created_at, updated_at, finished_at, error_code, template_id, template_version FROM emails
 WHERE project_id = $1 AND ($3::text IS NULL OR status = $3)
 ORDER BY created_at DESC, id DESC
 LIMIT $2
@@ -294,6 +298,8 @@ func (q *Queries) ListEmails(ctx context.Context, arg ListEmailsParams) ([]Email
 			&i.UpdatedAt,
 			&i.FinishedAt,
 			&i.ErrorCode,
+			&i.TemplateID,
+			&i.TemplateVersion,
 		); err != nil {
 			return nil, err
 		}
@@ -306,7 +312,7 @@ func (q *Queries) ListEmails(ctx context.Context, arg ListEmailsParams) ([]Email
 }
 
 const listProjectEmails = `-- name: ListProjectEmails :many
-SELECT id, project_id, sender, recipient, subject, status, provider, provider_id, attempts, last_error, created_at, updated_at, finished_at, error_code FROM emails
+SELECT id, project_id, sender, recipient, subject, status, provider, provider_id, attempts, last_error, created_at, updated_at, finished_at, error_code, template_id, template_version FROM emails
 WHERE project_id = $1
   AND id < $2::uuid
   AND id >= $3::uuid
@@ -364,6 +370,8 @@ func (q *Queries) ListProjectEmails(ctx context.Context, arg ListProjectEmailsPa
 			&i.UpdatedAt,
 			&i.FinishedAt,
 			&i.ErrorCode,
+			&i.TemplateID,
+			&i.TemplateVersion,
 		); err != nil {
 			return nil, err
 		}
@@ -376,7 +384,7 @@ func (q *Queries) ListProjectEmails(ctx context.Context, arg ListProjectEmailsPa
 }
 
 const listProjectEmailsByRecipient = `-- name: ListProjectEmailsByRecipient :many
-SELECT id, project_id, sender, recipient, subject, status, provider, provider_id, attempts, last_error, created_at, updated_at, finished_at, error_code FROM emails
+SELECT id, project_id, sender, recipient, subject, status, provider, provider_id, attempts, last_error, created_at, updated_at, finished_at, error_code, template_id, template_version FROM emails
 WHERE project_id = $1
   AND lower(recipient) = lower($2::text)
   AND id < $3::uuid
@@ -433,6 +441,8 @@ func (q *Queries) ListProjectEmailsByRecipient(ctx context.Context, arg ListProj
 			&i.UpdatedAt,
 			&i.FinishedAt,
 			&i.ErrorCode,
+			&i.TemplateID,
+			&i.TemplateVersion,
 		); err != nil {
 			return nil, err
 		}

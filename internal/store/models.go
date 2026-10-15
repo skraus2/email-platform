@@ -21,20 +21,22 @@ type ApiKey struct {
 }
 
 type Email struct {
-	ID         uuid.UUID
-	ProjectID  uuid.UUID
-	Sender     string
-	Recipient  string
-	Subject    string
-	Status     string
-	Provider   *string
-	ProviderID *string
-	Attempts   int32
-	LastError  *string
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
-	FinishedAt *time.Time
-	ErrorCode  *string
+	ID              uuid.UUID
+	ProjectID       uuid.UUID
+	Sender          string
+	Recipient       string
+	Subject         string
+	Status          string
+	Provider        *string
+	ProviderID      *string
+	Attempts        int32
+	LastError       *string
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+	FinishedAt      *time.Time
+	ErrorCode       *string
+	TemplateID      *uuid.UUID
+	TemplateVersion *int32
 }
 
 type EmailContent struct {
@@ -97,6 +99,26 @@ type Suppression struct {
 	Recipient string
 	Reason    string
 	CreatedAt time.Time
+}
+
+type Template struct {
+	ID            uuid.UUID
+	ProjectID     uuid.UUID
+	Slug          string
+	Name          string
+	LatestVersion int32
+	CreatedAt     time.Time
+}
+
+type TemplateVersion struct {
+	TemplateID uuid.UUID
+	ProjectID  uuid.UUID
+	Version    int32
+	Subject    string
+	TextBody   string
+	HtmlBody   *string
+	Variables  []byte
+	CreatedAt  time.Time
 }
 
 type WebhookDelivery struct {
