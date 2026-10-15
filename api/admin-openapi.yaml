@@ -1,0 +1,941 @@
+openapi: 3.1.0
+info:
+  title: Email Platform Admin API
+  version: 0.1.0
+  description: |
+    Internal API for the operator dashboard. Served on its own listener
+    (default `127.0.0.1:8081`), never on the project API listener; project
+    API keys are not accepted here and session tokens are not accepted on
+    `/v1`.
+
+    Log in with `POST /admin/v1/sessions`; send the returned token as
+    `Authorization: Session <token>` on every other request. Tokens are
+    never accepted from cookies. Sessions end after 30 minutes without use
+    or 12 hours after login (defaults), on logout, and when the account is
+    disabled or its password changes.
+
+    Administrators see every project; every row carries its `project_id`.
+    Responses never contain email bodies, template variables of sent
+    emails, webhook secrets or API key hashes. All responses carry
+    `Cache-Control: no-store`. Errors use the same envelope as `/v1`.
+servers:
+  - url: http://127.0.0.1:8081
+    description: Local development
+security:
+  - session: []
+paths:
+  /admin/v1/sessions:
+    post:
+      operationId: login
+      summary: Log in with a local admin account
+      description: |
+        Wrong password, unknown user and disabled user all give the same
+        `401 invalid_credentials`. After 5 consecutive failures a username
+        is locked for 1, 2, 4, … up to 15 minutes (`429 login_locked` with
+        `Retry-After`); failures during the lock extend it. When too many
+        logins run at once the request waits up to 2 seconds, then gets
+        `503 service_unavailable`.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "201":
+          description: Logged in. The token is shown only here.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "429":
+          $ref: "#/components/responses/LoginLocked"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /admin/v1/sessions/current:
+    delete:
+      operationId: logout
+      summary: End the current session
+      responses:
+        "204":
+          description: The session is deleted.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /admin/v1/me:
+    get:
+      operationId: me
+      summary: The logged-in administrator
+      responses:
+        "200":
+          description: The administrator and the session expiry.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Me"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /admin/v1/projects:
+    get:
+      operationId: listProjects
+      summary: List projects
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: One page of projects, newest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, next_cursor]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Project"
+                  next_cursor:
+                    $ref: "#/components/schemas/NextCursor"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /admin/v1/emails:
+    get:
+      operationId: listEmails
+      summary: Search and filter emails of all projects, newest first
+      description: |
+        Filters combine with AND. `q` matches an email id, a provider
+        message id or an exact recipient address (case-insensitive).
+        Malformed values give `400 invalid_filter`; messages name the
+        parameter, never its value.
+      parameters:
+        - $ref: "#/components/parameters/ProjectFilter"
+        - name: status
+          in: query
+          required: false
+          style: form
+          explode: true
+          schema:
+            type: array
+            maxItems: 8
+            items:
+              $ref: "#/components/schemas/EmailStatus"
+        - name: error_code
+          in: query
+          required: false
+          schema:
+            type: string
+            pattern: "^[a-z_]{1,40}$"
+        - name: recipient
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 254
+        - name: template_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: created_after
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+        - name: created_before
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+        - name: q
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 512
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: One page of emails.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, next_cursor]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/AdminEmail"
+                  next_cursor:
+                    $ref: "#/components/schemas/NextCursor"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /admin/v1/emails/{id}:
+    get:
+      operationId: getEmail
+      summary: Email metadata (never the body)
+      parameters:
+        - $ref: "#/components/parameters/ID"
+      responses:
+        "200":
+          description: The email.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminEmail"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /admin/v1/emails/{id}/events:
+    get:
+      operationId: listEmailEvents
+      summary: Event history of an email, in receive order
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: One page of events.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, next_cursor]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/EmailEvent"
+                  next_cursor:
+                    $ref: "#/components/schemas/NextCursor"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /admin/v1/emails/{id}/webhook-deliveries:
+    get:
+      operationId: listEmailWebhookDeliveries
+      summary: Webhook deliveries for the events of an email
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: One page of deliveries, oldest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, next_cursor]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/WebhookDelivery"
+                  next_cursor:
+                    $ref: "#/components/schemas/NextCursor"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /admin/v1/templates:
+    get:
+      operationId: listTemplates
+      summary: List templates, newest first
+      parameters:
+        - $ref: "#/components/parameters/ProjectFilter"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: One page of templates.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, next_cursor]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Template"
+                  next_cursor:
+                    $ref: "#/components/schemas/NextCursor"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /admin/v1/templates/{id}:
+    get:
+      operationId: getTemplate
+      summary: A template with the list of its versions (newest first)
+      parameters:
+        - $ref: "#/components/parameters/ID"
+      responses:
+        "200":
+          description: The template.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TemplateDetail"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /admin/v1/templates/{id}/versions/{version}:
+    get:
+      operationId: getTemplateVersion
+      summary: A template version exactly as published
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/Version"
+      responses:
+        "200":
+          description: The version.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TemplateVersion"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /admin/v1/templates/{id}/versions/{version}/preview:
+    post:
+      operationId: previewTemplateVersion
+      summary: Render a version with sample variables (nothing is stored or sent)
+      description: |
+        Same rendering and errors as a template send
+        (`422 variables_invalid`, `422 render_failed`). Display the `html`
+        only in a sandboxed frame. Preview variables are not logged.
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/Version"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                variables:
+                  type: object
+                  additionalProperties:
+                    type: [string, number, boolean]
+      responses:
+        "200":
+          description: The rendered parts.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Rendered"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /admin/v1/senders:
+    get:
+      operationId: listSenders
+      summary: List sender identities
+      parameters:
+        - $ref: "#/components/parameters/ProjectFilter"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: One page of sender identities.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, next_cursor]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Sender"
+                  next_cursor:
+                    $ref: "#/components/schemas/NextCursor"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /admin/v1/webhook-endpoints:
+    get:
+      operationId: listWebhookEndpoints
+      summary: List webhook endpoints (never their secrets)
+      parameters:
+        - $ref: "#/components/parameters/ProjectFilter"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: One page of endpoints.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, next_cursor]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/WebhookEndpoint"
+                  next_cursor:
+                    $ref: "#/components/schemas/NextCursor"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+components:
+  securitySchemes:
+    session:
+      type: http
+      scheme: Session
+      description: "`Authorization: Session <token>` with the token from `POST /admin/v1/sessions`."
+  parameters:
+    ID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    Version:
+      name: version
+      in: path
+      required: true
+      schema:
+        type: integer
+        minimum: 1
+    ProjectFilter:
+      name: project_id
+      in: query
+      required: false
+      schema:
+        type: string
+        format: uuid
+    Limit:
+      name: limit
+      in: query
+      required: false
+      description: Page size; values outside 1–100 give `400 invalid_limit`.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 50
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      description: Opaque `next_cursor` of the previous page; invalid values give `400 invalid_cursor`.
+      schema:
+        type: string
+  schemas:
+    NextCursor:
+      type: [string, "null"]
+      description: Pass as `cursor` for the next page; `null` on the last page.
+    LoginRequest:
+      type: object
+      additionalProperties: false
+      required: [username, password]
+      properties:
+        username:
+          type: string
+          maxLength: 64
+        password:
+          type: string
+          maxLength: 128
+    Session:
+      type: object
+      required: [token, expires_at]
+      properties:
+        token:
+          type: string
+          description: Opaque session token (shown once).
+        expires_at:
+          type: string
+          format: date-time
+          description: Absolute expiry; the idle timeout may end the session earlier.
+    Me:
+      type: object
+      required: [id, username, session_expires_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        username:
+          type: string
+        session_expires_at:
+          type: string
+          format: date-time
+    Project:
+      type: object
+      required: [id, name, status, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        status:
+          type: string
+          enum: [active, disabled]
+        created_at:
+          type: string
+          format: date-time
+    EmailStatus:
+      type: string
+      enum:
+        [
+          queued,
+          sending,
+          captured,
+          submitted,
+          delivered,
+          bounced,
+          complained,
+          failed,
+        ]
+    AdminEmail:
+      type: object
+      required:
+        [
+          id,
+          project_id,
+          project_name,
+          status,
+          from,
+          to,
+          subject,
+          provider,
+          provider_id,
+          attempts,
+          error_code,
+          template_id,
+          template_version,
+          created_at,
+          updated_at,
+          finished_at,
+        ]
+      properties:
+        id:
+          type: string
+          format: uuid
+        project_id:
+          type: string
+          format: uuid
+        project_name:
+          type: string
+        status:
+          $ref: "#/components/schemas/EmailStatus"
+        from:
+          type: string
+        to:
+          type: string
+        subject:
+          type: string
+        provider:
+          type: [string, "null"]
+        provider_id:
+          type: [string, "null"]
+          description: Provider message id.
+        attempts:
+          type: integer
+          minimum: 0
+        error_code:
+          type: [string, "null"]
+        template_id:
+          type: [string, "null"]
+          format: uuid
+        template_version:
+          type: [integer, "null"]
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        finished_at:
+          type: [string, "null"]
+          format: date-time
+    EmailEvent:
+      type: object
+      required: [id, type, origin, provider, occurred_at, received_at, details]
+      properties:
+        id:
+          type: string
+          format: uuid
+        type:
+          type: string
+        origin:
+          type: string
+          enum: [platform, ses]
+        provider:
+          type: [string, "null"]
+        occurred_at:
+          type: string
+          format: date-time
+          description: Event time reported by its origin.
+        received_at:
+          type: string
+          format: date-time
+          description: When the platform stored the event.
+        details:
+          type: object
+          additionalProperties:
+            type: string
+    WebhookDelivery:
+      type: object
+      required:
+        [
+          id,
+          endpoint_id,
+          endpoint_url,
+          event_id,
+          event_type,
+          status,
+          attempts,
+          last_status_code,
+          last_error_code,
+          next_attempt_at,
+          delivered_at,
+          created_at,
+          updated_at,
+        ]
+      properties:
+        id:
+          type: string
+          format: uuid
+        endpoint_id:
+          type: string
+          format: uuid
+        endpoint_url:
+          type: string
+        event_id:
+          type: string
+          format: uuid
+        event_type:
+          type: string
+        status:
+          type: string
+          enum: [pending, delivered, failed]
+        attempts:
+          type: integer
+        last_status_code:
+          type: [integer, "null"]
+        last_error_code:
+          type: [string, "null"]
+        next_attempt_at:
+          type: [string, "null"]
+          format: date-time
+        delivered_at:
+          type: [string, "null"]
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    Template:
+      type: object
+      required: [id, project_id, slug, name, latest_version, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        project_id:
+          type: string
+          format: uuid
+        slug:
+          type: string
+        name:
+          type: string
+        latest_version:
+          type: [integer, "null"]
+        created_at:
+          type: string
+          format: date-time
+    TemplateDetail:
+      allOf:
+        - $ref: "#/components/schemas/Template"
+        - type: object
+          required: [versions]
+          properties:
+            versions:
+              type: array
+              description: All versions, newest first.
+              items:
+                type: object
+                required: [version, created_at]
+                properties:
+                  version:
+                    type: integer
+                  created_at:
+                    type: string
+                    format: date-time
+    TemplateVersion:
+      type: object
+      required:
+        [
+          template_id,
+          project_id,
+          version,
+          subject,
+          text,
+          html,
+          variables,
+          created_at,
+        ]
+      properties:
+        template_id:
+          type: string
+          format: uuid
+        project_id:
+          type: string
+          format: uuid
+        version:
+          type: integer
+        subject:
+          type: string
+        text:
+          type: string
+        html:
+          type: [string, "null"]
+        variables:
+          type: object
+          additionalProperties:
+            type: object
+            required: [type, required]
+            properties:
+              type:
+                type: string
+                enum: [string, number, boolean]
+              required:
+                type: boolean
+              max_length:
+                type: integer
+        created_at:
+          type: string
+          format: date-time
+    Rendered:
+      type: object
+      required: [subject, text, html]
+      properties:
+        subject:
+          type: string
+        text:
+          type: string
+        html:
+          type: [string, "null"]
+    Sender:
+      type: object
+      required: [id, project_id, kind, value, status, verified_at, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        project_id:
+          type: string
+          format: uuid
+        kind:
+          type: string
+          enum: [address, domain]
+        value:
+          type: string
+        status:
+          type: string
+        verified_at:
+          type: [string, "null"]
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+    WebhookEndpoint:
+      type: object
+      required:
+        [id, project_id, url, event_types, status, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        project_id:
+          type: string
+          format: uuid
+        url:
+          type: string
+        event_types:
+          type: array
+          items:
+            type: string
+        status:
+          type: string
+          enum: [active, disabled]
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+            message:
+              type: string
+  responses:
+    BadRequest:
+      description: "`invalid_json`, `invalid_limit`, `invalid_cursor` or `invalid_filter`."
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Unauthorized:
+      description: "`unauthenticated` (missing, malformed, unknown or expired session, or a project API key) or, on login, `invalid_credentials`."
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    LoginLocked:
+      description: "`login_locked`: too many failed logins for this username."
+      headers:
+        Retry-After:
+          description: Seconds until the lock ends.
+          schema:
+            type: integer
+            minimum: 1
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: "`not_found`."
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    PayloadTooLarge:
+      description: "`payload_too_large`: request body larger than 1 MiB."
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    UnsupportedMediaType:
+      description: "`unsupported_media_type`: Content-Type is not application/json."
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    UnprocessableEntity:
+      description: "`variables_invalid` or `render_failed` (messages name variables, never values)."
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    ServiceUnavailable:
+      description: "`service_unavailable`: a dependency is temporarily unavailable or too many logins run at once."
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    InternalError:
+      description: "`internal_error`: unexpected server error; details are logged, never returned."
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"

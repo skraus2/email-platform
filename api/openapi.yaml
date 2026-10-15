@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Email Platform API
-  version: 0.3.0
+  version: 0.4.0
   description: |
     Internal email sending API. Every request is authenticated with a
     project API key and only ever sees data of that project.
@@ -16,6 +16,15 @@ info:
 
     Status changes are also pushed to registered webhook endpoints (see
     `webhooks`).
+
+    Emails can be sent from stored templates: a template has immutable,
+    numbered versions; a send names a version (or `"published"`, the highest
+    one at that moment) and supplies variables, which are rendered with
+    contextual HTML escaping and never stored.
+
+    Key scopes: `emails:send`, `emails:read`, `templates:read`,
+    `templates:write`, `webhooks:write`. A key only has the scopes it was
+    created with.
 servers:
   - url: http://127.0.0.1:8080
     description: Local development
@@ -44,8 +53,20 @@ paths:
         suppression (`422 recipient_suppressed`), project rate limit
         (`429 rate_limited`).
         Rejected requests store nothing; neither they nor idempotent replays
-        count towards the rate limit. Template fields are reserved and rejected with
-        `422 templates_not_supported`.
+        count towards the rate limit.
+
+        Two forms: raw (`subject` plus `text` and/or `html`) or template
+        (`template_id`, `template_version`, `variables`). Mixing them gives
+        `422 validation_failed`. In the template form the version is resolved
+        (`"published"` = highest version at this moment) and rendered before
+        the checks above; unknown templates or versions, and `"published"`
+        on a template without versions, give `422 template_not_found`;
+        variables that do not match the version's schema give
+        `422 variables_invalid`; output that breaks the limits (subject
+        1–255 characters without line breaks, bodies at most 512 KiB) gives
+        `422 render_failed`. An idempotent replay is answered before any
+        rendering, so a retry stays a replay even after a newer version was
+        published.
 
         A `503` (or a lost connection) means the outcome is unknown: the
         email may have been accepted. Retry with the same `Idempotency-Key`
@@ -70,12 +91,23 @@ paths:
           application/json:
             schema:
               $ref: "#/components/schemas/CreateEmailRequest"
-            example:
-              from: noreply@example.test
-              to: customer@example.test
-              subject: Welcome
-              text: Your account is ready.
-              html: <p>Your account is ready.</p>
+            examples:
+              raw:
+                value:
+                  from: noreply@example.test
+                  to: customer@example.test
+                  subject: Welcome
+                  text: Your account is ready.
+                  html: <p>Your account is ready.</p>
+              template:
+                value:
+                  from: noreply@example.test
+                  to: customer@example.test
+                  template_id: 0192f0aa-0000-7000-8000-000000000001
+                  template_version: published
+                  variables:
+                    name: Ada
+                    plan: pro
       responses:
         "202":
           description: |
@@ -107,6 +139,85 @@ paths:
           $ref: "#/components/responses/UnprocessableEntity"
         "429":
           $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+    get:
+      operationId: listEmails
+      summary: List emails of the authenticated project, newest first
+      description: |
+        Requires scope `emails:read`. Filters combine with AND. Unknown or
+        repeated single-value parameters and malformed values give `400`
+        (`invalid_filter`, `invalid_limit`, `invalid_cursor`); the message
+        names the parameter, never its value.
+      parameters:
+        - name: status
+          in: query
+          required: false
+          description: Repeat for several statuses (at most 8).
+          style: form
+          explode: true
+          schema:
+            type: array
+            maxItems: 8
+            items:
+              $ref: "#/components/schemas/EmailStatus"
+        - name: recipient
+          in: query
+          required: false
+          description: Exact recipient address, case-insensitive.
+          schema:
+            type: string
+            maxLength: 254
+        - name: template_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: created_after
+          in: query
+          required: false
+          description: Inclusive lower bound (RFC 3339).
+          schema:
+            type: string
+            format: date-time
+        - name: created_before
+          in: query
+          required: false
+          description: Exclusive upper bound (RFC 3339); must be later than `created_after`.
+          schema:
+            type: string
+            format: date-time
+        - name: limit
+          in: query
+          required: false
+          description: Page size; values outside 1–100 give `400 invalid_limit`.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+        - name: cursor
+          in: query
+          required: false
+          description: Opaque `next_cursor` of the previous page; invalid values give `400 invalid_cursor`.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: One page of emails.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EmailList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "500":
           $ref: "#/components/responses/InternalError"
         "503":
@@ -194,6 +305,210 @@ paths:
           $ref: "#/components/responses/InternalError"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
+  /v1/templates:
+    post:
+      operationId: createTemplate
+      summary: Create a template of the authenticated project
+      description: |
+        Requires scope `templates:write`. The slug is unique per project
+        (`409 slug_taken`). A project holds at most 200 templates by default
+        (`422 template_limit_reached`). A new template has no version yet.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTemplateRequest"
+      responses:
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Template"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /v1/templates/{id}:
+    get:
+      operationId: getTemplate
+      summary: Get a template of the authenticated project
+      description: |
+        Requires scope `templates:read`. Unknown ids, malformed ids and ids
+        of other projects all return the same `404`.
+      parameters:
+        - $ref: "#/components/parameters/TemplateID"
+      responses:
+        "200":
+          description: The template.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Template"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /v1/templates/{id}/versions:
+    post:
+      operationId: publishTemplateVersion
+      summary: Publish a new immutable version of a template
+      description: |
+        Requires scope `templates:write`. The version gets the next number
+        (1, 2, …) and can never be changed or deleted. The sources are
+        checked before storing (`422 template_invalid`, the message names
+        the part and line): only `{{.name}}` for declared variables and
+        `{{if}}`/`{{else if}}`/`{{else}}`/`{{end}}` on a declared string or
+        boolean variable, or `eq`/`ne` of such a variable with a constant
+        of the same type, are allowed; comments are allowed; anything else
+        (loops, `with`, nested templates, functions, `$` variables) is
+        refused. `html` is rendered with contextual escaping (variables
+        cannot inject markup or `javascript:` URLs); `subject` and `text`
+        are plain text. `text` is required so every HTML mail has a text
+        alternative. A template holds at most 500 versions by default
+        (`422 version_limit_reached`). Unknown templates and templates of
+        other projects return `404`.
+      parameters:
+        - $ref: "#/components/parameters/TemplateID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PublishTemplateVersionRequest"
+            example:
+              subject: "Welcome, {{.name}}"
+              text: 'Hello {{.name}}, {{if eq .plan "pro"}}thanks for going pro.{{else}}your account is ready.{{end}}'
+              html: '<p>Hello {{.name}},</p>{{if eq .plan "pro"}}<p>Thanks for going pro.</p>{{end}}'
+              variables:
+                name: { type: string, required: true, max_length: 100 }
+                plan: { type: string, required: false }
+      responses:
+        "201":
+          description: Published.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TemplateVersionCreated"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /v1/templates/{id}/versions/{version}:
+    get:
+      operationId: getTemplateVersion
+      summary: Get a published template version exactly as stored
+      description: |
+        Requires scope `templates:read`. Returns the sources exactly as
+        published, also when newer versions exist. Unknown templates,
+        templates of other projects and unknown versions return `404`.
+      parameters:
+        - $ref: "#/components/parameters/TemplateID"
+        - name: version
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        "200":
+          description: The version.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TemplateVersion"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /v1/webhook-endpoints:
+    post:
+      operationId: createWebhookEndpoint
+      summary: Register a webhook endpoint of the authenticated project
+      description: |
+        Requires scope `webhooks:write`. The response is the only time the
+        signing `secret` is shown; store it. Without `event_types` the
+        endpoint receives all types. The URL must be `https` (or `http`
+        where the operator allows it) and must not point to a forbidden
+        address (`422 invalid_url`; the message never contains resolved
+        addresses). A project holds at most 10 endpoints by default
+        (`422 endpoint_limit_reached`). A retried request creates another
+        endpoint; ask an operator to disable one you lost the secret of.
+
+        Registration through the API is optional per deployment: where it
+        is not enabled the route answers
+        `503 webhook_registration_disabled`, and endpoints are registered by
+        an administrator instead.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateWebhookEndpointRequest"
+      responses:
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebhookEndpointCreated"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
 webhooks:
   emailStatusChanged:
     post:
@@ -203,8 +518,8 @@ webhooks:
         Sent to every active webhook endpoint of the project subscribed to
         the event type, once per status change (duplicate or late provider
         events that do not change the status are not sent). Endpoints are
-        registered by an administrator, who receives the endpoint secret
-        once.
+        registered by an administrator or through
+        `POST /v1/webhook-endpoints`; the endpoint secret is shown once.
 
         Verify every request: compute HMAC-SHA256 keyed with the endpoint
         secret exactly as shown (the full `whsec_…` string as UTF-8 bytes)
@@ -260,12 +575,17 @@ components:
     projectKey:
       type: http
       scheme: bearer
-      description: "Project API key, format `ep_<prefix>_<secret>`. Shown once at creation."
+      description: "Project API key, format `ep_<prefix>_<secret>`. Shown once at creation. Scopes: `emails:send`, `emails:read`, `templates:read`, `templates:write`, `webhooks:write`."
   schemas:
     CreateEmailRequest:
       type: object
       additionalProperties: false
-      required: [from, to, subject]
+      description: |
+        Raw form: `subject` plus `text` and/or `html`. Template form:
+        `template_id` and `template_version`, plus `variables` (may be
+        omitted when the version has no required variables). Mixing the
+        forms gives `422 validation_failed`.
+      required: [from, to]
       properties:
         from:
           type: string
@@ -285,7 +605,7 @@ components:
           type: string
           minLength: 1
           maxLength: 255
-          description: Must not contain CR, LF or NUL.
+          description: Raw form only. Must not contain CR, LF or NUL.
         text:
           type: string
           description: Plain-text body, at most 512 KiB. At least one of text/html is required.
@@ -293,11 +613,26 @@ components:
           type: string
           description: HTML body, at most 512 KiB. At least one of text/html is required.
         template_id:
-          description: Reserved. Rejected with 422 templates_not_supported.
+          type: string
+          format: uuid
+          description: Template form. A template of the authenticated project.
         template_version:
-          description: Reserved. Rejected with 422 templates_not_supported.
+          description: Template form. A version number, or `"published"` for the highest version at this moment.
+          oneOf:
+            - type: integer
+              minimum: 1
+            - type: string
+              const: published
         variables:
-          description: Reserved. Rejected with 422 templates_not_supported.
+          type: object
+          description: |
+            Template form. Values for the version's declared variables:
+            strings, numbers or booleans as declared (`null` is not
+            accepted). Unknown names, missing required variables, wrong
+            types and strings over their `max_length` give
+            `422 variables_invalid`. Variables are not stored.
+          additionalProperties:
+            type: [string, number, boolean]
     CreateEmailResponse:
       type: object
       required: [id, status]
@@ -375,6 +710,8 @@ components:
           created_at,
           updated_at,
           finished_at,
+          template_id,
+          template_version,
         ]
       properties:
         id:
@@ -411,6 +748,179 @@ components:
         finished_at:
           type: [string, "null"]
           format: date-time
+        template_id:
+          type: [string, "null"]
+          format: uuid
+          description: Template of a template send; `null` for raw sends.
+        template_version:
+          type: [integer, "null"]
+          minimum: 1
+          description: The resolved version number (also when `"published"` was requested).
+    EmailList:
+      type: object
+      required: [data, next_cursor]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Email"
+        next_cursor:
+          type: [string, "null"]
+          description: Pass as `cursor` for the next page; `null` on the last page.
+    VariableSpec:
+      type: object
+      additionalProperties: false
+      required: [type]
+      properties:
+        type:
+          type: string
+          enum: [string, number, boolean]
+        required:
+          type: boolean
+          default: false
+        max_length:
+          type: integer
+          minimum: 1
+          maximum: 10000
+          description: Strings only; default 1000 characters.
+    VariableSchema:
+      type: object
+      maxProperties: 50
+      description: Declared variables by name (`^[a-z][a-z0-9_]{0,39}$`).
+      propertyNames:
+        pattern: "^[a-z][a-z0-9_]{0,39}$"
+      additionalProperties:
+        $ref: "#/components/schemas/VariableSpec"
+    CreateTemplateRequest:
+      type: object
+      additionalProperties: false
+      required: [slug]
+      properties:
+        slug:
+          type: string
+          pattern: "^[a-z0-9][a-z0-9-]{0,62}$"
+        name:
+          type: string
+          maxLength: 200
+    Template:
+      type: object
+      required: [id, slug, name, latest_version, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        slug:
+          type: string
+        name:
+          type: string
+        latest_version:
+          type: [integer, "null"]
+          minimum: 1
+          description: Highest published version; `null` while none exists.
+        created_at:
+          type: string
+          format: date-time
+    PublishTemplateVersionRequest:
+      type: object
+      additionalProperties: false
+      required: [subject, text]
+      properties:
+        subject:
+          type: string
+          minLength: 1
+          description: Plain-text template, at most 1000 bytes.
+        text:
+          type: string
+          minLength: 1
+          description: Plain-text template, at most 512 KiB.
+        html:
+          type: string
+          description: HTML template, at most 512 KiB, rendered with contextual escaping.
+        variables:
+          $ref: "#/components/schemas/VariableSchema"
+    TemplateVersionCreated:
+      type: object
+      required: [template_id, version, created_at]
+      properties:
+        template_id:
+          type: string
+          format: uuid
+        version:
+          type: integer
+          minimum: 1
+        created_at:
+          type: string
+          format: date-time
+    TemplateVersion:
+      type: object
+      required:
+        [template_id, version, subject, text, html, variables, created_at]
+      properties:
+        template_id:
+          type: string
+          format: uuid
+        version:
+          type: integer
+          minimum: 1
+        subject:
+          type: string
+        text:
+          type: string
+        html:
+          type: [string, "null"]
+        variables:
+          $ref: "#/components/schemas/VariableSchema"
+        created_at:
+          type: string
+          format: date-time
+    WebhookEventType:
+      type: string
+      enum:
+        [
+          email.captured,
+          email.submitted,
+          email.failed,
+          email.delivered,
+          email.bounced,
+          email.complained,
+        ]
+    CreateWebhookEndpointRequest:
+      type: object
+      additionalProperties: false
+      required: [url]
+      properties:
+        url:
+          type: string
+          format: uri
+          maxLength: 2048
+        event_types:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items:
+            $ref: "#/components/schemas/WebhookEventType"
+    WebhookEndpointCreated:
+      type: object
+      required: [id, url, event_types, status, created_at, secret]
+      properties:
+        id:
+          type: string
+          format: uuid
+        url:
+          type: string
+        event_types:
+          type: array
+          items:
+            $ref: "#/components/schemas/WebhookEventType"
+        status:
+          type: string
+          enum: [active]
+        created_at:
+          type: string
+          format: date-time
+        secret:
+          type: string
+          description: Signing secret (`whsec_…`). Shown only in this response.
     EmailEvent:
       type: object
       required: [id, type, origin, provider, occurred_at, received_at, details]
@@ -515,9 +1025,17 @@ components:
             message:
               type: string
               description: Human-readable explanation; never contains internals.
+  parameters:
+    TemplateID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
   responses:
     BadRequest:
-      description: "Malformed request: `invalid_json`, `invalid_idempotency_key`, `invalid_cursor` or `invalid_limit`."
+      description: "Malformed request: `invalid_json`, `invalid_idempotency_key`, `invalid_cursor`, `invalid_limit` or `invalid_filter`."
       content:
         application/json:
           schema:
@@ -535,7 +1053,7 @@ components:
           schema:
             $ref: "#/components/schemas/Error"
     Conflict:
-      description: "`idempotency_key_reused`: the key was already used with a different payload."
+      description: "`idempotency_key_reused` (the key was already used with a different payload) or `slug_taken` (the project already has a template with this slug)."
       content:
         application/json:
           schema:
@@ -572,13 +1090,13 @@ components:
           schema:
             $ref: "#/components/schemas/Error"
     UnprocessableEntity:
-      description: "`validation_failed` (message names the field), `recipient_suppressed` (the recipient is on the project's suppression list), `sender_not_verified` (`from` is not a verified sender address or domain of the project) or `templates_not_supported`."
+      description: "`validation_failed` (message names the field), `recipient_suppressed` (the recipient is on the project's suppression list), `sender_not_verified` (`from` is not a verified sender address or domain of the project), `template_not_found`, `variables_invalid`, `render_failed`, `template_invalid`, `template_limit_reached`, `version_limit_reached`, `invalid_url` or `endpoint_limit_reached`. Messages name fields or variables, never their values."
       content:
         application/json:
           schema:
             $ref: "#/components/schemas/Error"
     ServiceUnavailable:
-      description: "`service_unavailable`: a dependency (e.g. the database) is temporarily unavailable; retry later."
+      description: "`service_unavailable`: a dependency (e.g. the database) is temporarily unavailable; retry later. `webhook_registration_disabled`: webhook registration through the API is not enabled in this deployment (no `Retry-After`)."
       headers:
         Retry-After:
           description: Seconds to wait before retrying.
