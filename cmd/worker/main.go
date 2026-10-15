@@ -1,5 +1,6 @@
 // Command worker runs the background worker process: it dispatches queued
-// emails to the configured provider and runs periodic cleanup.
+// emails to the configured provider (Mailpit, or SES with the opt-in) and runs
+// periodic cleanup.
 package main
 
 import (
@@ -61,13 +62,21 @@ func run() error {
 		logger.Info("shutdown before ready")
 		return nil
 	}
-	provider, err := delivery.NewMailpit(cfg.SMTPAddr)
+	provider, err := newProvider(ctx, cfg)
 	if err != nil {
 		return err
 	}
 	dispatcher := emails.NewDispatcher(pool, provider, logger, cfg.ProviderTimeout, cfg.BodyMaxAge)
 	if err := dispatcher.LimitProviderRate(cfg.ProviderRatePerSecond); err != nil {
 		return err
+	}
+	if cfg.RequireVerifiedSender {
+		dispatcher.RequireVerifiedSenders()
+	}
+	if cfg.ProviderDailyLimit > 0 {
+		if err := dispatcher.LimitDailyHandoffs(cfg.MailProvider, cfg.ProviderDailyLimit); err != nil {
+			return err
+		}
 	}
 	enqueuer, err := jobs.NewEnqueuer(pool, logger, cfg.SendMaxAttempts)
 	if err != nil {
@@ -107,7 +116,12 @@ func run() error {
 	if err := worker.Start(ctx); err != nil {
 		return fmt.Errorf("start job worker: %w", err)
 	}
-	logger.Info("worker ready", slog.String("provider", cfg.MailProvider), slog.String("smtp_addr", cfg.SMTPAddr))
+	if cfg.MailProvider == "ses" {
+		logger.Info("worker ready", slog.String("provider", cfg.MailProvider), slog.String("region", cfg.SES.Region),
+			slog.String("configuration_set", cfg.SES.ConfigurationSet), slog.Bool("stub_endpoint", cfg.SES.Endpoint != ""))
+	} else {
+		logger.Info("worker ready", slog.String("provider", cfg.MailProvider), slog.String("smtp_addr", cfg.SMTPAddr))
+	}
 
 	<-ctx.Done()
 	logger.Info("shutdown started", slog.Duration("timeout", cfg.ShutdownTimeout))
@@ -119,6 +133,18 @@ func run() error {
 }
 
 const workerConcurrency = 10
+
+// newProvider builds the configured provider. An SES client exists only with
+// the complete SES opt-in, which config.Load enforces; everything else gets
+// the local Mailpit sink.
+func newProvider(ctx context.Context, cfg config.Config) (delivery.Provider, error) {
+	if cfg.MailProvider == "ses" {
+		return delivery.NewSES(ctx, delivery.SESConfig{
+			Region: cfg.SES.Region, ConfigurationSet: cfg.SES.ConfigurationSet, Endpoint: cfg.SES.Endpoint,
+		})
+	}
+	return delivery.NewMailpit(cfg.SMTPAddr)
+}
 
 // waitReady polls check with capped exponential backoff until it succeeds
 // (true) or ctx is cancelled (false). A database that comes up after the

@@ -8,11 +8,14 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/skraus2/email-platform/internal/awsconfig"
 	"github.com/skraus2/email-platform/internal/delivery"
+	"github.com/skraus2/email-platform/internal/events/ses"
 	"github.com/skraus2/email-platform/internal/jobs"
 	"github.com/skraus2/email-platform/internal/webhooks"
 )
@@ -33,12 +36,18 @@ type Config struct {
 	LogFormat       string // "json" or "text"
 	ShutdownTimeout time.Duration
 
-	// Mail dispatch (worker). Only the local Mailpit sink exists: no setting
-	// can point dispatch at a real mail server or SES.
+	// Mail dispatch (worker): the local Mailpit sink by default, Amazon SES
+	// only with the complete opt-in (MAIL_PROVIDER=ses, SES_ENABLED=true and
+	// the SES settings). No other setting can reach a real mail server.
 	MailProvider    string
 	SMTPAddr        string
 	ProviderTimeout time.Duration
 	BodyMaxAge      time.Duration
+	// SES is set only when MailProvider is "ses".
+	SES SES
+	// ProviderDailyLimit caps hand-offs to the provider per rolling 24 hours
+	// across all workers (0 = off), e.g. the SES sandbox quota.
+	ProviderDailyLimit int
 
 	// Dispatch retries. The API stamps SendMaxAttempts on each new job; the
 	// worker spaces retries with the delays.
@@ -71,6 +80,18 @@ type Config struct {
 	// JobRescueAfter: a dispatch job still running this long (its worker
 	// died) is handed to another attempt. At least one attempt budget.
 	JobRescueAfter time.Duration
+}
+
+// SES is the Amazon SES setup: the account region, the configuration set
+// that publishes events to the SNS topic, the SQS queue subscribed to it,
+// and loopback stub endpoints for local tests (never in production).
+type SES struct {
+	Region           string
+	ConfigurationSet string
+	EventsQueueURL   string
+	EventsTopicARN   string
+	Endpoint         string
+	SQSEndpoint      string
 }
 
 // LookupFunc matches os.LookupEnv so tests can inject an environment.
@@ -123,8 +144,19 @@ func Load(lookup LookupFunc) (Config, error) {
 	}
 
 	cfg.MailProvider = get("MAIL_PROVIDER", "mailpit")
-	if cfg.MailProvider != "mailpit" {
-		errs = append(errs, fmt.Errorf("MAIL_PROVIDER must be mailpit (the only provider available); got %q", cfg.MailProvider))
+	switch cfg.MailProvider {
+	case "mailpit":
+		// A stray SES setting (a copied production file, a half-done
+		// switch) must fail loudly, not be ignored.
+		for _, key := range sesSettings {
+			if v := get(key, ""); v != "" && (key != "SES_ENABLED" || v != "false") {
+				errs = append(errs, fmt.Errorf("%s is set, but SES is not enabled (needs MAIL_PROVIDER=ses and SES_ENABLED=true)", key))
+			}
+		}
+	case "ses":
+		cfg.SES, errs = loadSES(get, cfg.Env, errs)
+	default:
+		errs = append(errs, fmt.Errorf("MAIL_PROVIDER must be mailpit or ses; got %q", cfg.MailProvider))
 	}
 	cfg.SMTPAddr = get("SMTP_ADDR", "127.0.0.1:1025")
 	if err := delivery.ValidateMailpitAddr(cfg.SMTPAddr); err != nil {
@@ -139,7 +171,15 @@ func Load(lookup LookupFunc) (Config, error) {
 		errs = append(errs, errors.New("BODY_MAX_AGE must be at most 720h (message content is deleted by then at the latest)"))
 	}
 
-	cfg.RequireVerifiedSender, errs = boolSetting(get, "REQUIRE_VERIFIED_SENDER", "false", errs)
+	// SES identities are account-wide, so with SES the platform itself must
+	// hold every project to its own verified identities.
+	sesMode := cfg.MailProvider == "ses"
+	nErrs := len(errs)
+	cfg.RequireVerifiedSender, errs = boolSetting(get, "REQUIRE_VERIFIED_SENDER", strconv.FormatBool(sesMode), errs)
+	if sesMode && !cfg.RequireVerifiedSender && len(errs) == nErrs {
+		errs = append(errs, errors.New("REQUIRE_VERIFIED_SENDER must not be false with MAIL_PROVIDER=ses"))
+	}
+	cfg.ProviderDailyLimit, errs = intInRange(get, "PROVIDER_DAILY_LIMIT", "0", 0, maxDailyLimit, errs)
 
 	if spec := get("WEBHOOK_KEKS", ""); spec != "" {
 		keys, err := webhooks.ParseKeyring(spec)
@@ -218,6 +258,60 @@ func Load(lookup LookupFunc) (Config, error) {
 	}
 	return cfg, nil
 }
+
+// sesSettings are the settings that only exist with the SES opt-in.
+var sesSettings = []string{
+	"SES_ENABLED", "SES_CONFIGURATION_SET", "SES_EVENTS_QUEUE_URL", "SES_EVENTS_TOPIC_ARN", "SES_ENDPOINT", "SQS_ENDPOINT",
+}
+
+var (
+	configurationSetPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+	queueURLPattern         = regexp.MustCompile(`^https://sqs\.([a-z0-9-]+)\.amazonaws\.com/[0-9]{12}/[A-Za-z0-9_-]{1,80}$`)
+)
+
+// loadSES validates the SES opt-in. Every part is required, so a partial
+// setup never sends.
+func loadSES(get func(string, string) string, env string, errs []error) (SES, []error) {
+	if get("SES_ENABLED", "") != "true" {
+		errs = append(errs, errors.New("SES_ENABLED must be true to use MAIL_PROVIDER=ses (explicit opt-in)"))
+	}
+	c := SES{
+		Region:           get("AWS_REGION", ""),
+		ConfigurationSet: get("SES_CONFIGURATION_SET", ""),
+		EventsQueueURL:   get("SES_EVENTS_QUEUE_URL", ""),
+		EventsTopicARN:   get("SES_EVENTS_TOPIC_ARN", ""),
+		Endpoint:         get("SES_ENDPOINT", ""),
+		SQSEndpoint:      get("SQS_ENDPOINT", ""),
+	}
+	if !awsconfig.ValidRegion(c.Region) {
+		errs = append(errs, errors.New("AWS_REGION must be an AWS region such as eu-central-1"))
+	}
+	if !configurationSetPattern.MatchString(c.ConfigurationSet) {
+		errs = append(errs, errors.New("SES_CONFIGURATION_SET must be a configuration set name (letters, digits, - and _, at most 64)"))
+	}
+	if m := queueURLPattern.FindStringSubmatch(c.EventsQueueURL); m == nil || m[1] != c.Region {
+		errs = append(errs, errors.New("SES_EVENTS_QUEUE_URL must be an https://sqs.<AWS_REGION>.amazonaws.com/<account>/<queue> URL"))
+	}
+	if r, ok := ses.TopicRegion(c.EventsTopicARN); !ok || r != c.Region {
+		errs = append(errs, errors.New("SES_EVENTS_TOPIC_ARN must be an SNS topic ARN in AWS_REGION"))
+	}
+	for _, ep := range []struct{ key, v string }{{"SES_ENDPOINT", c.Endpoint}, {"SQS_ENDPOINT", c.SQSEndpoint}} {
+		key, v := ep.key, ep.v
+		switch {
+		case v == "":
+		case env == EnvProduction:
+			errs = append(errs, fmt.Errorf("%s must not be set in production (stub endpoints are for local tests)", key))
+		default:
+			if err := awsconfig.ValidateEndpoint(v); err != nil {
+				errs = append(errs, fmt.Errorf("%s: %w", key, err))
+			}
+		}
+	}
+	return c, errs
+}
+
+// maxDailyLimit bounds PROVIDER_DAILY_LIMIT to a plausible daily volume.
+const maxDailyLimit = 10_000_000
 
 // maxSendAttempts bounds how often one email can be retried; maxRetryDelay
 // bounds the wait between two attempts.

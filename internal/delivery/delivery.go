@@ -1,7 +1,8 @@
 // Package delivery hands finished messages to a mail provider. Providers
-// implement Provider; the only one today is the local Mailpit capture sink.
-// Errors are sanitized: they carry a class and an SMTP code, never provider
-// text, which can contain recipient addresses.
+// implement Provider: the local Mailpit capture sink, and Amazon SES (only
+// with the explicit SES opt-in configuration).
+// Errors are sanitized: they carry a class and an SMTP or HTTP status code,
+// never provider text, which can contain recipient addresses.
 package delivery
 
 import (
@@ -13,12 +14,13 @@ import (
 
 // Message is one email for one recipient. Addresses are bare local@domain.
 type Message struct {
-	ID      uuid.UUID // becomes the Message-ID
-	From    string
-	To      string
-	Subject string
-	Text    string
-	HTML    string
+	ID        uuid.UUID // becomes the Message-ID
+	ProjectID uuid.UUID
+	From      string
+	To        string
+	Subject   string
+	Text      string
+	HTML      string
 }
 
 // Status values a provider can report for an accepted message.
@@ -49,17 +51,29 @@ const (
 	// ClassUnsafeTarget: the server is not the expected test sink (e.g. a
 	// real MTA on localhost). Nothing was sent; never retry.
 	ClassUnsafeTarget = "unsafe_target"
+
+	// Classes of an API provider's error answer. Each means the request was
+	// refused, except ClassAPIUnavailable (server error: outcome unknown).
+	ClassThrottled        = "throttled"         // rate or quota exceeded; retry later
+	ClassAuth             = "auth"              // credentials refused or not permitted
+	ClassSenderUnverified = "sender_unverified" // sender or MAIL FROM domain not verified
+	ClassAPIRejected      = "api_rejected"      // any other refusal
+	ClassAPIUnavailable   = "api_unavailable"   // 5xx: the provider may have accepted it
 )
 
 // Error is a sanitized provider error.
 type Error struct {
-	Class string
-	Code  int // SMTP reply code, 0 if none
+	Class      string
+	Code       int // SMTP reply code, 0 if none
+	HTTPStatus int // API response status, 0 if none
 }
 
 func (e *Error) Error() string {
-	if e.Code != 0 {
+	switch {
+	case e.Code != 0:
 		return fmt.Sprintf("delivery failed: %s (smtp %d)", e.Class, e.Code)
+	case e.HTTPStatus != 0:
+		return fmt.Sprintf("delivery failed: %s (http %d)", e.Class, e.HTTPStatus)
 	}
 	return "delivery failed: " + e.Class
 }
@@ -67,7 +81,7 @@ func (e *Error) Error() string {
 // Temporary reports whether a retry can succeed.
 func (e *Error) Temporary() bool {
 	switch e.Class {
-	case ClassConnect, ClassTimeout, ClassProtocol:
+	case ClassConnect, ClassTimeout, ClassProtocol, ClassThrottled, ClassAPIUnavailable:
 		return true
 	case ClassRejected:
 		return e.Code >= 400 && e.Code < 500

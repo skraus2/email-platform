@@ -12,6 +12,19 @@ import (
 	"github.com/google/uuid"
 )
 
+const countProviderHandoffs = `-- name: CountProviderHandoffs :one
+SELECT count(*) FROM emails
+WHERE provider = $1 AND finished_at > now() - interval '24 hours'
+`
+
+// Messages handed to the provider within the last 24 hours (daily cap).
+func (q *Queries) CountProviderHandoffs(ctx context.Context, provider *string) (int64, error) {
+	row := q.db.QueryRow(ctx, countProviderHandoffs, provider)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const deleteContentsBefore = `-- name: DeleteContentsBefore :execrows
 DELETE FROM email_contents WHERE created_at < $1
 `
@@ -107,7 +120,11 @@ SELECT e.id, e.project_id, e.sender, e.recipient, e.subject, e.status,
        c.text_body, c.html_body, (c.email_id IS NOT NULL)::boolean AS has_content,
        p.status AS project_status,
        EXISTS (SELECT 1 FROM suppressions s
-               WHERE s.project_id = e.project_id AND lower(s.recipient) = lower(e.recipient))::boolean AS suppressed
+               WHERE s.project_id = e.project_id AND lower(s.recipient) = lower(e.recipient))::boolean AS suppressed,
+       EXISTS (SELECT 1 FROM sender_identities si
+               WHERE si.project_id = e.project_id AND si.status = 'verified'
+                 AND ((si.kind = 'address' AND si.value = lower(e.sender))
+                      OR (si.kind = 'domain' AND si.value = lower(substring(e.sender FROM '@([^@]+)$')))))::boolean AS sender_verified
 FROM emails e
 JOIN projects p ON p.id = e.project_id
 LEFT JOIN email_contents c ON c.email_id = e.id AND c.project_id = e.project_id
@@ -120,17 +137,18 @@ type GetEmailForDispatchParams struct {
 }
 
 type GetEmailForDispatchRow struct {
-	ID            uuid.UUID
-	ProjectID     uuid.UUID
-	Sender        string
-	Recipient     string
-	Subject       string
-	Status        string
-	TextBody      *string
-	HtmlBody      *string
-	HasContent    bool
-	ProjectStatus string
-	Suppressed    bool
+	ID             uuid.UUID
+	ProjectID      uuid.UUID
+	Sender         string
+	Recipient      string
+	Subject        string
+	Status         string
+	TextBody       *string
+	HtmlBody       *string
+	HasContent     bool
+	ProjectStatus  string
+	Suppressed     bool
+	SenderVerified bool
 }
 
 // Content columns are NULL once the content has been deleted.
@@ -149,8 +167,31 @@ func (q *Queries) GetEmailForDispatch(ctx context.Context, arg GetEmailForDispat
 		&i.HasContent,
 		&i.ProjectStatus,
 		&i.Suppressed,
+		&i.SenderVerified,
 	)
 	return i, err
+}
+
+const handoffLeavesWindowIn = `-- name: HandoffLeavesWindowIn :one
+SELECT extract(epoch FROM (finished_at + interval '24 hours' - now()))::float8 AS seconds
+FROM emails
+WHERE provider = $1 AND finished_at > now() - interval '24 hours'
+ORDER BY finished_at
+OFFSET $2 LIMIT 1
+`
+
+type HandoffLeavesWindowInParams struct {
+	Provider *string
+	Offset   int32
+}
+
+// Seconds until the hand-off at position $2 (0 = oldest) of the last 24 hours
+// leaves the window, freeing a slot under the daily cap.
+func (q *Queries) HandoffLeavesWindowIn(ctx context.Context, arg HandoffLeavesWindowInParams) (float64, error) {
+	row := q.db.QueryRow(ctx, handoffLeavesWindowIn, arg.Provider, arg.Offset)
+	var seconds float64
+	err := row.Scan(&seconds)
+	return seconds, err
 }
 
 const insertEmail = `-- name: InsertEmail :one
@@ -352,18 +393,25 @@ WHERE emails.id = $1 AND emails.project_id = $2 AND emails.status IN ('queued', 
   AND EXISTS (SELECT 1 FROM projects p WHERE p.id = emails.project_id AND p.status = 'active')
   AND NOT EXISTS (SELECT 1 FROM suppressions s
                   WHERE s.project_id = emails.project_id AND lower(s.recipient) = lower(emails.recipient))
+  AND (NOT $3::boolean
+       OR EXISTS (SELECT 1 FROM sender_identities si
+                  WHERE si.project_id = emails.project_id AND si.status = 'verified'
+                    AND ((si.kind = 'address' AND si.value = lower(emails.sender))
+                         OR (si.kind = 'domain' AND si.value = lower(substring(emails.sender FROM '@([^@]+)$'))))))
 `
 
 type MarkSendingParams struct {
-	ID        uuid.UUID
-	ProjectID uuid.UUID
+	ID                    uuid.UUID
+	ProjectID             uuid.UUID
+	RequireVerifiedSender bool
 }
 
-// Claims the email for a send attempt. Project status and suppression are
-// checked as part of the claim, so a change made before this point is always
-// honoured.
+// Claims the email for a send attempt. Project status, suppression and (when
+// required) a verified sender identity of the project for the exact address
+// or its exact domain are checked as part of the claim, so a change made
+// before this point is always honoured.
 func (q *Queries) MarkSending(ctx context.Context, arg MarkSendingParams) (int64, error) {
-	result, err := q.db.Exec(ctx, markSending, arg.ID, arg.ProjectID)
+	result, err := q.db.Exec(ctx, markSending, arg.ID, arg.ProjectID, arg.RequireVerifiedSender)
 	if err != nil {
 		return 0, err
 	}

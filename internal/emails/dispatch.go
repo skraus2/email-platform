@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"math/rand/v2"
 	"time"
 
@@ -26,6 +27,8 @@ import (
 // "sending" when an attempt starts) and are logged, not hidden.
 type Dispatcher struct {
 	limiter    *bucket // nil: no provider rate limit
+	daily      dailyCap
+	verified   bool // a verified sender identity is required at claim time
 	events     *events.Recorder
 	pool       *pgxpool.Pool
 	provider   delivery.Provider
@@ -56,6 +59,55 @@ func (d *Dispatcher) LimitProviderRate(perSecond float64) error {
 	d.limiter = newBucket(perSecond, time.Now)
 	return nil
 }
+
+// RequireVerifiedSenders makes every send attempt require a verified
+// identity of the email's project for its sender (checked again in the
+// claim): an identity removed while the email was queued fails it.
+func (d *Dispatcher) RequireVerifiedSenders() { d.verified = true }
+
+// dailyCap limits hand-offs to one provider per rolling 24 hours.
+type dailyCap struct {
+	provider string
+	limit    int64 // 0: off
+}
+
+// LimitDailyHandoffs caps how many messages all workers together hand to
+// provider (the name stored on sent emails) per rolling 24 hours. Jobs over
+// the cap are snoozed until a slot frees, not failed. Workers sending at the
+// same moment can overshoot by up to their combined concurrency.
+func (d *Dispatcher) LimitDailyHandoffs(provider string, limit int) error {
+	if provider == "" || limit < 1 {
+		return errors.New("daily hand-off limit needs a provider and a limit of at least 1")
+	}
+	d.daily = dailyCap{provider: provider, limit: int64(limit)}
+	return nil
+}
+
+// dailyWait returns how long to wait for a free slot under the daily cap
+// (0: send now).
+func (d *Dispatcher) dailyWait(ctx context.Context) (time.Duration, error) {
+	if d.daily.limit == 0 {
+		return 0, nil
+	}
+	q := store.New(d.pool)
+	n, err := q.CountProviderHandoffs(ctx, &d.daily.provider)
+	if err != nil || n < d.daily.limit {
+		return 0, err
+	}
+	secs, err := q.HandoffLeavesWindowIn(ctx, store.HandoffLeavesWindowInParams{
+		Provider: &d.daily.provider, Offset: int32(min(n-d.daily.limit, math.MaxInt32)), //nolint:gosec // bounded by min
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return time.Second, nil // the window moved meanwhile; look again soon
+	}
+	if err != nil {
+		return 0, err
+	}
+	return max(time.Duration(secs*float64(time.Second)), time.Second), nil
+}
+
+// maxDailyJitter spreads jobs waiting for the same daily slot.
+const maxDailyJitter = time.Minute
 
 // maxRateWait is the longest a job waits in place for a provider token;
 // beyond that it is snoozed and frees its worker slot.
@@ -97,6 +149,18 @@ func (d *Dispatcher) SendEmail(ctx context.Context, args jobs.SendEmailArgs, at 
 		// provider call below is not seen (accepted race).
 		return d.fail(ctx, log, key, CodeSuppressed, CodeSuppressed)
 	}
+	if d.verified && !e.SenderVerified {
+		return d.fail(ctx, log, key, CodeSenderNotVerified, CodeSenderNotVerified)
+	}
+
+	wait, err := d.dailyWait(ctx)
+	if err != nil {
+		return d.internalError(ctx, log, key, at, fmt.Errorf("daily hand-off count: %w", err))
+	}
+	if wait > 0 {
+		log.InfoContext(ctx, "daily provider limit reached; snoozing", slog.Duration("wait", wait))
+		return jobs.Snooze(wait + rand.N(min(wait/10, maxDailyJitter)+time.Second)) //nolint:gosec // scheduling jitter, not security
+	}
 
 	if d.limiter != nil {
 		wait, ok := d.limiter.TryTake(maxRateWait)
@@ -114,13 +178,14 @@ func (d *Dispatcher) SendEmail(ctx context.Context, args jobs.SendEmailArgs, at 
 		}
 	}
 
-	n, err := store.New(d.pool).MarkSending(ctx, store.MarkSendingParams(key))
+	n, err := store.New(d.pool).MarkSending(ctx, store.MarkSendingParams{ID: key.ID, ProjectID: key.ProjectID, RequireVerifiedSender: d.verified})
 	if err != nil {
 		return d.internalError(ctx, log, key, at, fmt.Errorf("mark sending: %w", err))
 	}
 	if n == 0 {
-		// Finalized concurrently (e.g. expired), or the project was disabled
-		// or the recipient suppressed since the email was loaded.
+		// Finalized concurrently (e.g. expired), or the project was disabled,
+		// the recipient suppressed or the sender identity removed since the
+		// email was loaded.
 		now, err := store.New(d.pool).GetEmailForDispatch(ctx, key)
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
@@ -133,6 +198,8 @@ func (d *Dispatcher) SendEmail(ctx context.Context, args jobs.SendEmailArgs, at 
 			return d.fail(ctx, log, key, CodeProjectDisabled, CodeProjectDisabled)
 		case now.Suppressed:
 			return d.fail(ctx, log, key, CodeSuppressed, CodeSuppressed)
+		case d.verified && !now.SenderVerified:
+			return d.fail(ctx, log, key, CodeSenderNotVerified, CodeSenderNotVerified)
 		}
 		return nil
 	}
@@ -144,7 +211,7 @@ func (d *Dispatcher) SendEmail(ctx context.Context, args jobs.SendEmailArgs, at 
 
 	sendCtx, cancel := context.WithTimeout(ctx, d.timeout)
 	res, sendErr := d.provider.Send(sendCtx, delivery.Message{
-		ID: e.ID, From: e.Sender, To: e.Recipient, Subject: e.Subject,
+		ID: e.ID, ProjectID: e.ProjectID, From: e.Sender, To: e.Recipient, Subject: e.Subject,
 		Text: deref(e.TextBody), HTML: deref(e.HtmlBody),
 	})
 	cancel()
@@ -330,13 +397,6 @@ const terminalWriteTimeout = 10 * time.Second
 
 func detached(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.WithoutCancel(ctx), terminalWriteTimeout)
-}
-
-// notAccepted reports whether the provider certainly did not take the
-// message (connection refused, or an SMTP rejection reply).
-func notAccepted(err error) bool {
-	var de *delivery.Error
-	return errors.As(err, &de) && (de.Class == delivery.ClassConnect || de.Class == delivery.ClassRejected)
 }
 
 // sanitize turns an error into text safe to store and log.

@@ -27,6 +27,11 @@ func TestFailureCodes(t *testing.T) {
 		{"rejected 2xx", &delivery.Error{Class: delivery.ClassRejected, Code: 250}, CodeProviderRejected, false},
 		{"invalid", &delivery.Error{Class: delivery.ClassInvalid}, CodeMessageInvalid, false},
 		{"unsafe target", &delivery.Error{Class: delivery.ClassUnsafeTarget}, CodeUnsafeTarget, false},
+		{"throttled", &delivery.Error{Class: delivery.ClassThrottled, HTTPStatus: 429}, CodeProviderThrottled, true},
+		{"auth", &delivery.Error{Class: delivery.ClassAuth, HTTPStatus: 403}, CodeProviderAuthFailed, false},
+		{"sender unverified", &delivery.Error{Class: delivery.ClassSenderUnverified, HTTPStatus: 400}, CodeSenderNotVerified, false},
+		{"api rejected", &delivery.Error{Class: delivery.ClassAPIRejected, HTTPStatus: 400}, CodeProviderRejected, false},
+		{"api unavailable", &delivery.Error{Class: delivery.ClassAPIUnavailable, HTTPStatus: 503}, CodeProviderUnreachable, true},
 		{"unknown class", &delivery.Error{Class: "something_new"}, CodeInternalError, true},
 		{"wrapped", fmt.Errorf("send: %w", &delivery.Error{Class: delivery.ClassConnect}), CodeProviderUnreachable, true},
 		{"not a delivery error", errors.New("boom"), CodeInternalError, true},
@@ -50,13 +55,33 @@ func TestFailureCodes(t *testing.T) {
 
 func TestFailureCodesRetryable(t *testing.T) {
 	t.Parallel()
-	retryable := []string{CodeProviderUnreachable, CodeProviderTimeout, CodeProviderProtocolError, CodeProviderDeferred, CodeInternalError}
+	retryable := []string{CodeProviderUnreachable, CodeProviderTimeout, CodeProviderProtocolError, CodeProviderDeferred, CodeProviderThrottled, CodeInternalError}
 	for _, c := range FailureCodes {
 		if got, want := Retryable(c), slices.Contains(retryable, c); got != want {
 			t.Errorf("Retryable(%q) = %v, want %v", c, got, want)
 		}
 	}
-	if len(FailureCodes) != 12 {
-		t.Errorf("FailureCodes has %d entries, want the 12 documented codes", len(FailureCodes))
+	if len(FailureCodes) != 15 {
+		t.Errorf("FailureCodes has %d entries, want the 15 documented codes", len(FailureCodes))
+	}
+}
+
+func TestNotAccepted(t *testing.T) {
+	t.Parallel()
+	// A provider answer that refuses the request means the message was not
+	// taken; only connection-level and server-side failures leave the
+	// outcome open.
+	for class, want := range map[string]bool{
+		delivery.ClassConnect: true, delivery.ClassRejected: true, delivery.ClassThrottled: true,
+		delivery.ClassAuth: true, delivery.ClassSenderUnverified: true, delivery.ClassAPIRejected: true,
+		delivery.ClassTimeout: false, delivery.ClassProtocol: false, delivery.ClassAPIUnavailable: false,
+		delivery.ClassInvalid: false, delivery.ClassUnsafeTarget: false,
+	} {
+		if got := notAccepted(&delivery.Error{Class: class}); got != want {
+			t.Errorf("notAccepted(%s) = %v, want %v", class, got, want)
+		}
+	}
+	if notAccepted(errors.New("boom")) {
+		t.Error("an unknown error counts as not accepted")
 	}
 }

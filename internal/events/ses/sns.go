@@ -22,6 +22,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/skraus2/email-platform/internal/awsconfig"
 )
 
 // Rejection reasons. All except ErrCertFetch are final: the message can
@@ -62,10 +64,17 @@ const (
 	certName     = "sns.amazonaws.com"
 )
 
-var (
-	regionPattern = regexp.MustCompile(`^[a-z]{2}(-gov|-iso[a-z]?)?-[a-z]+-[0-9]+$`)
-	topicPattern  = regexp.MustCompile(`^arn:aws[a-z-]*:sns:([a-z0-9-]+):[0-9]{12}:[A-Za-z0-9_-]{1,256}$`)
-)
+var topicPattern = regexp.MustCompile(`^arn:aws[a-z-]*:sns:([a-z0-9-]+):[0-9]{12}:[A-Za-z0-9_-]{1,256}$`)
+
+// TopicRegion returns the region of an SNS topic ARN; ok is false if arn is
+// not one.
+func TopicRegion(arn string) (region string, ok bool) {
+	m := topicPattern.FindStringSubmatch(arn)
+	if m == nil {
+		return "", false
+	}
+	return m[1], true
+}
 
 // NewVerifier builds a Verifier for one topic. Signing certificates are only
 // ever fetched over HTTPS from the pinned SNS host of the region.
@@ -80,11 +89,10 @@ func NewVerifier(region, topicARN string) (*Verifier, error) {
 
 // newVerifier lets tests replace the certificate fetch.
 func newVerifier(region, topicARN string, fetch Fetcher) (*Verifier, error) {
-	if !regionPattern.MatchString(region) {
+	if !awsconfig.ValidRegion(region) {
 		return nil, fmt.Errorf("invalid AWS region %q", region)
 	}
-	m := topicPattern.FindStringSubmatch(topicARN)
-	if m == nil || m[1] != region {
+	if r, ok := TopicRegion(topicARN); !ok || r != region {
 		return nil, errors.New("topic ARN must be an SNS topic ARN in the configured region")
 	}
 	return &Verifier{region: region, topicARN: topicARN, fetch: fetch, certs: map[string]*x509.Certificate{}}, nil

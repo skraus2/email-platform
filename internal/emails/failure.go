@@ -14,7 +14,10 @@ const (
 	CodeProviderTimeout       = "provider_timeout"
 	CodeProviderProtocolError = "provider_protocol_error"
 	CodeProviderDeferred      = "provider_deferred"
+	CodeProviderThrottled     = "provider_throttled"
 	CodeProviderRejected      = "provider_rejected"
+	CodeProviderAuthFailed    = "provider_auth_failed"
+	CodeSenderNotVerified     = "sender_not_verified"
 	CodeMessageInvalid        = "message_invalid"
 	CodeUnsafeTarget          = "unsafe_target"
 	CodeSuppressed            = "suppressed"
@@ -27,12 +30,14 @@ const (
 // FailureCodes lists every failure code.
 var FailureCodes = []string{
 	CodeProviderUnreachable, CodeProviderTimeout, CodeProviderProtocolError, CodeProviderDeferred,
-	CodeProviderRejected, CodeMessageInvalid, CodeUnsafeTarget, CodeSuppressed, CodeProjectDisabled,
+	CodeProviderThrottled, CodeProviderRejected, CodeProviderAuthFailed, CodeSenderNotVerified,
+	CodeMessageInvalid, CodeUnsafeTarget, CodeSuppressed, CodeProjectDisabled,
 	CodeContentMissing, CodeExpired, CodeInternalError,
 }
 
 var retryableCodes = []string{
-	CodeProviderUnreachable, CodeProviderTimeout, CodeProviderProtocolError, CodeProviderDeferred, CodeInternalError,
+	CodeProviderUnreachable, CodeProviderTimeout, CodeProviderProtocolError, CodeProviderDeferred,
+	CodeProviderThrottled, CodeInternalError,
 }
 
 // Retryable reports whether an attempt that failed with code may succeed
@@ -59,6 +64,16 @@ func failureCode(err error) (code string, retryable bool) {
 		if de.Code >= 400 && de.Code < 500 {
 			code = CodeProviderDeferred
 		}
+	case delivery.ClassThrottled:
+		code = CodeProviderThrottled
+	case delivery.ClassAuth:
+		code = CodeProviderAuthFailed
+	case delivery.ClassSenderUnverified:
+		code = CodeSenderNotVerified
+	case delivery.ClassAPIRejected:
+		code = CodeProviderRejected
+	case delivery.ClassAPIUnavailable:
+		code = CodeProviderUnreachable
 	case delivery.ClassInvalid:
 		code = CodeMessageInvalid
 	case delivery.ClassUnsafeTarget:
@@ -67,4 +82,20 @@ func failureCode(err error) (code string, retryable bool) {
 		code = CodeInternalError
 	}
 	return code, Retryable(code)
+}
+
+// notAccepted reports whether the provider certainly did not take the
+// message: the connection failed, or the provider answered with a refusal
+// (SMTP rejection reply, API error other than a server error).
+func notAccepted(err error) bool {
+	var de *delivery.Error
+	if !errors.As(err, &de) {
+		return false
+	}
+	switch de.Class {
+	case delivery.ClassConnect, delivery.ClassRejected, delivery.ClassThrottled,
+		delivery.ClassAuth, delivery.ClassSenderUnverified, delivery.ClassAPIRejected:
+		return true
+	}
+	return false
 }
