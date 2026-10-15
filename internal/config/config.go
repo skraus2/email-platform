@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
+	"net/netip"
 	"net/url"
 	"regexp"
 	"strconv"
@@ -29,8 +31,11 @@ const (
 
 // Config is the validated configuration shared by API and worker.
 type Config struct {
-	Env             string
-	HTTPAddr        string
+	Env      string
+	HTTPAddr string
+	// AdminHTTPAddr is the admin API listener ("" = off). In production it
+	// must be a loopback IP literal.
+	AdminHTTPAddr   string
 	DatabaseURL     string
 	LogLevel        slog.Level
 	LogFormat       string // "json" or "text"
@@ -243,6 +248,13 @@ func Load(lookup LookupFunc) (Config, error) {
 	cfg.TemplateMaxVersions, errs = intInRange(get, "TEMPLATE_MAX_VERSIONS", "500", 1, 10_000, errs)
 	cfg.TemplateMaxStorageBytes, errs = intInRange(get, "TEMPLATE_MAX_STORAGE_BYTES", "52428800", 1<<20, 10<<30, errs)
 	cfg.TemplateWritesPerMinute, errs = intInRange(get, "TEMPLATE_WRITES_PER_MINUTE", "60", 1, 100_000, errs)
+	switch addr := get("ADMIN_HTTP_ADDR", "127.0.0.1:8081"); {
+	case addr == "off":
+	case validAdminAddr(addr, cfg.Env == EnvProduction) != nil:
+		errs = append(errs, fmt.Errorf("ADMIN_HTTP_ADDR: %w", validAdminAddr(addr, cfg.Env == EnvProduction)))
+	default:
+		cfg.AdminHTTPAddr = addr
+	}
 	cfg.AdminSessionIdle, errs = positiveDuration(get, "ADMIN_SESSION_IDLE", "30m", errs)
 	if cfg.AdminSessionIdle > 0 && (cfg.AdminSessionIdle < 5*time.Minute || cfg.AdminSessionIdle > 24*time.Hour) {
 		errs = append(errs, errors.New("ADMIN_SESSION_IDLE must be between 5m and 24h"))
@@ -429,4 +441,25 @@ func (c Config) RedactedDatabaseURL() string {
 	}
 	u.RawQuery = ""
 	return u.Redacted()
+}
+
+// validAdminAddr accepts host:port. In production the host must be a
+// loopback IP literal, so admin passwords and session tokens never cross a
+// network in clear (no TLS on this listener).
+func validAdminAddr(addr string, production bool) error {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return errors.New("must be host:port or off")
+	}
+	if n, err := strconv.Atoi(port); err != nil || n < 1 || n > 65535 {
+		return errors.New("port must be 1-65535")
+	}
+	if !production {
+		return nil
+	}
+	ip, err := netip.ParseAddr(host)
+	if err != nil || !ip.IsLoopback() {
+		return errors.New("in production the host must be a loopback IP address such as 127.0.0.1 or ::1")
+	}
+	return nil
 }

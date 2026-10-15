@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/skraus2/email-platform/internal/admin"
 	"github.com/skraus2/email-platform/internal/auth"
 	"github.com/skraus2/email-platform/internal/config"
 	"github.com/skraus2/email-platform/internal/database"
@@ -75,29 +76,57 @@ func run() error {
 		}},
 	})
 
-	httpServer := &http.Server{
-		Handler:           api.Handler(),
-		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       15 * time.Second,
-		WriteTimeout:      15 * time.Second,
-		IdleTimeout:       60 * time.Second,
-		MaxHeaderBytes:    64 << 10,
-		ErrorLog:          slog.NewLogLogger(logger.Handler(), slog.LevelWarn),
+	newServer := func(h http.Handler) *http.Server {
+		return &http.Server{
+			Handler:           h,
+			ReadHeaderTimeout: 5 * time.Second,
+			ReadTimeout:       15 * time.Second,
+			WriteTimeout:      15 * time.Second,
+			IdleTimeout:       60 * time.Second,
+			MaxHeaderBytes:    64 << 10,
+			ErrorLog:          slog.NewLogLogger(logger.Handler(), slog.LevelWarn),
+		}
+	}
+	servers := []*http.Server{newServer(api.Handler())}
+	addrs := []string{cfg.HTTPAddr}
+	if cfg.AdminHTTPAddr != "" {
+		// The operator API: its own listener and mux, never reachable with a
+		// project key.
+		adminAPI := httpapi.NewAdmin(httpapi.AdminDeps{
+			Logger:   logger,
+			Sessions: admin.NewService(pool, logger, cfg.AdminSessionIdle, cfg.AdminSessionMax),
+			Views:    admin.NewViews(pool),
+		})
+		servers = append(servers, newServer(adminAPI.Handler()))
+		addrs = append(addrs, cfg.AdminHTTPAddr)
 	}
 
 	// Listen before logging "started" so a busy port fails fast and loudly.
-	ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", cfg.HTTPAddr)
-	if err != nil {
-		return fmt.Errorf("listen on %s: %w", cfg.HTTPAddr, err)
+	listeners := make([]net.Listener, 0, len(addrs))
+	for _, addr := range addrs {
+		ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", addr)
+		if err != nil {
+			for _, l := range listeners {
+				_ = l.Close()
+			}
+			return fmt.Errorf("listen on %s: %w", addr, err)
+		}
+		listeners = append(listeners, ln)
 	}
-	logger.Info("api started",
-		slog.String("addr", ln.Addr().String()),
+	attrs := []any{
+		slog.String("addr", listeners[0].Addr().String()),
 		slog.String("env", cfg.Env),
 		slog.String("database", cfg.RedactedDatabaseURL()),
-	)
+	}
+	if len(listeners) > 1 {
+		attrs = append(attrs, slog.String("admin_addr", listeners[1].Addr().String()))
+	}
+	logger.Info("api started", attrs...)
 
-	serveErr := make(chan error, 1)
-	go func() { serveErr <- httpServer.Serve(ln) }()
+	serveErr := make(chan error, len(servers))
+	for i, srv := range servers {
+		go func() { serveErr <- srv.Serve(listeners[i]) }()
+	}
 
 	select {
 	case err := <-serveErr:
@@ -110,11 +139,19 @@ func run() error {
 	api.SetDraining()
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
 	defer cancel()
-	if err := httpServer.Shutdown(shutdownCtx); err != nil {
-		return fmt.Errorf("graceful shutdown: %w", err)
+	var shutdownErr error
+	for _, srv := range servers {
+		if err := srv.Shutdown(shutdownCtx); err != nil && shutdownErr == nil {
+			shutdownErr = fmt.Errorf("graceful shutdown: %w", err)
+		}
 	}
-	if err := <-serveErr; !errors.Is(err, http.ErrServerClosed) {
-		return fmt.Errorf("http server: %w", err)
+	for range servers {
+		if err := <-serveErr; !errors.Is(err, http.ErrServerClosed) && shutdownErr == nil {
+			shutdownErr = fmt.Errorf("http server: %w", err)
+		}
+	}
+	if shutdownErr != nil {
+		return shutdownErr
 	}
 	logger.Info("shutdown complete")
 	return nil

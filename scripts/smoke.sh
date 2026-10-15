@@ -21,6 +21,8 @@ ADDR="127.0.0.1:${SMOKE_PORT:-18080}"
 # A second API that requires verified senders, and the webhook receiver.
 ADDR2="127.0.0.1:${SMOKE_PORT2:-18081}"
 RECV_ADDR="127.0.0.1:${SMOKE_RECV_PORT:-18090}"
+# The first API also serves the admin API; the second has it off.
+ADMIN_ADDR="127.0.0.1:${SMOKE_ADMIN_PORT:-18082}"
 TMP="$(mktemp -d)"
 cleanup() {
   [[ -n "${key:-}" ]] && "$TMP/admin" key revoke -prefix "$(cut -d_ -f2 <<<"$key")" >/dev/null 2>&1 || true
@@ -36,9 +38,9 @@ go build -o "$TMP/" ./cmd/api ./cmd/worker ./cmd/admin
 go build -tags smoke -o "$TMP/" ./cmd/webhookrecv
 
 # A low rate limit so that the smoke run can reach it.
-HTTP_ADDR="$ADDR" LOG_FORMAT=json API_RATE_LIMIT_PER_MINUTE=20 "$TMP/api" >"$TMP/api.log" 2>&1 &
+HTTP_ADDR="$ADDR" ADMIN_HTTP_ADDR="$ADMIN_ADDR" LOG_FORMAT=json API_RATE_LIMIT_PER_MINUTE=20 "$TMP/api" >"$TMP/api.log" 2>&1 &
 API_PID=$!
-HTTP_ADDR="$ADDR2" LOG_FORMAT=json REQUIRE_VERIFIED_SENDER=true "$TMP/api" >"$TMP/api2.log" 2>&1 &
+HTTP_ADDR="$ADDR2" ADMIN_HTTP_ADDR=off LOG_FORMAT=json REQUIRE_VERIFIED_SENDER=true "$TMP/api" >"$TMP/api2.log" 2>&1 &
 API2_PID=$!
 LOG_FORMAT=json "$TMP/worker" >"$TMP/worker.log" 2>&1 &
 WORKER_PID=$!
@@ -82,6 +84,15 @@ tr ',' '\n' <<<"$WEBHOOK_KEKS" | sed 's/^[^:]*://' >>"$TMP/needles"
 # Pass the key via a file, not the command line (visible in ps).
 umask 077
 printf 'Authorization: Bearer %s\n' "$key" >"$TMP/auth.header"
+# The admin API is on its own listener: no session or a project key is
+# refused there, and its routes do not exist on the public listener.
+admin_code() { curl -sS -o /dev/null -w '%{http_code}' "$@"; }
+[[ "$(admin_code "http://$ADMIN_ADDR/admin/v1/me")" == 401 ]] || fail "admin /me without a session is not 401"
+[[ "$(admin_code -H @"$TMP/auth.header" "http://$ADMIN_ADDR/admin/v1/me")" == 401 ]] || fail "admin /me with a project key is not 401"
+[[ "$(admin_code -H @"$TMP/auth.header" "http://$ADMIN_ADDR/v1/emails")" == 404 ]] || fail "/v1 is routed on the admin listener"
+[[ "$(admin_code "http://$ADDR/admin/v1/me")" == 404 ]] || fail "admin routes exist on the public listener"
+echo "admin API -> separate listener, 401 without session and with a project key"
+
 # The internal app's webhook endpoint; the secret is shown once and handed to
 # the receiver through a file.
 "$TMP/admin" webhook create -project "$project" -url "http://$RECV_ADDR/hooks" >"$TMP/webhook.out" 2>"$TMP/admin.err" ||

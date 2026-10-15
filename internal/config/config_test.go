@@ -16,6 +16,8 @@ func env(m map[string]string) LookupFunc {
 
 const devURL = "postgres://ep:s3cret@localhost:54320/ep?sslmode=disable"
 
+const prodURL = "postgres://ep:s3cret@db.internal:5432/ep?sslmode=require"
+
 func TestLoadDefaults(t *testing.T) {
 	cfg, err := Load(env(map[string]string{"DATABASE_URL": devURL}))
 	if err != nil {
@@ -89,6 +91,12 @@ func TestLoadRejectsInvalid(t *testing.T) {
 		{"template cap zero", map[string]string{"DATABASE_URL": devURL, "TEMPLATE_MAX_PER_PROJECT": "0"}, "TEMPLATE_MAX_PER_PROJECT"},
 		{"version cap too high", map[string]string{"DATABASE_URL": devURL, "TEMPLATE_MAX_VERSIONS": "10001"}, "TEMPLATE_MAX_VERSIONS"},
 		{"template storage below 1 MiB", map[string]string{"DATABASE_URL": devURL, "TEMPLATE_MAX_STORAGE_BYTES": "1048575"}, "TEMPLATE_MAX_STORAGE_BYTES"},
+		{"admin addr no port", map[string]string{"DATABASE_URL": devURL, "ADMIN_HTTP_ADDR": "127.0.0.1"}, "ADMIN_HTTP_ADDR"},
+		{"admin addr bad port", map[string]string{"DATABASE_URL": devURL, "ADMIN_HTTP_ADDR": "127.0.0.1:0"}, "ADMIN_HTTP_ADDR"},
+		{"admin addr public in production", map[string]string{"DATABASE_URL": prodURL, "APP_ENV": "production", "ADMIN_HTTP_ADDR": "0.0.0.0:8081"}, "ADMIN_HTTP_ADDR"},
+		{"admin addr empty host in production", map[string]string{"DATABASE_URL": prodURL, "APP_ENV": "production", "ADMIN_HTTP_ADDR": ":8081"}, "ADMIN_HTTP_ADDR"},
+		{"admin addr hostname in production", map[string]string{"DATABASE_URL": prodURL, "APP_ENV": "production", "ADMIN_HTTP_ADDR": "localhost:8081"}, "ADMIN_HTTP_ADDR"},
+		{"admin addr private in production", map[string]string{"DATABASE_URL": prodURL, "APP_ENV": "production", "ADMIN_HTTP_ADDR": "10.0.0.5:8081"}, "ADMIN_HTTP_ADDR"},
 		{"admin idle too short", map[string]string{"DATABASE_URL": devURL, "ADMIN_SESSION_IDLE": "1m"}, "ADMIN_SESSION_IDLE"},
 		{"admin idle too long", map[string]string{"DATABASE_URL": devURL, "ADMIN_SESSION_IDLE": "25h"}, "ADMIN_SESSION_IDLE"},
 		{"admin max below idle", map[string]string{"DATABASE_URL": devURL, "ADMIN_SESSION_IDLE": "2h", "ADMIN_SESSION_MAX": "1h"}, "ADMIN_SESSION_MAX"},
@@ -319,5 +327,22 @@ func TestLoadWebhookDelivery(t *testing.T) {
 	_, err = Load(env(map[string]string{"DATABASE_URL": devURL, "PROVIDER_TIMEOUT": "1s", "WEBHOOK_TIMEOUT": "60s", "JOB_RESCUE_AFTER": "100s"}))
 	if err == nil || !strings.Contains(err.Error(), "WEBHOOK_TIMEOUT + 50s") {
 		t.Errorf("rescue window shorter than a webhook job: err = %v", err)
+	}
+}
+
+func TestAdminHTTPAddr(t *testing.T) {
+	for _, tc := range []struct {
+		env  map[string]string
+		want string
+	}{
+		{map[string]string{"DATABASE_URL": devURL}, "127.0.0.1:8081"},
+		{map[string]string{"DATABASE_URL": devURL, "ADMIN_HTTP_ADDR": "off"}, ""},
+		{map[string]string{"DATABASE_URL": devURL, "ADMIN_HTTP_ADDR": "0.0.0.0:9000"}, "0.0.0.0:9000"},
+		{map[string]string{"DATABASE_URL": prodURL, "APP_ENV": "production", "ADMIN_HTTP_ADDR": "[::1]:8081"}, "[::1]:8081"},
+	} {
+		cfg, err := Load(env(tc.env))
+		if err != nil || cfg.AdminHTTPAddr != tc.want {
+			t.Errorf("%v: %q %v, want %q", tc.env, cfg.AdminHTTPAddr, err, tc.want)
+		}
 	}
 }
