@@ -66,6 +66,11 @@ type Config struct {
 	// TemplateWritesPerMinute caps template creates/publishes per project
 	// and minute (attempts, also refused ones).
 	TemplateWritesPerMinute int
+
+	// Admin sessions end after AdminSessionIdle without use or
+	// AdminSessionMax after login.
+	AdminSessionIdle time.Duration
+	AdminSessionMax  time.Duration
 	// ProviderRatePerSecond caps messages per second the worker process
 	// hands to the provider.
 	ProviderRatePerSecond float64
@@ -238,6 +243,14 @@ func Load(lookup LookupFunc) (Config, error) {
 	cfg.TemplateMaxVersions, errs = intInRange(get, "TEMPLATE_MAX_VERSIONS", "500", 1, 10_000, errs)
 	cfg.TemplateMaxStorageBytes, errs = intInRange(get, "TEMPLATE_MAX_STORAGE_BYTES", "52428800", 1<<20, 10<<30, errs)
 	cfg.TemplateWritesPerMinute, errs = intInRange(get, "TEMPLATE_WRITES_PER_MINUTE", "60", 1, 100_000, errs)
+	cfg.AdminSessionIdle, errs = positiveDuration(get, "ADMIN_SESSION_IDLE", "30m", errs)
+	if cfg.AdminSessionIdle > 0 && (cfg.AdminSessionIdle < 5*time.Minute || cfg.AdminSessionIdle > 24*time.Hour) {
+		errs = append(errs, errors.New("ADMIN_SESSION_IDLE must be between 5m and 24h"))
+	}
+	cfg.AdminSessionMax, errs = positiveDuration(get, "ADMIN_SESSION_MAX", "12h", errs)
+	if cfg.AdminSessionMax > 0 && (cfg.AdminSessionMax < cfg.AdminSessionIdle || cfg.AdminSessionMax > 7*24*time.Hour) {
+		errs = append(errs, errors.New("ADMIN_SESSION_MAX must be at least ADMIN_SESSION_IDLE and at most 168h"))
+	}
 	cfg.SendMaxAttempts, errs = intInRange(get, "SEND_MAX_ATTEMPTS", "8", 1, maxSendAttempts, errs)
 	cfg.RetryBaseDelay, errs = positiveDuration(get, "RETRY_BASE_DELAY", "30s", errs)
 	if cfg.RetryBaseDelay > 0 && cfg.RetryBaseDelay < time.Second {

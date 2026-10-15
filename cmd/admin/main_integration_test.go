@@ -14,7 +14,7 @@ import (
 func admin(t *testing.T, args ...string) (string, error) {
 	t.Helper()
 	var out, errOut bytes.Buffer
-	err := run(context.Background(), args, &out, &errOut)
+	err := run(context.Background(), args, strings.NewReader(""), &out, &errOut)
 	return out.String(), err
 }
 
@@ -135,5 +135,51 @@ func TestWebhookCommands(t *testing.T) {
 	t.Setenv("WEBHOOK_KEKS", "")
 	if _, err := admin(t, "webhook", "create", "-project", project, "-url", "https://h.example.test/"); err == nil || !strings.Contains(err.Error(), "WEBHOOK_KEKS") {
 		t.Fatalf("without keys: err = %v", err)
+	}
+}
+
+func adminIn(t *testing.T, stdin string, args ...string) (string, error) {
+	t.Helper()
+	var out, errOut bytes.Buffer
+	err := run(context.Background(), args, strings.NewReader(stdin), &out, &errOut)
+	return out.String(), err
+}
+
+func TestUserCommands(t *testing.T) {
+	dbURL, _ := testdb.NewMigratedURL(t)
+	t.Setenv("DATABASE_URL", dbURL)
+
+	if _, err := adminIn(t, "correct horse battery\n", "user", "create", "-username", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adminIn(t, "short\n", "user", "create", "-username", "bob"); err == nil {
+		t.Fatal("short password accepted")
+	}
+	if _, err := adminIn(t, "correct horse battery\n", "user", "create", "-username", "alice"); err == nil {
+		t.Fatal("duplicate user accepted")
+	}
+	if _, err := adminIn(t, "", "user", "create"); err == nil {
+		t.Fatal("missing -username accepted")
+	}
+	out, err := admin(t, "user", "list")
+	if err != nil || !strings.Contains(out, "alice\tenabled") || strings.Contains(out, "correct horse") {
+		t.Fatalf("list: %q %v", out, err)
+	}
+	for _, cmd := range []string{"disable", "enable", "unlock"} {
+		if _, err := admin(t, "user", cmd, "-username", "alice"); err != nil {
+			t.Fatalf("%s: %v", cmd, err)
+		}
+		if _, err := admin(t, "user", cmd, "-username", "nobody"); err == nil {
+			t.Fatalf("%s of an unknown user succeeded", cmd)
+		}
+	}
+	if _, err := admin(t, "user", "disable", "-username", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if out, _ := admin(t, "user", "list"); !strings.Contains(out, "alice\tdisabled") {
+		t.Fatalf("list after disable: %q", out)
+	}
+	if _, err := adminIn(t, "another long password\r\n", "user", "set-password", "-username", "alice"); err != nil {
+		t.Fatal(err)
 	}
 }

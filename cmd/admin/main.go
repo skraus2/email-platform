@@ -22,14 +22,19 @@
 //	admin webhook rotate-secret -project <uuid> -id <uuid>
 //	admin webhook reencrypt
 //	admin webhook deliveries -project <uuid> [-status failed] [-limit 50]
+//	admin user create|set-password -username <name>   (password from stdin)
+//	admin user list
+//	admin user disable|enable|unlock -username <name>
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/signal"
 	"strings"
@@ -40,6 +45,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	adminacct "github.com/skraus2/email-platform/internal/admin"
 	"github.com/skraus2/email-platform/internal/auth"
 	"github.com/skraus2/email-platform/internal/config"
 	"github.com/skraus2/email-platform/internal/database"
@@ -69,18 +75,22 @@ const usage = `usage:
   admin webhook disable|enable -project <uuid> -id <uuid>
   admin webhook rotate-secret -project <uuid> -id <uuid>
   admin webhook reencrypt
-  admin webhook deliveries -project <uuid> [-status failed] [-limit 50]`
+  admin webhook deliveries -project <uuid> [-status failed] [-limit 50]
+  admin user create -username <name>        (password from stdin)
+  admin user set-password -username <name>  (password from stdin)
+  admin user list
+  admin user disable|enable|unlock -username <name>`
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	if err := run(ctx, os.Args[1:], os.Stdout, os.Stderr); err != nil {
+	if err := run(ctx, os.Args[1:], os.Stdin, os.Stdout, os.Stderr); err != nil {
 		fmt.Fprintln(os.Stderr, "admin:", err)
 		os.Exit(1)
 	}
 }
 
-func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	if len(args) < 2 {
 		return errors.New(usage)
 	}
@@ -109,6 +119,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	hookURL := fs.String("url", "", "webhook URL")
 	hookEvents := fs.String("events", "", "comma-separated webhook event types (default: all)")
 	domain := fs.String("domain", "", "sender domain")
+	username := fs.String("username", "", "admin user name")
 	reason := fs.String("reason", "manual", "suppression reason: "+strings.Join(emails.SuppressionReasons, ", "))
 	if err := fs.Parse(args[2:]); err != nil {
 		return err
@@ -264,6 +275,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 			return errors.New("-project must be a project uuid")
 		}
 		return webhook(ctx, cfg, pool, q, args[1], pid, *id, *hookURL, *hookEvents, stdout)
+	case "user create", "user set-password", "user list", "user disable", "user enable", "user unlock":
+		return userCommand(ctx, adminacct.NewService(pool, slog.New(slog.DiscardHandler), cfg.AdminSessionIdle, cfg.AdminSessionMax),
+			args[1], *username, stdin, stdout)
 	default:
 		return errors.New(usage)
 	}
@@ -395,4 +409,68 @@ func suppression(ctx context.Context, q *store.Queries, action string, pid uuid.
 		}
 		return w.Flush()
 	}
+}
+
+// userCommand manages dashboard accounts. Passwords are read from stdin
+// (first line), never from arguments or the environment.
+func userCommand(ctx context.Context, svc *adminacct.Service, cmd, username string, stdin io.Reader, stdout io.Writer) error {
+	if cmd == "list" {
+		users, err := svc.ListUsers(ctx)
+		if err != nil {
+			return err
+		}
+		for _, u := range users {
+			state := "enabled"
+			switch {
+			case u.Disabled:
+				state = "disabled"
+			case u.Locked:
+				state = "locked"
+			}
+			fmt.Fprintf(stdout, "%s\t%s\tcreated %s\tpassword set %s\n", u.Username, state,
+				u.CreatedAt.UTC().Format(time.RFC3339), u.PasswordSetAt.UTC().Format(time.RFC3339))
+		}
+		return nil
+	}
+	if username == "" {
+		return errors.New("-username is required")
+	}
+	readPassword := func() (string, error) {
+		line, err := bufio.NewReader(io.LimitReader(stdin, 4096)).ReadString('\n')
+		if err != nil && !errors.Is(err, io.EOF) {
+			return "", fmt.Errorf("read password from stdin: %w", err)
+		}
+		return strings.TrimRight(line, "\r\n"), nil
+	}
+	switch cmd {
+	case "create":
+		pw, err := readPassword()
+		if err != nil {
+			return err
+		}
+		if _, err := svc.CreateUser(ctx, username, pw); err != nil {
+			return err
+		}
+		fmt.Fprintf(stdout, "Created admin user %s.\n", username)
+	case "set-password":
+		pw, err := readPassword()
+		if err != nil {
+			return err
+		}
+		if err := svc.SetPassword(ctx, username, pw); err != nil {
+			return err
+		}
+		fmt.Fprintf(stdout, "Password of %s changed; their sessions ended.\n", username)
+	case "disable", "enable":
+		if err := svc.SetDisabled(ctx, username, cmd == "disable"); err != nil {
+			return err
+		}
+		fmt.Fprintf(stdout, "Admin user %s %sd.\n", username, cmd)
+	case "unlock":
+		if err := svc.Unlock(ctx, username); err != nil {
+			return err
+		}
+		fmt.Fprintf(stdout, "Admin user %s unlocked.\n", username)
+	}
+	return nil
 }

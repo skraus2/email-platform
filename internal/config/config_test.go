@@ -89,6 +89,10 @@ func TestLoadRejectsInvalid(t *testing.T) {
 		{"template cap zero", map[string]string{"DATABASE_URL": devURL, "TEMPLATE_MAX_PER_PROJECT": "0"}, "TEMPLATE_MAX_PER_PROJECT"},
 		{"version cap too high", map[string]string{"DATABASE_URL": devURL, "TEMPLATE_MAX_VERSIONS": "10001"}, "TEMPLATE_MAX_VERSIONS"},
 		{"template storage below 1 MiB", map[string]string{"DATABASE_URL": devURL, "TEMPLATE_MAX_STORAGE_BYTES": "1048575"}, "TEMPLATE_MAX_STORAGE_BYTES"},
+		{"admin idle too short", map[string]string{"DATABASE_URL": devURL, "ADMIN_SESSION_IDLE": "1m"}, "ADMIN_SESSION_IDLE"},
+		{"admin idle too long", map[string]string{"DATABASE_URL": devURL, "ADMIN_SESSION_IDLE": "25h"}, "ADMIN_SESSION_IDLE"},
+		{"admin max below idle", map[string]string{"DATABASE_URL": devURL, "ADMIN_SESSION_IDLE": "2h", "ADMIN_SESSION_MAX": "1h"}, "ADMIN_SESSION_MAX"},
+		{"admin max above a week", map[string]string{"DATABASE_URL": devURL, "ADMIN_SESSION_MAX": "169h"}, "ADMIN_SESSION_MAX"},
 		{"template writes zero", map[string]string{"DATABASE_URL": devURL, "TEMPLATE_WRITES_PER_MINUTE": "0"}, "TEMPLATE_WRITES_PER_MINUTE"},
 		{"template storage not a number", map[string]string{"DATABASE_URL": devURL, "TEMPLATE_MAX_STORAGE_BYTES": "50MiB"}, "TEMPLATE_MAX_STORAGE_BYTES"},
 		{"max delay above a day", map[string]string{"DATABASE_URL": devURL, "RETRY_MAX_DELAY": "25h"}, "RETRY_MAX_DELAY"},
@@ -179,7 +183,8 @@ func TestLoadRetryDefaults(t *testing.T) {
 	if cfg.APIRateLimitPerMinute != 600 {
 		t.Errorf("APIRateLimitPerMinute = %d, want 600", cfg.APIRateLimitPerMinute)
 	}
-	if cfg.TemplateMaxPerProject != 200 || cfg.TemplateMaxVersions != 500 || cfg.TemplateMaxStorageBytes != 50<<20 || cfg.TemplateWritesPerMinute != 60 {
+	if cfg.TemplateMaxPerProject != 200 || cfg.TemplateMaxVersions != 500 || cfg.TemplateMaxStorageBytes != 50<<20 || cfg.TemplateWritesPerMinute != 60 ||
+		cfg.AdminSessionIdle != 30*time.Minute || cfg.AdminSessionMax != 12*time.Hour {
 		t.Errorf("template caps = %d %d %d %d", cfg.TemplateMaxPerProject, cfg.TemplateMaxVersions, cfg.TemplateMaxStorageBytes, cfg.TemplateWritesPerMinute)
 	}
 	if cfg.SendMaxAttempts != 8 || cfg.RetryBaseDelay != 30*time.Second || cfg.RetryMaxDelay != time.Hour {

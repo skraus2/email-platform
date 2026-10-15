@@ -10,6 +10,26 @@ import (
 	"github.com/google/uuid"
 )
 
+type AdminSession struct {
+	ID          uuid.UUID
+	AdminUserID uuid.UUID
+	TokenHash   []byte
+	CreatedAt   time.Time
+	LastSeenAt  time.Time
+	ExpiresAt   time.Time
+}
+
+type AdminUser struct {
+	ID                uuid.UUID
+	Username          string
+	PasswordHash      string
+	DisabledAt        *time.Time
+	FailedLogins      int32
+	LockedUntil       *time.Time
+	CreatedAt         time.Time
+	PasswordChangedAt time.Time
+}
+
 type ApiKey struct {
 	ID         uuid.UUID
 	ProjectID  uuid.UUID
