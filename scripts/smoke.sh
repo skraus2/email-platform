@@ -78,7 +78,7 @@ key=$("$TMP/admin" key create -project "$project" 2>"$TMP/admin.err") || fail "a
 [[ "$key" == ep_* ]] || fail "admin did not issue a key"
 # Needles from a file: the key must not appear in grep's command line.
 printf '%s\n' "$key" "smoke-recipient@example.test" "blocked@example.test" "smoke body" "smoke-par-" >"$TMP/needles"
-printf '%s\n' "${WEBHOOK_KEKS#*:}" >>"$TMP/needles"
+tr ',' '\n' <<<"$WEBHOOK_KEKS" | sed 's/^[^:]*://' >>"$TMP/needles"
 # Pass the key via a file, not the command line (visible in ps).
 umask 077
 printf 'Authorization: Bearer %s\n' "$key" >"$TMP/auth.header"

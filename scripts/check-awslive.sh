@@ -70,7 +70,8 @@ for tags in "" "integration,load,smoke"; do
 done
 # Test stand-ins (fake AWS, throwaway databases, the certificate-fetch hook)
 # never reach a shipped binary.
-shipped=$(go list -deps ./cmd/api ./cmd/worker ./cmd/admin ./cmd/migrate)
+# Without tags, ./cmd/... is exactly what make build and the Dockerfile build.
+shipped=$(go list -deps ./cmd/...)
 for pkg in internal/testaws internal/testdb internal/testmailpit; do
 	if grep -qx "github.com/skraus2/email-platform/$pkg" <<<"$shipped"; then
 		fail "$pkg is linked into a shipped binary"
