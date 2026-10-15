@@ -180,7 +180,7 @@ func TestLoadRetryDefaults(t *testing.T) {
 		t.Errorf("APIRateLimitPerMinute = %d, want 600", cfg.APIRateLimitPerMinute)
 	}
 	if cfg.TemplateMaxPerProject != 200 || cfg.TemplateMaxVersions != 500 || cfg.TemplateMaxStorageBytes != 50<<20 || cfg.TemplateWritesPerMinute != 60 {
-		t.Errorf("template caps = %d %d %d", cfg.TemplateMaxPerProject, cfg.TemplateMaxVersions, cfg.TemplateMaxStorageBytes)
+		t.Errorf("template caps = %d %d %d %d", cfg.TemplateMaxPerProject, cfg.TemplateMaxVersions, cfg.TemplateMaxStorageBytes, cfg.TemplateWritesPerMinute)
 	}
 	if cfg.SendMaxAttempts != 8 || cfg.RetryBaseDelay != 30*time.Second || cfg.RetryMaxDelay != time.Hour {
 		t.Fatalf("retry defaults = %d %v %v", cfg.SendMaxAttempts, cfg.RetryBaseDelay, cfg.RetryMaxDelay)

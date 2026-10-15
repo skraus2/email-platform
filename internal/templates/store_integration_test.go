@@ -341,6 +341,10 @@ func TestWriteRateLimitCountsEveryAttempt(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	pool, a, b := setup(t)
+	// All writes must fall into one minute window.
+	if sec := time.Now().Second(); sec > 50 {
+		time.Sleep(time.Duration(61-sec) * time.Second)
+	}
 	s := templates.NewStore(pool, 200, 500, 1<<20, 3)
 	tmpl, err := s.Create(ctx, a, "t", "") // 1
 	if err != nil {
@@ -415,7 +419,7 @@ func TestWritesAreBoundedInConcurrencyAndTime(t *testing.T) {
 	if _, err := s.Publish(ctx, a, tmpl.ID, src, []byte(schema)); !errors.Is(err, templates.ErrBusy) {
 		t.Fatalf("lock held: %v", err)
 	}
-	if waited := time.Since(start); waited < 2*time.Second || waited > 8*time.Second {
+	if waited := time.Since(start); waited < 2500*time.Millisecond || waited > 9500*time.Millisecond {
 		t.Fatalf("gave up after %v, want about the 3s lock timeout", waited)
 	}
 	// The write time limit applies as well.

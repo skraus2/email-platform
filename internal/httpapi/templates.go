@@ -200,6 +200,10 @@ func (s *Server) writeTemplateError(w http.ResponseWriter, r *http.Request, op s
 	case errors.Is(err, templates.ErrStorageLimit):
 		writeError(w, http.StatusUnprocessableEntity, "template_storage_limit_reached",
 			"the project has reached its template storage limit")
+	case errors.Is(err, context.Canceled) && r.Context().Err() != nil:
+		// The client went away; nothing to report.
+		s.logger.DebugContext(r.Context(), op+": client cancelled")
+		writeUnavailable(w)
 	case database.Unavailable(err):
 		s.logger.ErrorContext(r.Context(), op+": database unavailable",
 			slog.String("project_id", principalFrom(r.Context()).ProjectID.String()), slog.Any("error", err))

@@ -347,8 +347,6 @@ paths:
           $ref: "#/components/responses/UnprocessableEntity"
         "429":
           $ref: "#/components/responses/TooManyRequests"
-        "429":
-          $ref: "#/components/responses/TooManyRequests"
         "500":
           $ref: "#/components/responses/InternalError"
         "503":
@@ -438,8 +436,6 @@ paths:
           $ref: "#/components/responses/UnsupportedMediaType"
         "422":
           $ref: "#/components/responses/UnprocessableEntity"
-        "429":
-          $ref: "#/components/responses/TooManyRequests"
         "429":
           $ref: "#/components/responses/TooManyRequests"
         "500":
@@ -1052,7 +1048,7 @@ components:
         format: uuid
   responses:
     BadRequest:
-      description: "Malformed request: `invalid_json`, `invalid_idempotency_key`, `invalid_cursor`, `invalid_limit` or `invalid_filter`."
+      description: "Malformed request: `invalid_json` (also for unknown, case-variant or duplicate field names — names are exact and case-sensitive), `invalid_idempotency_key`, `invalid_cursor`, `invalid_limit` or `invalid_filter`."
       content:
         application/json:
           schema:

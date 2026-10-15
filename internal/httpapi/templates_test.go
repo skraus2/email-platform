@@ -148,3 +148,18 @@ func TestRequestFieldsAreExactAndUnique(t *testing.T) {
 		assertErrorCode(t, rec, "invalid_json")
 	}
 }
+
+func TestSendRequestFieldsAreExactAndUnique(t *testing.T) {
+	s, _ := emailServer(t, &fakeEmails{}, principal)
+	for _, body := range []string{
+		`{"From":"a@example.test","to":"b@example.test","subject":"s","text":"t"}`,
+		`{"from":"a@example.test","to":"b@example.test","to":"c@example.test","subject":"s","text":"t"}`,
+	} {
+		rec := post(t, s, body, nil)
+		if rec.Code != 400 {
+			t.Errorf("%s: %d, want 400", body, rec.Code)
+			continue
+		}
+		assertErrorCode(t, rec, "invalid_json")
+	}
+}

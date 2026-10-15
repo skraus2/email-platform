@@ -118,31 +118,36 @@ func NewStore(pool *pgxpool.Pool, maxTemplates, maxVersions int, maxBytes int64,
 // project's per-minute budget. The returned context carries the write time
 // limit; done releases the slot.
 func (s *Store) beginWrite(ctx context.Context, projectID uuid.UUID) (context.Context, func(), error) {
-	wait := time.NewTimer(s.writeWait)
-	defer wait.Stop()
-	select {
-	case s.writeSlots <- struct{}{}:
-	case <-wait.C:
-		return nil, nil, ErrBusy
-	case <-ctx.Done():
-		return nil, nil, ctx.Err()
-	}
 	wctx, cancel := context.WithTimeout(ctx, s.writeTimeout)
-	done := func() { cancel(); <-s.writeSlots }
+	// Counted before waiting for a slot, so requests turned away as busy
+	// use up the project's budget too.
 	row, err := store.New(s.pool).CountTemplateWrite(wctx, projectID)
 	var pgErr *pgconn.PgError
 	switch {
 	case errors.As(err, &pgErr) && pgErr.Code == "23503":
-		done()
+		cancel()
 		return nil, nil, ErrNotFound // no such project
 	case err != nil:
-		done()
-		return nil, nil, s.writeError(ctx, wctx, fmt.Errorf("count template write: %w", err))
+		err = s.writeError(ctx, wctx, fmt.Errorf("count template write: %w", err))
+		cancel()
+		return nil, nil, err
 	case int(row.Count) > s.perMinute:
-		done()
+		cancel()
 		return nil, nil, &RateLimitError{RetryAfter: time.Duration(min(max(row.RetryAfterSeconds, 1), 60)) * time.Second}
 	}
-	return wctx, done, nil
+	slots := s.writeSlots // released into the same channel it was taken from
+	wait := time.NewTimer(s.writeWait)
+	defer wait.Stop()
+	select {
+	case slots <- struct{}{}:
+	case <-wait.C:
+		cancel()
+		return nil, nil, ErrBusy
+	case <-ctx.Done():
+		cancel()
+		return nil, nil, ctx.Err()
+	}
+	return wctx, func() { cancel(); <-slots }, nil
 }
 
 // writeError turns our own time limit and lock timeouts into ErrBusy; the
