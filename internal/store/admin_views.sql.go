@@ -327,9 +327,10 @@ WHERE e.id < $1::uuid
   AND ($8::timestamptz IS NULL OR e.created_at < $8::timestamptz)
   AND ($9::uuid IS NULL OR e.id = $9::uuid)
   AND ($10::text IS NULL OR e.provider_id = $10::text
+       OR e.provider_id = $11::text
        OR lower(e.recipient) = lower($10::text))
 ORDER BY e.id DESC
-LIMIT $11
+LIMIT $12
 `
 
 type AdminSearchEmailsParams struct {
@@ -343,6 +344,7 @@ type AdminSearchEmailsParams struct {
 	CreatedBefore *time.Time
 	EmailID       *uuid.UUID
 	TextQuery     *string
+	TextQueryAlt  *string
 	RowLimit      int32
 }
 
@@ -363,6 +365,7 @@ func (q *Queries) AdminSearchEmails(ctx context.Context, arg AdminSearchEmailsPa
 		arg.CreatedBefore,
 		arg.EmailID,
 		arg.TextQuery,
+		arg.TextQueryAlt,
 		arg.RowLimit,
 	)
 	if err != nil {

@@ -502,22 +502,26 @@ func (s *Service) List(ctx context.Context, projectID uuid.UUID, f ListFilter, l
 	}
 	rowLimit := int32(limit + 1) //nolint:gosec // bounded above
 	var rows []store.Email
-	// Unnamed statements: the plan must fit this request's filters and
-	// cursor, not a cached generic plan.
-	q := store.New(store.Unprepared(s.pool))
-	if f.Recipient != "" {
-		rows, err = q.ListProjectEmailsByRecipient(qctx, store.ListProjectEmailsByRecipientParams{
-			ProjectID: projectID, Recipient: f.Recipient, BeforeID: before, MinID: minID, Statuses: statuses,
-			CreatedAfter: f.CreatedAfter, CreatedBefore: f.CreatedBefore, TemplateID: f.TemplateID, RowLimit: rowLimit,
-		})
-	} else {
-		rows, err = q.ListProjectEmails(qctx, store.ListProjectEmailsParams{
-			ProjectID: projectID, BeforeID: before, MinID: minID, Statuses: statuses,
-			CreatedAfter: f.CreatedAfter, CreatedBefore: f.CreatedBefore, TemplateID: f.TemplateID, RowLimit: rowLimit,
-		})
-	}
+	// Unnamed statements (the plan must fit this request's filters and
+	// cursor, not a cached generic plan) under a server-side statement
+	// timeout, so an expensive list is really stopped, not just abandoned.
+	err = store.ReadOnlyWithTimeout(qctx, s.pool, s.listTimeout, func(q *store.Queries) error {
+		var err error
+		if f.Recipient != "" {
+			rows, err = q.ListProjectEmailsByRecipient(qctx, store.ListProjectEmailsByRecipientParams{
+				ProjectID: projectID, Recipient: f.Recipient, BeforeID: before, MinID: minID, Statuses: statuses,
+				CreatedAfter: f.CreatedAfter, CreatedBefore: f.CreatedBefore, TemplateID: f.TemplateID, RowLimit: rowLimit,
+			})
+		} else {
+			rows, err = q.ListProjectEmails(qctx, store.ListProjectEmailsParams{
+				ProjectID: projectID, BeforeID: before, MinID: minID, Statuses: statuses,
+				CreatedAfter: f.CreatedAfter, CreatedBefore: f.CreatedBefore, TemplateID: f.TemplateID, RowLimit: rowLimit,
+			})
+		}
+		return err
+	})
 	if err != nil {
-		if ctx.Err() == nil && qctx.Err() != nil {
+		if ctx.Err() == nil && (qctx.Err() != nil || store.StatementTimedOut(err)) {
 			s.logger.WarnContext(ctx, "email list query hit its time limit",
 				slog.String("project_id", projectID.String()), slog.Duration("limit", s.listTimeout))
 			return nil, false, ErrListBusy

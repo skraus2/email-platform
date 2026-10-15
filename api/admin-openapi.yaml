@@ -18,6 +18,11 @@ info:
     Responses never contain email bodies, template variables of sent
     emails, webhook secrets or API key hashes. All responses carry
     `Cache-Control: no-store`. Errors use the same envelope as `/v1`.
+
+    Requests whose `Host` is neither a loopback address, `localhost` nor the
+    listener's own host get `421 misdirected_request` (protection against DNS
+    rebinding). Searches and previews run a few at a time per process and are
+    cancelled after 5 seconds; when busy the answer is `503`.
 servers:
   - url: http://127.0.0.1:8081
     description: Local development

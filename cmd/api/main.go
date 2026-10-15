@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -92,11 +93,17 @@ func run() error {
 	if cfg.AdminHTTPAddr != "" {
 		// The operator API: its own listener and mux, never reachable with a
 		// project key.
+		adminHost, _, _ := net.SplitHostPort(cfg.AdminHTTPAddr)
 		adminAPI := httpapi.NewAdmin(httpapi.AdminDeps{
-			Logger:   logger,
-			Sessions: admin.NewService(pool, logger, cfg.AdminSessionIdle, cfg.AdminSessionMax),
-			Views:    admin.NewViews(pool),
+			Logger:     logger,
+			Sessions:   admin.NewService(pool, logger, cfg.AdminSessionIdle, cfg.AdminSessionMax),
+			Views:      admin.NewViews(pool),
+			ListenHost: adminHost,
 		})
+		if !cfg.AdminBindIsLoopback() {
+			logger.Warn("admin API listens beyond loopback without TLS: admin passwords and session tokens cross the network in clear",
+				slog.String("admin_addr", cfg.AdminHTTPAddr))
+		}
 		servers = append(servers, newServer(adminAPI.Handler()))
 		addrs = append(addrs, cfg.AdminHTTPAddr)
 	}
@@ -128,9 +135,11 @@ func run() error {
 		go func() { serveErr <- srv.Serve(listeners[i]) }()
 	}
 
+	var failed error
 	select {
 	case err := <-serveErr:
-		return fmt.Errorf("http server: %w", err)
+		// One listener died: shut the others down too before returning.
+		failed = fmt.Errorf("http server: %w", err)
 	case <-ctx.Done():
 	}
 	stop() // a second signal now terminates immediately
@@ -139,19 +148,29 @@ func run() error {
 	api.SetDraining()
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
 	defer cancel()
-	var shutdownErr error
-	for _, srv := range servers {
-		if err := srv.Shutdown(shutdownCtx); err != nil && shutdownErr == nil {
-			shutdownErr = fmt.Errorf("graceful shutdown: %w", err)
+	// All listeners drain at the same time, within one deadline.
+	shutdownErrs := make([]error, len(servers))
+	var wg sync.WaitGroup
+	for i, srv := range servers {
+		wg.Go(func() { shutdownErrs[i] = srv.Shutdown(shutdownCtx) })
+	}
+	wg.Wait()
+	remaining := len(servers)
+	if failed != nil {
+		remaining-- // its Serve error was already received
+	}
+	for range remaining {
+		if err := <-serveErr; !errors.Is(err, http.ErrServerClosed) && failed == nil {
+			failed = fmt.Errorf("http server: %w", err)
 		}
 	}
-	for range servers {
-		if err := <-serveErr; !errors.Is(err, http.ErrServerClosed) && shutdownErr == nil {
-			shutdownErr = fmt.Errorf("http server: %w", err)
+	for _, err := range shutdownErrs {
+		if err != nil && failed == nil {
+			failed = fmt.Errorf("graceful shutdown: %w", err)
 		}
 	}
-	if shutdownErr != nil {
-		return shutdownErr
+	if failed != nil {
+		return failed
 	}
 	logger.Info("shutdown complete")
 	return nil

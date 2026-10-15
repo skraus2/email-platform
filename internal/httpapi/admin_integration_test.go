@@ -3,13 +3,16 @@
 package httpapi_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -26,20 +29,40 @@ const adminPassword = "correct horse battery"
 type adminStack struct {
 	*stack
 	admin *httptest.Server
+	logs  *syncBuffer
+}
+
+// syncBuffer is a log sink safe for concurrent handlers.
+type syncBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
 }
 
 func newAdminStack(t *testing.T) *adminStack {
 	t.Helper()
 	s := newStack(t)
-	logger := slog.New(slog.DiscardHandler)
+	logs := &syncBuffer{}
+	logger := slog.New(slog.NewJSONHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	svc := admin.NewService(s.pool, logger, 30*time.Minute, 12*time.Hour)
 	if _, err := svc.CreateUser(context.Background(), "ops", adminPassword); err != nil {
 		t.Fatal(err)
 	}
-	a := httpapi.NewAdmin(httpapi.AdminDeps{Logger: logger, Sessions: svc, Views: admin.NewViews(s.pool)})
+	a := httpapi.NewAdmin(httpapi.AdminDeps{Logger: logger, Sessions: svc, Views: admin.NewViews(s.pool), ListenHost: "127.0.0.1"})
 	srv := httptest.NewServer(a.Handler())
 	t.Cleanup(srv.Close)
-	return &adminStack{stack: s, admin: srv}
+	return &adminStack{stack: s, admin: srv, logs: logs}
 }
 
 // call sends a request to base with the given Authorization value.
@@ -56,6 +79,10 @@ func call(t *testing.T, base, method, path, authorization, body string, hdr ...s
 		req.Header.Set("Content-Type", "application/json")
 	}
 	for i := 0; i+1 < len(hdr); i += 2 {
+		if hdr[i] == "Host" {
+			req.Host = hdr[i+1]
+			continue
+		}
 		req.Header.Set(hdr[i], hdr[i+1])
 	}
 	resp, err := http.DefaultClient.Do(req)
@@ -314,5 +341,184 @@ func TestAdminReadEndpoints(t *testing.T) {
 	_, _, rawEndpoints := call(t, a.admin.URL, "GET", "/admin/v1/webhook-endpoints?project_id="+pA.String(), session, "")
 	if !strings.Contains(rawEndpoints, endpointID.String()) || strings.Contains(rawEndpoints, "secret") || strings.Contains(rawEndpoints, "cipher") {
 		t.Fatalf("endpoints %s", rawEndpoints)
+	}
+}
+
+// keysOf returns the sorted keys of a JSON object.
+func keysOf(m map[string]any) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	slices.Sort(out)
+	return out
+}
+
+func assertKeys(t *testing.T, what string, m map[string]any, want ...string) {
+	t.Helper()
+	slices.Sort(want)
+	if got := keysOf(m); !slices.Equal(got, want) {
+		t.Errorf("%s keys %v, want %v", what, got, want)
+	}
+}
+
+func TestAdminContractAndHardening(t *testing.T) {
+	t.Parallel()
+	a := newAdminStack(t)
+	ctx := context.Background()
+	pA, keyA := a.project(t, "emails:send", "emails:read", "templates:read", "templates:write")
+	pB, keyB := a.project(t, "emails:send", "emails:read", "templates:read", "templates:write")
+	session := a.login(t)
+	token := strings.TrimPrefix(session, "Session ")
+
+	// Data: 5 emails over two projects, templates and endpoints in both.
+	var all []string
+	for i, key := range []string{keyA, keyB, keyA, keyB, keyA} {
+		_, e := a.do(t, "POST", "/v1/emails", key, `{"from":"noreply@example.test","to":"user`+string(rune('a'+i))+`@example.test","subject":"s","text":"t"}`)
+		all = append([]string{e["id"].(string)}, all...)
+	}
+	var tids []string
+	for _, key := range []string{keyA, keyB} {
+		_, tm := a.do(t, "POST", "/v1/templates", key, `{"slug":"t"}`)
+		tid := tm["id"].(string)
+		tids = append(tids, tid)
+		a.do(t, "POST", "/v1/templates/"+tid+"/versions", key, `{"subject":"S {{.v}}","text":"T {{.v}}","html":"<p>{{.v}}</p>","variables":{"v":{"type":"string"}}}`)
+	}
+	for _, p := range []uuid.UUID{pA, pB} {
+		if _, err := a.pool.Exec(ctx, `INSERT INTO webhook_endpoints (id, project_id, url, event_types, secret_ciphertext, secret_key_id)
+			VALUES ($1, $2, 'https://hooks.example.test/x', ARRAY['email.failed'], $3, 'k1')`, uuid.New(), p, make([]byte, 40)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := a.pool.Exec(ctx, `INSERT INTO sender_identities (project_id, kind, value) VALUES ($1, 'address', 'a@example.test')`, p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := a.pool.Exec(ctx, `UPDATE emails SET provider = 'mailpit', provider_id = '<msg-1@example.test>', status = 'captured', finished_at = now() WHERE id = $1`, all[0]); err != nil {
+		t.Fatal(err)
+	}
+
+	// Paging to the end returns every email exactly once, newest first.
+	var walked []string
+	cursor := ""
+	for range 10 {
+		path := "/admin/v1/emails?limit=2"
+		if cursor != "" {
+			path += "&cursor=" + cursor
+		}
+		_, m, _ := call(t, a.admin.URL, "GET", path, session, "")
+		for _, item := range m["data"].([]any) {
+			walked = append(walked, item.(map[string]any)["id"].(string))
+		}
+		next, _ := m["next_cursor"].(string)
+		if next == "" {
+			break
+		}
+		cursor = next
+	}
+	if !slices.Equal(walked, all) {
+		t.Fatalf("paged %v, want %v", walked, all)
+	}
+	// Unfiltered lists cover every project.
+	for path, want := range map[string]int{"/admin/v1/templates": 2, "/admin/v1/webhook-endpoints": 2, "/admin/v1/senders": 2, "/admin/v1/projects": 2} {
+		_, m, _ := call(t, a.admin.URL, "GET", path, session, "")
+		if n := len(m["data"].([]any)); n != want {
+			t.Errorf("%s: %d rows, want %d", path, n, want)
+		}
+	}
+	// A bare Message-ID finds the stored bracketed one.
+	if _, m, _ := call(t, a.admin.URL, "GET", "/admin/v1/emails?q=msg-1@example.test", session, ""); len(m["data"].([]any)) != 1 {
+		t.Fatalf("bare message id: %v", m)
+	}
+
+	// Response shapes match api/admin-openapi.yaml exactly.
+	_, me, _ := call(t, a.admin.URL, "GET", "/admin/v1/me", session, "")
+	assertKeys(t, "Me", me, "id", "username", "session_expires_at")
+	_, em, _ := call(t, a.admin.URL, "GET", "/admin/v1/emails/"+all[0], session, "")
+	assertKeys(t, "AdminEmail", em, "id", "project_id", "project_name", "status", "from", "to", "subject", "provider",
+		"provider_id", "attempts", "error_code", "template_id", "template_version", "created_at", "updated_at", "finished_at")
+	_, pr, _ := call(t, a.admin.URL, "GET", "/admin/v1/projects", session, "")
+	assertKeys(t, "Project", pr["data"].([]any)[0].(map[string]any), "id", "name", "status", "created_at")
+	_, tl, _ := call(t, a.admin.URL, "GET", "/admin/v1/templates", session, "")
+	assertKeys(t, "Template", tl["data"].([]any)[0].(map[string]any), "id", "project_id", "slug", "name", "latest_version", "created_at")
+	_, td, _ := call(t, a.admin.URL, "GET", "/admin/v1/templates/"+tids[0], session, "")
+	assertKeys(t, "TemplateDetail", td, "id", "project_id", "slug", "name", "latest_version", "created_at", "versions")
+	_, tv, _ := call(t, a.admin.URL, "GET", "/admin/v1/templates/"+tids[0]+"/versions/1", session, "")
+	assertKeys(t, "TemplateVersion", tv, "template_id", "project_id", "version", "subject", "text", "html", "variables", "created_at")
+	_, rd, _ := call(t, a.admin.URL, "POST", "/admin/v1/templates/"+tids[0]+"/versions/1/preview", session, `{"variables":{"v":"Zq9-preview-secret"}}`)
+	assertKeys(t, "Rendered", rd, "subject", "text", "html")
+	_, sd, _ := call(t, a.admin.URL, "GET", "/admin/v1/senders", session, "")
+	assertKeys(t, "Sender", sd["data"].([]any)[0].(map[string]any), "id", "project_id", "kind", "value", "status", "verified_at", "created_at")
+	_, we, _ := call(t, a.admin.URL, "GET", "/admin/v1/webhook-endpoints", session, "")
+	assertKeys(t, "WebhookEndpoint", we["data"].([]any)[0].(map[string]any), "id", "project_id", "url", "event_types", "status", "created_at", "updated_at")
+	assertKeys(t, "list", we, "data", "next_cursor")
+
+	// Malformed queries are 400, unknown ids 404, oversized bodies 413.
+	for _, q := range []struct{ path, code string }{
+		{"/admin/v1/emails?limit=0", "invalid_limit"}, {"/admin/v1/emails?limit=101", "invalid_limit"},
+		{"/admin/v1/emails?cursor=nope!", "invalid_cursor"}, {"/admin/v1/emails?nope=1", "invalid_filter"},
+		{"/admin/v1/emails?recipient=a@example.test&recipient=b@example.test", "invalid_filter"},
+		{"/admin/v1/emails?created_after=2026-10-02T00:00:00Z&created_before=2026-10-01T00:00:00Z", "invalid_filter"},
+		{"/admin/v1/emails?project_id=nope", "invalid_filter"}, {"/admin/v1/emails?error_code=Bad-Code", "invalid_filter"},
+		{"/admin/v1/projects?limit=abc", "invalid_limit"}, {"/admin/v1/templates?project_id=1", "invalid_filter"},
+		{"/admin/v1/emails?q=" + strings.Repeat("a", 513), "invalid_filter"},
+	} {
+		resp, m, _ := call(t, a.admin.URL, "GET", q.path, session, "")
+		if resp.StatusCode != 400 || errorCode(m) != q.code {
+			t.Errorf("%s: %d %v, want 400 %s", q.path[:min(len(q.path), 60)], resp.StatusCode, m, q.code)
+		}
+	}
+	for _, p := range []struct{ method, path string }{
+		{"GET", "/admin/v1/templates/" + uuid.NewString()},
+		{"GET", "/admin/v1/templates/" + tids[0] + "/versions/2"},
+		{"GET", "/admin/v1/templates/" + tids[0] + "/versions/0"},
+		{"GET", "/admin/v1/emails/" + uuid.NewString() + "/webhook-deliveries"},
+		{"POST", "/admin/v1/templates/" + uuid.NewString() + "/versions/1/preview"},
+		{"POST", "/admin/v1/templates/" + tids[0] + "/versions/9/preview"},
+	} {
+		body := ""
+		if p.method == "POST" {
+			body = `{"variables":{}}`
+		}
+		resp, _, _ := call(t, a.admin.URL, p.method, p.path, session, body)
+		if resp.StatusCode != 404 {
+			t.Errorf("%s %s: %d, want 404", p.method, p.path, resp.StatusCode)
+		}
+		if resp.Header.Get("Cache-Control") != "no-store" {
+			t.Errorf("404 without no-store")
+		}
+	}
+	big := `{"variables":{"v":"` + strings.Repeat("a", 1<<20) + `"}}`
+	for _, p := range []string{"/admin/v1/templates/" + tids[0] + "/versions/1/preview", "/admin/v1/sessions"} {
+		authz := session
+		if strings.HasSuffix(p, "sessions") {
+			authz = ""
+		}
+		if resp, m, _ := call(t, a.admin.URL, "POST", p, authz, big); resp.StatusCode != 413 || errorCode(m) != "payload_too_large" {
+			t.Errorf("%s oversized: %d %v", p, resp.StatusCode, m)
+		}
+	}
+
+	// Foreign Host headers are refused (DNS rebinding); loopback names pass.
+	if resp, m, _ := call(t, a.admin.URL, "GET", "/admin/v1/me", session, "", "Host", "evil.example.test"); resp.StatusCode != 421 || errorCode(m) != "misdirected_request" {
+		t.Fatalf("foreign host: %d %v", resp.StatusCode, m)
+	}
+	if resp, _, _ := call(t, a.admin.URL, "GET", "/admin/v1/me", session, "", "Host", "localhost:8081"); resp.StatusCode != 200 {
+		t.Fatalf("localhost host: %d", resp.StatusCode)
+	}
+
+	// no-store on every answer, also 204 and 401.
+	if resp, _, _ := call(t, a.admin.URL, "GET", "/admin/v1/me", "", ""); resp.Header.Get("Cache-Control") != "no-store" {
+		t.Error("401 without no-store")
+	}
+	if resp, _, _ := call(t, a.admin.URL, "DELETE", "/admin/v1/sessions/current", session, ""); resp.StatusCode != 204 || resp.Header.Get("Cache-Control") != "no-store" {
+		t.Errorf("logout: %d %q", resp.StatusCode, resp.Header.Get("Cache-Control"))
+	}
+
+	// Nothing secret reached the logs.
+	logs := a.logs.String()
+	for _, secret := range []string{adminPassword, token, "Zq9-preview-secret", keyA, keyB} {
+		if strings.Contains(logs, secret) {
+			t.Fatalf("logs contain a secret (%.6s…)", secret)
+		}
 	}
 }

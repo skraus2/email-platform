@@ -250,10 +250,12 @@ func Load(lookup LookupFunc) (Config, error) {
 	cfg.TemplateWritesPerMinute, errs = intInRange(get, "TEMPLATE_WRITES_PER_MINUTE", "60", 1, 100_000, errs)
 	switch addr := get("ADMIN_HTTP_ADDR", "127.0.0.1:8081"); {
 	case addr == "off":
-	case validAdminAddr(addr, cfg.Env == EnvProduction) != nil:
-		errs = append(errs, fmt.Errorf("ADMIN_HTTP_ADDR: %w", validAdminAddr(addr, cfg.Env == EnvProduction)))
 	default:
-		cfg.AdminHTTPAddr = addr
+		if err := validAdminAddr(addr, cfg.Env == EnvProduction); err != nil {
+			errs = append(errs, fmt.Errorf("ADMIN_HTTP_ADDR: %w", err))
+		} else {
+			cfg.AdminHTTPAddr = addr
+		}
 	}
 	cfg.AdminSessionIdle, errs = positiveDuration(get, "ADMIN_SESSION_IDLE", "30m", errs)
 	if cfg.AdminSessionIdle > 0 && (cfg.AdminSessionIdle < 5*time.Minute || cfg.AdminSessionIdle > 24*time.Hour) {
@@ -462,4 +464,15 @@ func validAdminAddr(addr string, production bool) error {
 		return errors.New("in production the host must be a loopback IP address such as 127.0.0.1 or ::1")
 	}
 	return nil
+}
+
+// AdminBindIsLoopback reports whether the admin listener binds only to a
+// loopback address (false for wildcards, hostnames and other IPs).
+func (c Config) AdminBindIsLoopback() bool {
+	host, _, err := net.SplitHostPort(c.AdminHTTPAddr)
+	if err != nil {
+		return false
+	}
+	ip, err := netip.ParseAddr(host)
+	return err == nil && ip.IsLoopback()
 }

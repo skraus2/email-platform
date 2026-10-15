@@ -18,6 +18,7 @@ WHERE e.id < sqlc.arg(before_id)::uuid
   AND (sqlc.narg(created_before)::timestamptz IS NULL OR e.created_at < sqlc.narg(created_before)::timestamptz)
   AND (sqlc.narg(email_id)::uuid IS NULL OR e.id = sqlc.narg(email_id)::uuid)
   AND (sqlc.narg(text_query)::text IS NULL OR e.provider_id = sqlc.narg(text_query)::text
+       OR e.provider_id = sqlc.narg(text_query_alt)::text
        OR lower(e.recipient) = lower(sqlc.narg(text_query)::text))
 ORDER BY e.id DESC
 LIMIT sqlc.arg(row_limit);

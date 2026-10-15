@@ -5,11 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 
@@ -31,6 +34,9 @@ type AdminDeps struct {
 	Logger   *slog.Logger
 	Sessions AdminSessions
 	Views    *admin.Views
+	// ListenHost is the configured listener host; requests must name it,
+	// a loopback address or localhost in their Host header.
+	ListenHost string
 }
 
 // AdminServer is the operator API described in api/admin-openapi.yaml. It
@@ -71,8 +77,29 @@ func NewAdmin(d AdminDeps) *AdminServer {
 	route("GET /admin/v1/senders", http.MethodGet, s.requireSession(s.handleSenders))
 	route("GET /admin/v1/webhook-endpoints", http.MethodGet, s.requireSession(s.handleWebhookEndpoints))
 	mux.HandleFunc("/", handleNotFound)
-	s.handler = requestLogger(s.logger, mux)
+	s.handler = requestLogger(s.logger, allowHosts(d.ListenHost, mux))
 	return s
+}
+
+// allowHosts refuses requests whose Host is neither the listener's own host,
+// a loopback address nor localhost: a web page that rebinds its DNS name to
+// the admin listener would otherwise talk to it as same-origin.
+func allowHosts(listenHost string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		host := r.Host
+		if h, _, err := net.SplitHostPort(host); err == nil {
+			host = h
+		}
+		host = strings.Trim(host, "[]")
+		ip, err := netip.ParseAddr(host)
+		ok := strings.EqualFold(host, "localhost") || (err == nil && ip.IsLoopback()) ||
+			(listenHost != "" && strings.EqualFold(host, strings.Trim(listenHost, "[]")))
+		if !ok {
+			writeError(w, http.StatusMisdirectedRequest, "misdirected_request", "this host name is not served here")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // Handler returns the root handler including middleware.
@@ -356,7 +383,7 @@ func (s *AdminServer) handleEmails(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_filter", "created_after must be earlier than created_before")
 		return
 	}
-	if f.Query = q.values.Get("q"); len(f.Query) > 512 {
+	if f.Query = q.values.Get("q"); utf8.RuneCountInString(f.Query) > 512 {
 		writeError(w, http.StatusBadRequest, "invalid_filter", "q must be at most 512 characters")
 		return
 	}

@@ -142,3 +142,26 @@ func TestUnpreparedDoesNotCacheStatements(t *testing.T) {
 		t.Fatalf("control: default mode left %d prepared statements, want 1", n)
 	}
 }
+
+// The server itself cancels a statement past the timeout.
+func TestReadOnlyWithTimeoutCancelsOnTheServer(t *testing.T) {
+	t.Parallel()
+	pool := testdb.NewMigrated(t)
+	ctx := context.Background()
+	start := time.Now()
+	err := ReadOnlyWithTimeout(ctx, pool, 200*time.Millisecond, func(q *Queries) error {
+		_, err := q.db.Exec(ctx, "SELECT pg_sleep(5)")
+		return err
+	})
+	if !StatementTimedOut(err) || time.Since(start) > 3*time.Second {
+		t.Fatalf("err %v after %v, want a server-side statement timeout", err, time.Since(start))
+	}
+	// Read-only.
+	err = ReadOnlyWithTimeout(ctx, pool, time.Second, func(q *Queries) error {
+		_, err := q.db.Exec(ctx, "INSERT INTO projects (name) VALUES ('x')")
+		return err
+	})
+	if err == nil {
+		t.Fatal("write accepted in a read-only transaction")
+	}
+}

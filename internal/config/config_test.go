@@ -94,6 +94,7 @@ func TestLoadRejectsInvalid(t *testing.T) {
 		{"admin addr no port", map[string]string{"DATABASE_URL": devURL, "ADMIN_HTTP_ADDR": "127.0.0.1"}, "ADMIN_HTTP_ADDR"},
 		{"admin addr bad port", map[string]string{"DATABASE_URL": devURL, "ADMIN_HTTP_ADDR": "127.0.0.1:0"}, "ADMIN_HTTP_ADDR"},
 		{"admin addr public in production", map[string]string{"DATABASE_URL": prodURL, "APP_ENV": "production", "ADMIN_HTTP_ADDR": "0.0.0.0:8081"}, "ADMIN_HTTP_ADDR"},
+		{"admin addr ipv6 wildcard in production", map[string]string{"DATABASE_URL": prodURL, "APP_ENV": "production", "ADMIN_HTTP_ADDR": "[::]:8081"}, "ADMIN_HTTP_ADDR"},
 		{"admin addr empty host in production", map[string]string{"DATABASE_URL": prodURL, "APP_ENV": "production", "ADMIN_HTTP_ADDR": ":8081"}, "ADMIN_HTTP_ADDR"},
 		{"admin addr hostname in production", map[string]string{"DATABASE_URL": prodURL, "APP_ENV": "production", "ADMIN_HTTP_ADDR": "localhost:8081"}, "ADMIN_HTTP_ADDR"},
 		{"admin addr private in production", map[string]string{"DATABASE_URL": prodURL, "APP_ENV": "production", "ADMIN_HTTP_ADDR": "10.0.0.5:8081"}, "ADMIN_HTTP_ADDR"},

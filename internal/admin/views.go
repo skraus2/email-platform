@@ -27,13 +27,15 @@ var ErrViewBusy = errors.New("operator view busy")
 // MaxPage bounds one page of every operator list.
 const MaxPage = 100
 
-// View limits: a search is cancelled after searchTimeout; at most
-// previewSlots template previews compile at once (a compile of the largest
-// template briefly holds about 60 MiB).
+// View limits. Searches share the database pool with the project API, so
+// at most searchSlots run at once per process and the server cancels each
+// after searchTimeout; at most previewSlots template previews compile at
+// once (a compile of the largest template briefly holds about 60 MiB).
 const (
 	searchTimeout = 5 * time.Second
+	searchSlots   = 2
+	slotWait      = time.Second
 	previewSlots  = 2
-	previewWait   = time.Second
 )
 
 // Views is the read model of the operator console. It reads every project;
@@ -41,12 +43,43 @@ const (
 // secrets or key hashes.
 type Views struct {
 	pool     *pgxpool.Pool
+	searches chan struct{}
 	previews chan struct{}
 }
 
 // NewViews builds the read model.
 func NewViews(pool *pgxpool.Pool) *Views {
-	return &Views{pool: pool, previews: make(chan struct{}, previewSlots)}
+	return &Views{pool: pool, searches: make(chan struct{}, searchSlots), previews: make(chan struct{}, previewSlots)}
+}
+
+// slot takes one of slots, waiting at most slotWait; release frees it.
+func slot(ctx context.Context, slots chan struct{}) (release func(), err error) {
+	wait := time.NewTimer(slotWait)
+	defer wait.Stop()
+	select {
+	case slots <- struct{}{}:
+		return func() { <-slots }, nil
+	case <-wait.C:
+		return nil, ErrViewBusy
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// bounded runs fn with a search slot under a server-side statement timeout.
+func (v *Views) bounded(ctx context.Context, fn func(q *store.Queries) error) error {
+	release, err := slot(ctx, v.searches)
+	if err != nil {
+		return err
+	}
+	defer release()
+	sctx, cancel := context.WithTimeout(ctx, searchTimeout+time.Second)
+	defer cancel()
+	err = store.ReadOnlyWithTimeout(sctx, v.pool, searchTimeout, fn)
+	if err != nil && ctx.Err() == nil && (sctx.Err() != nil || store.StatementTimedOut(err)) {
+		return ErrViewBusy
+	}
+	return err
 }
 
 // q runs queries as unnamed statements: the lists have optional filters,
@@ -150,17 +183,24 @@ func (v *Views) SearchEmails(ctx context.Context, f EmailFilter, limit int) ([]E
 			p.EmailID = &id
 		} else {
 			// A provider message id or a recipient address (some provider
-			// ids look like addresses).
+			// ids look like addresses). Message-IDs are stored with angle
+			// brackets but often copied without.
+			if !strings.HasPrefix(q, "<") && strings.Contains(q, "@") {
+				bracketed := "<" + q + ">"
+				p.TextQueryAlt = &bracketed
+			}
 			p.TextQuery = &q
 		}
 	}
-	sctx, cancel := context.WithTimeout(ctx, searchTimeout)
-	defer cancel()
-	rows, err := v.q().AdminSearchEmails(sctx, p)
+	var rows []store.AdminSearchEmailsRow
+	err := v.bounded(ctx, func(q *store.Queries) (err error) {
+		rows, err = q.AdminSearchEmails(ctx, p)
+		return err
+	})
+	if errors.Is(err, ErrViewBusy) {
+		return nil, false, err
+	}
 	if err != nil {
-		if ctx.Err() == nil && sctx.Err() != nil {
-			return nil, false, ErrViewBusy
-		}
 		return nil, false, fmt.Errorf("search emails: %w", err)
 	}
 	out := make([]Email, 0, min(len(rows), limit))
@@ -210,9 +250,16 @@ func (v *Views) EmailDeliveries(ctx context.Context, id, cursor uuid.UUID, limit
 	if err != nil {
 		return nil, false, err
 	}
-	rows, err := v.q().AdminEmailDeliveries(ctx, store.AdminEmailDeliveriesParams{
-		EmailID: id, ProjectID: e.ProjectID, AfterID: cursor, RowLimit: int32(limit + 1), //nolint:gosec // bounded
+	var rows []store.AdminEmailDeliveriesRow
+	err = v.bounded(ctx, func(q *store.Queries) (err error) {
+		rows, err = q.AdminEmailDeliveries(ctx, store.AdminEmailDeliveriesParams{
+			EmailID: id, ProjectID: e.ProjectID, AfterID: cursor, RowLimit: int32(limit + 1), //nolint:gosec // bounded
+		})
+		return err
 	})
+	if errors.Is(err, ErrViewBusy) {
+		return nil, false, err
+	}
 	if err != nil {
 		return nil, false, fmt.Errorf("list deliveries: %w", err)
 	}
@@ -297,16 +344,11 @@ func (v *Views) Preview(ctx context.Context, id uuid.UUID, version int, variable
 	if err := templates.ValidateVariables(schema, variables); err != nil {
 		return templates.Rendered{}, err
 	}
-	wait := time.NewTimer(previewWait)
-	defer wait.Stop()
-	select {
-	case v.previews <- struct{}{}:
-		defer func() { <-v.previews }()
-	case <-wait.C:
-		return templates.Rendered{}, ErrViewBusy
-	case <-ctx.Done():
-		return templates.Rendered{}, ctx.Err()
+	release, err := slot(ctx, v.previews)
+	if err != nil {
+		return templates.Rendered{}, err
 	}
+	defer release()
 	c, err := tv.Compile()
 	if err != nil {
 		return templates.Rendered{}, fmt.Errorf("compile stored template: %v", err) //nolint:errorlint // a stored version is server state
