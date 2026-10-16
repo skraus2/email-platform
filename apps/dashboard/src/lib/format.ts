@@ -32,3 +32,8 @@ export function relativeTime(iso: string, now: Date): string {
   }
   return "just now";
 }
+
+/** The subject as shown; a blank one would leave a link without a name. */
+export function displaySubject(subject: string): string {
+  return subject.trim() === "" ? "(no subject)" : subject;
+}

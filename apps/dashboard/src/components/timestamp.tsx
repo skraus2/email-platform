@@ -1,9 +1,10 @@
+import { None } from "@/components/none";
 import { formatUTC, relativeTime } from "@/lib/format";
 
 /** A UTC timestamp with a relative hint ("3 minutes ago"); "—" when absent. */
 export function Timestamp({ iso }: { iso: string | null }) {
   if (!iso) {
-    return <span className="muted">—</span>;
+    return <None />;
   }
   const hint = relativeTime(iso, new Date());
   return (

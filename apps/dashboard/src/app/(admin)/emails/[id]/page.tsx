@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound, unstable_rethrow } from "next/navigation";
+import { cache } from "react";
+import { None } from "@/components/none";
 import { Status } from "@/components/status";
 import { Timestamp } from "@/components/timestamp";
 import {
@@ -12,8 +14,34 @@ import {
   type WebhookDelivery,
 } from "@/lib/admin-api";
 import { isUUID } from "@/lib/email-filters";
+import { displaySubject } from "@/lib/format";
 
-export const metadata: Metadata = { title: "Email details" };
+/** The email of this request; shared by the title and the page. */
+const loadEmail = cache((id: string) =>
+  adminFetch<AdminEmail>(`/admin/v1/emails/${encodeURIComponent(id)}`),
+);
+
+export async function generateMetadata({
+  params,
+}: PageProps<"/emails/[id]">): Promise<Metadata> {
+  const { id } = await params;
+  if (!isUUID(id)) {
+    return { title: "Email not found" };
+  }
+  try {
+    const email = await loadEmail(id.toLowerCase());
+    const subject = displaySubject(email.subject);
+    return {
+      title: `Email: ${subject.length > 60 ? `${subject.slice(0, 60)}…` : subject}`,
+    };
+  } catch (err) {
+    unstable_rethrow(err);
+    if (err instanceof AdminAPIError && err.status === 404) {
+      return { title: "Email not found" };
+    }
+    throw err;
+  }
+}
 
 /** Rows loaded per sub-list (events, deliveries). */
 const MAX_ROWS = 500;
@@ -29,7 +57,7 @@ export default async function EmailPage({ params }: PageProps<"/emails/[id]">) {
   let deliveries: { rows: WebhookDelivery[]; more: boolean };
   try {
     [email, events, deliveries] = await Promise.all([
-      adminFetch<AdminEmail>(base),
+      loadEmail(id.toLowerCase()),
       adminFetchAll<EmailEvent>(`${base}/events`, MAX_ROWS),
       adminFetchAll<WebhookDelivery>(`${base}/webhook-deliveries`, MAX_ROWS),
     ]);
@@ -46,7 +74,7 @@ export default async function EmailPage({ params }: PageProps<"/emails/[id]">) {
       <p>
         <Link href="/emails">All messages</Link>
       </p>
-      <h1 className="wrap">{email.subject}</h1>
+      <h1 className="wrap">{displaySubject(email.subject)}</h1>
       <p className="muted">
         Email <code>{email.id}</code>
       </p>
@@ -59,7 +87,7 @@ export default async function EmailPage({ params }: PageProps<"/emails/[id]">) {
             <Status value={email.status} />
           </dd>
           <dt>Error code</dt>
-          <dd>{email.error_code ?? <Missing />}</dd>
+          <dd>{email.error_code ?? <None />}</dd>
           <dt>Project</dt>
           <dd>
             {email.project_name}{" "}
@@ -74,10 +102,10 @@ export default async function EmailPage({ params }: PageProps<"/emails/[id]">) {
           <dt>To</dt>
           <dd className="wrap">{email.to}</dd>
           <dt>Provider</dt>
-          <dd>{email.provider ?? <Missing />}</dd>
+          <dd>{email.provider ?? <None />}</dd>
           <dt>Provider message id</dt>
           <dd className="wrap">
-            {email.provider_id ? <code>{email.provider_id}</code> : <Missing />}
+            {email.provider_id ? <code>{email.provider_id}</code> : <None />}
           </dd>
           <dt>Attempts</dt>
           <dd>{email.attempts}</dd>
@@ -142,7 +170,7 @@ export default async function EmailPage({ params }: PageProps<"/emails/[id]">) {
                     <td>
                       <Timestamp iso={ev.received_at} />
                     </td>
-                    <td>{ev.provider ?? <Missing />}</td>
+                    <td>{ev.provider ?? <None />}</td>
                     <td>{ev.origin}</td>
                     <td>
                       <Details details={ev.details} />
@@ -193,8 +221,8 @@ export default async function EmailPage({ params }: PageProps<"/emails/[id]">) {
                       <Status value={d.status} />
                     </td>
                     <td>{d.attempts}</td>
-                    <td>{d.last_status_code ?? <Missing />}</td>
-                    <td>{d.last_error_code ?? <Missing />}</td>
+                    <td>{d.last_status_code ?? <None />}</td>
+                    <td>{d.last_error_code ?? <None />}</td>
                     <td>
                       <Timestamp iso={d.next_attempt_at} />
                     </td>
@@ -216,10 +244,6 @@ export default async function EmailPage({ params }: PageProps<"/emails/[id]">) {
   );
 }
 
-function Missing() {
-  return <span className="muted">—</span>;
-}
-
 function MoreRows() {
   return (
     <p className="notice">
@@ -231,7 +255,7 @@ function MoreRows() {
 function Details({ details }: { details: Record<string, string> }) {
   const entries = Object.entries(details);
   if (entries.length === 0) {
-    return <Missing />;
+    return <None />;
   }
   return (
     <dl className="kv">

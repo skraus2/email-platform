@@ -1,6 +1,7 @@
 import "server-only";
 import { redirect } from "next/navigation";
 import { buildAdminURL } from "./admin-url";
+import { collectPages, type Page } from "./paging";
 import { sessionToken } from "./session";
 
 /** Requests to the admin API give up after this long. */
@@ -86,31 +87,20 @@ export async function adminFetch<T>(path: string, init: Init = {}): Promise<T> {
 
 export type Me = { id: string; username: string; session_expires_at: string };
 
-export type Page<T> = { data: T[]; next_cursor: string | null };
+export type { Page };
 
-/**
- * Loads every page of a list (following next_cursor), up to maxRows rows.
- * `more` tells whether rows beyond the cap exist.
- */
-export async function adminFetchAll<T>(
+/** Loads every page of a list, up to maxRows rows (see collectPages). */
+export function adminFetchAll<T>(
   path: string,
   maxRows = 500,
 ): Promise<{ rows: T[]; more: boolean }> {
-  const rows: T[] = [];
-  let cursor: string | null = null;
-  do {
+  return collectPages<T>((cursor) => {
     const query = new URLSearchParams({ limit: "100" });
     if (cursor) {
       query.set("cursor", cursor);
     }
-    const page: Page<T> = await adminFetch<Page<T>>(path, { query });
-    rows.push(...page.data);
-    cursor = page.next_cursor;
-  } while (cursor && rows.length < maxRows);
-  return {
-    rows: rows.slice(0, maxRows),
-    more: cursor !== null || rows.length > maxRows,
-  };
+    return adminFetch<Page<T>>(path, { query });
+  }, maxRows);
 }
 
 export type Project = {

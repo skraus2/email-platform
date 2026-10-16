@@ -188,13 +188,17 @@ export function parseEmailFilters(sp: SearchParams): {
   return { filters, errors };
 }
 
-/** Milliseconds of 00:00 UTC of a YYYY-MM-DD date, undefined if invalid. */
+/** Milliseconds of 00:00 UTC of a YYYY-MM-DD date (years 1000–9998), undefined if invalid. */
 function dayStart(date: string): number | undefined {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
   if (!m) {
     return undefined;
   }
   const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])];
+  // Four-digit years only, with room for the day after (to date + 1).
+  if (y < 1000 || y > 9998) {
+    return undefined;
+  }
   const t = Date.UTC(y, mo - 1, d);
   const back = new Date(t);
   if (

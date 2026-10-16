@@ -21,15 +21,24 @@ export function FilterForm({
   filters,
   errors,
   projects,
+  moreProjects,
 }: {
   params: SearchParams;
   filters: EmailFilters;
   errors: FilterError[];
   projects: Project[];
+  /** The project list was cut; some projects are not offered. */
+  moreProjects: boolean;
 }) {
   const raw = (field: string) => {
     const v = params[field];
     return typeof v === "string" ? v : "";
+  };
+  const fieldHints: Partial<Record<FilterField, string>> = {
+    ...hints,
+    project_id: moreProjects
+      ? "Only the first 500 projects are listed."
+      : undefined,
   };
   const errorOf = (field: FilterField) => errors.find((e) => e.field === field);
   const fieldProps = (field: FilterField) => {
@@ -39,7 +48,7 @@ export function FilterForm({
       name: field,
       "aria-invalid": err ? true : undefined,
       "aria-describedby":
-        [hints[field] ? `h-${field}` : "", err ? `e-${field}` : ""]
+        [fieldHints[field] ? `h-${field}` : "", err ? `e-${field}` : ""]
           .filter(Boolean)
           .join(" ") || undefined,
     };
@@ -53,6 +62,12 @@ export function FilterForm({
     ) : null;
   };
 
+  // The raw query without the page cursor: invalid values count too, so the
+  // fields also follow the URL when only an invalid value changed.
+  const formKey = JSON.stringify(
+    Object.entries(params).filter(([k]) => k !== "cursor"),
+  );
+  const templateError = errorOf("template_id");
   const project = raw("project_id").toLowerCase();
   const knownProject = !project || projects.some((p) => p.id === project);
   const statuses = new Set(
@@ -62,7 +77,13 @@ export function FilterForm({
   return (
     // Remounted when the filters change, so the fields follow the URL also
     // on back/forward and nav links.
-    <Form action="/emails" key={emailsHref(filters)} className="filters">
+    <Form
+      action="/emails"
+      key={formKey}
+      className="filters"
+      role="search"
+      aria-label="Filter emails"
+    >
       <div className="field wide">
         <label htmlFor="f-q">Search</label>
         <input
@@ -90,6 +111,11 @@ export function FilterForm({
             <option value={project}>Unknown project</option>
           )}
         </select>
+        {fieldHints.project_id ? (
+          <p id="h-project_id" className="hint">
+            {fieldHints.project_id}
+          </p>
+        ) : null}
         {fieldError("project_id")}
       </div>
       <div className="field">
@@ -167,8 +193,8 @@ export function FilterForm({
           </Link>
         </p>
       ) : null}
-      {errorOf("template_id") ? (
-        <p className="wide error">{errorOf("template_id")!.message}</p>
+      {templateError ? (
+        <p className="wide error">{templateError.message}</p>
       ) : null}
       <div className="actions wide">
         <button type="submit">Apply filters</button>

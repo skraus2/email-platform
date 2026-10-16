@@ -97,6 +97,8 @@ test("invalid values are reported per field without calling the API", () => {
     [{ from: "2026-02-30" }, "from"],
     [{ from: "16.10.2026" }, "from"],
     [{ to: "2026-13-01" }, "to"],
+    [{ to: "9999-12-31" }, "to"],
+    [{ from: "0099-01-01" }, "from"],
     [{ from: "2026-10-02", to: "2026-10-01" }, "to"],
     [{ error_code: "Bad-Code" }, "error_code"],
     [{ error_code: "a".repeat(41) }, "error_code"],

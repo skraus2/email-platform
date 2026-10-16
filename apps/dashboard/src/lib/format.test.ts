@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { formatUTC, relativeTime } from "./format.ts";
+import { displaySubject, formatUTC, relativeTime } from "./format.ts";
 
 test("formats timestamps in UTC to the second", () => {
   assert.equal(
@@ -29,4 +29,12 @@ test("relative hints round down to the largest unit", () => {
     assert.equal(relativeTime(iso, now), want, iso);
   }
   assert.equal(relativeTime("garbage", now), "");
+});
+
+test("blank subjects get a visible placeholder", () => {
+  assert.equal(displaySubject("Welcome"), "Welcome");
+  assert.equal(displaySubject("  padded "), "  padded ");
+  for (const blank of ["", " ", "\t", "\u00a0\u2003"]) {
+    assert.equal(displaySubject(blank), "(no subject)", JSON.stringify(blank));
+  }
 });

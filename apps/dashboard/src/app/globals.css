@@ -130,6 +130,8 @@ h2 {
 code {
   font-family: ui-monospace, monospace;
   font-size: 0.9em;
+  /* Ids have no break opportunities; let them wrap at narrow widths. */
+  overflow-wrap: anywhere;
 }
 
 .filters {
@@ -179,10 +181,10 @@ fieldset.statuses {
   gap: 0.25rem;
   padding-block: 0.25rem;
 }
+/* The invalid state uses the border, so the focus outline stays visible. */
 input[aria-invalid="true"],
 select[aria-invalid="true"] {
-  border-color: var(--danger);
-  outline: 1px solid var(--danger);
+  border: 2px solid var(--danger);
 }
 
 .table-wrap {
