@@ -1,5 +1,6 @@
 "use client";
 
+import { unstable_rethrow } from "next/navigation";
 import { startTransition, useActionState } from "react";
 import { displaySubject } from "@/lib/format";
 import {
@@ -43,8 +44,10 @@ export function PreviewForm({
       const attempt = (prev?.attempt ?? 0) + 1;
       try {
         return { ...(await action(form)), attempt };
-      } catch {
-        // The action itself never throws; this is the request failing.
+      } catch (err) {
+        // A redirect (session ended) is handled by the router; anything
+        // else is the request failing.
+        unstable_rethrow(err);
         return { ...previewFailure({}, undefined, undefined, ""), attempt };
       }
     },
