@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { adminFetch, type Me } from "@/lib/admin-api";
 import { logout } from "../actions";
+import { MainNav } from "./nav";
 
 /**
  * The shell of the signed-in console. It shows who is signed in; it is not
@@ -18,13 +19,7 @@ export default async function AdminLayout({ children }: LayoutProps<"/">) {
         <Link href="/" className="brand">
           Email Platform
         </Link>
-        <nav aria-label="Main">
-          <ul>
-            <li>
-              <Link href="/">Overview</Link>
-            </li>
-          </ul>
-        </nav>
+        <MainNav />
         <form action={logout} className="user">
           <span>
             Signed in as <strong className="wrap">{me.username}</strong>

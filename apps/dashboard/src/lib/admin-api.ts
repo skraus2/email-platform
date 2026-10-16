@@ -87,3 +87,80 @@ export async function adminFetch<T>(path: string, init: Init = {}): Promise<T> {
 export type Me = { id: string; username: string; session_expires_at: string };
 
 export type Page<T> = { data: T[]; next_cursor: string | null };
+
+/**
+ * Loads every page of a list (following next_cursor), up to maxRows rows.
+ * `more` tells whether rows beyond the cap exist.
+ */
+export async function adminFetchAll<T>(
+  path: string,
+  maxRows = 500,
+): Promise<{ rows: T[]; more: boolean }> {
+  const rows: T[] = [];
+  let cursor: string | null = null;
+  do {
+    const query = new URLSearchParams({ limit: "100" });
+    if (cursor) {
+      query.set("cursor", cursor);
+    }
+    const page: Page<T> = await adminFetch<Page<T>>(path, { query });
+    rows.push(...page.data);
+    cursor = page.next_cursor;
+  } while (cursor && rows.length < maxRows);
+  return {
+    rows: rows.slice(0, maxRows),
+    more: cursor !== null || rows.length > maxRows,
+  };
+}
+
+export type Project = {
+  id: string;
+  name: string;
+  status: "active" | "disabled";
+  created_at: string;
+};
+
+export type AdminEmail = {
+  id: string;
+  project_id: string;
+  project_name: string;
+  status: string;
+  from: string;
+  to: string;
+  subject: string;
+  provider: string | null;
+  provider_id: string | null;
+  attempts: number;
+  error_code: string | null;
+  template_id: string | null;
+  template_version: number | null;
+  created_at: string;
+  updated_at: string;
+  finished_at: string | null;
+};
+
+export type EmailEvent = {
+  id: string;
+  type: string;
+  origin: string;
+  provider: string | null;
+  occurred_at: string;
+  received_at: string;
+  details: Record<string, string>;
+};
+
+export type WebhookDelivery = {
+  id: string;
+  endpoint_id: string;
+  endpoint_url: string;
+  event_id: string;
+  event_type: string;
+  status: "pending" | "delivered" | "failed";
+  attempts: number;
+  last_status_code: number | null;
+  last_error_code: string | null;
+  next_attempt_at: string | null;
+  delivered_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
