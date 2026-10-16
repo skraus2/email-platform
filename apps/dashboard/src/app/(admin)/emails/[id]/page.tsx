@@ -14,7 +14,7 @@ import {
   type WebhookDelivery,
 } from "@/lib/admin-api";
 import { isUUID } from "@/lib/email-filters";
-import { displaySubject } from "@/lib/format";
+import { displaySubject, shorten } from "@/lib/format";
 
 /** The email of this request; shared by the title and the page. */
 const loadEmail = cache((id: string) =>
@@ -30,14 +30,7 @@ export async function generateMetadata({
   }
   try {
     const email = await loadEmail(id.toLowerCase());
-    const subject = displaySubject(email.subject);
-    return {
-      title: `Email: ${
-        [...subject].length > 60
-          ? `${[...subject].slice(0, 60).join("")}…`
-          : subject
-      }`,
-    };
+    return { title: `Email: ${shorten(displaySubject(email.subject), 60)}` };
   } catch (err) {
     unstable_rethrow(err);
     if (err instanceof AdminAPIError && err.status === 404) {
@@ -117,8 +110,19 @@ export default async function EmailPage({ params }: PageProps<"/emails/[id]">) {
           <dd>
             {email.template_id ? (
               <>
-                <code>{email.template_id}</code>, version{" "}
-                {email.template_version}
+                <Link
+                  href={`/templates/${encodeURIComponent(email.template_id)}/versions/${email.template_version}`}
+                  prefetch={false}
+                >
+                  Version {email.template_version}
+                </Link>{" "}
+                of template{" "}
+                <Link
+                  href={`/templates/${encodeURIComponent(email.template_id)}`}
+                  prefetch={false}
+                >
+                  <code>{email.template_id}</code>
+                </Link>
               </>
             ) : (
               <span className="muted">none (raw content)</span>

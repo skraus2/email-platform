@@ -285,6 +285,52 @@ dl.kv dd {
   margin: 0;
 }
 
+ul.plain {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* Source and rendered text: shown as stored, long parts scroll. */
+.source {
+  max-height: 24rem;
+  overflow: auto;
+  border: 1px solid var(--line);
+  padding: 0.5rem 0.75rem;
+}
+.source pre {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, monospace;
+  font-size: 0.9rem;
+}
+.preview-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr));
+  gap: 1rem 1.5rem;
+  margin-block: 1rem;
+  padding: 1rem;
+  border: 1px solid var(--line);
+}
+.preview-form .error,
+.preview-form .actions {
+  grid-column: 1 / -1;
+}
+.preview-form div.error ul {
+  margin: 0.25rem 0 0;
+}
+/* The frame has no scripts, so it cannot size itself; operators can resize it. */
+.preview-frame {
+  display: block;
+  width: 100%;
+  height: 32rem;
+  resize: vertical;
+  overflow: auto;
+  border: 1px solid var(--line);
+  background: #fff;
+}
+
 @media (max-width: 40rem) {
   main,
   .topbar {

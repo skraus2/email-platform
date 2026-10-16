@@ -37,3 +37,9 @@ export function relativeTime(iso: string, now: Date): string {
 export function displaySubject(subject: string): string {
   return subject.trim() === "" ? "(no subject)" : subject;
 }
+
+/** At most max characters (code points, never half a pair), "…" when cut. */
+export function shorten(s: string, max: number): string {
+  const chars = [...s];
+  return chars.length > max ? `${chars.slice(0, max).join("")}…` : s;
+}

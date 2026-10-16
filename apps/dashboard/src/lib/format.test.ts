@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { displaySubject, formatUTC, relativeTime } from "./format.ts";
+import { displaySubject, formatUTC, relativeTime, shorten } from "./format.ts";
 
 test("formats timestamps in UTC to the second", () => {
   assert.equal(
@@ -37,4 +37,10 @@ test("blank subjects get a visible placeholder", () => {
   for (const blank of ["", " ", "\t", "\u00a0\u2003"]) {
     assert.equal(displaySubject(blank), "(no subject)", JSON.stringify(blank));
   }
+});
+
+test("shorten cuts at code points and marks the cut", () => {
+  assert.equal(shorten("abc", 3), "abc");
+  assert.equal(shorten("abcd", 3), "abc…");
+  assert.equal(shorten("😀😀😀😀", 2), "😀😀…");
 });

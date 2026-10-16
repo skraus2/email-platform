@@ -20,9 +20,20 @@ export function MainNav() {
     isFailuresView(parseEmailFilters(toSearchParams(search)).filters);
 
   // "page" marks the exact page; "true" marks the section of a detail page.
-  const current = (item: "overview" | "messages" | "failures") => {
+  const section = (base: string) =>
+    pathname === base
+      ? "page"
+      : pathname.startsWith(`${base}/`)
+        ? "true"
+        : undefined;
+  const current = (
+    item: "overview" | "messages" | "failures" | "templates" | "projects",
+  ) => {
     if (item === "overview") {
       return pathname === "/" ? "page" : undefined;
+    }
+    if (item === "templates" || item === "projects") {
+      return section(`/${item}`);
     }
     if (item === "failures") {
       return failures ? "page" : undefined;
@@ -49,6 +60,16 @@ export function MainNav() {
         <li>
           <Link href="/emails?status=failed" aria-current={current("failures")}>
             Failures
+          </Link>
+        </li>
+        <li>
+          <Link href="/templates" aria-current={current("templates")}>
+            Templates
+          </Link>
+        </li>
+        <li>
+          <Link href="/projects" aria-current={current("projects")}>
+            Projects
           </Link>
         </li>
       </ul>

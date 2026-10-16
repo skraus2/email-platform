@@ -17,6 +17,14 @@ export default function Overview() {
           <Link href="/emails?status=failed">Failures</Link>: emails that could
           not be sent.
         </li>
+        <li>
+          <Link href="/templates">Templates</Link>: published versions, their
+          source and a preview with sample values.
+        </li>
+        <li>
+          <Link href="/projects">Projects</Link>: sender identities and webhook
+          endpoints per project.
+        </li>
       </ul>
     </>
   );

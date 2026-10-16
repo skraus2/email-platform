@@ -2,6 +2,7 @@ import "server-only";
 import { redirect } from "next/navigation";
 import { buildAdminURL } from "./admin-url";
 import { collectPages, type Page } from "./paging";
+import type { VariableSchema } from "./preview-vars";
 import { sessionToken } from "./session";
 
 /** Requests to the admin API give up after this long. */
@@ -93,9 +94,10 @@ export type { Page };
 export function adminFetchAll<T>(
   path: string,
   maxRows = 500,
+  filter: Record<string, string> = {},
 ): Promise<{ rows: T[]; more: boolean }> {
   return collectPages<T>((cursor) => {
-    const query = new URLSearchParams({ limit: "100" });
+    const query = new URLSearchParams({ ...filter, limit: "100" });
     if (cursor) {
       query.set("cursor", cursor);
     }
@@ -151,6 +153,53 @@ export type WebhookDelivery = {
   last_error_code: string | null;
   next_attempt_at: string | null;
   delivered_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type Template = {
+  id: string;
+  project_id: string;
+  slug: string;
+  name: string;
+  latest_version: number | null;
+  created_at: string;
+};
+
+export type TemplateDetail = Template & {
+  /** All versions, newest first. */
+  versions: { version: number; created_at: string }[];
+};
+
+export type TemplateVersion = {
+  template_id: string;
+  project_id: string;
+  version: number;
+  subject: string;
+  text: string;
+  html: string | null;
+  variables: VariableSchema;
+  created_at: string;
+};
+
+export type Rendered = { subject: string; text: string; html: string | null };
+
+export type Sender = {
+  id: string;
+  project_id: string;
+  kind: "address" | "domain";
+  value: string;
+  status: string;
+  verified_at: string | null;
+  created_at: string;
+};
+
+export type WebhookEndpoint = {
+  id: string;
+  project_id: string;
+  url: string;
+  event_types: string[];
+  status: "active" | "disabled";
   created_at: string;
   updated_at: string;
 };
