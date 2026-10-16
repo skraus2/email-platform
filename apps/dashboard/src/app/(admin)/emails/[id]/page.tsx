@@ -32,7 +32,11 @@ export async function generateMetadata({
     const email = await loadEmail(id.toLowerCase());
     const subject = displaySubject(email.subject);
     return {
-      title: `Email: ${subject.length > 60 ? `${subject.slice(0, 60)}…` : subject}`,
+      title: `Email: ${
+        [...subject].length > 60
+          ? `${[...subject].slice(0, 60).join("")}…`
+          : subject
+      }`,
     };
   } catch (err) {
     unstable_rethrow(err);

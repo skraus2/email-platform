@@ -268,3 +268,21 @@ export function toSearchParams(q: URLSearchParams): SearchParams {
   }
   return out;
 }
+
+/**
+ * The page's query string as received (invalid and empty values included),
+ * without the `omit` parameters. Identifies what the URL asked for, also
+ * when the parsed filters are the same.
+ */
+export function queryString(sp: SearchParams, omit: string[] = []): string {
+  const q = new URLSearchParams();
+  for (const [key, value] of Object.entries(sp)) {
+    if (omit.includes(key) || value === undefined) {
+      continue;
+    }
+    for (const v of [value].flat()) {
+      q.append(key, v);
+    }
+  }
+  return q.toString();
+}

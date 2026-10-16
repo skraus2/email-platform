@@ -6,6 +6,7 @@ import {
   hasFilters,
   isFailuresView,
   parseEmailFilters,
+  queryString,
 } from "./email-filters.ts";
 
 const PROJECT = "0199f0a2-7c1e-7d3a-9b1e-2f5c8a9d0e11";
@@ -69,6 +70,8 @@ test("valid filters map to the admin API query", () => {
 
 test("the to date is inclusive across month and year ends", () => {
   for (const [to, before] of [
+    ["1000-01-01", "1000-01-02T00:00:00Z"],
+    ["9998-12-31", "9999-01-01T00:00:00Z"],
     ["2026-10-31", "2026-11-01T00:00:00Z"],
     ["2026-12-31", "2027-01-01T00:00:00Z"],
     ["2028-02-28", "2028-02-29T00:00:00Z"],
@@ -159,4 +162,19 @@ test("the failures view is exactly status=failed", () => {
   assert.equal(view({}), false);
   assert.equal(view({ status: ["failed", "bounced"] }), false);
   assert.equal(view({ status: "failed", q: "x" }), false);
+});
+
+test("the raw query string keeps every value, invalid and empty ones too", () => {
+  assert.equal(queryString({}), "");
+  assert.equal(
+    queryString({
+      q: "",
+      status: ["failed", "x"],
+      recipient: "a&b",
+      cursor: "C",
+    }),
+    "q=&status=failed&status=x&recipient=a%26b&cursor=C",
+  );
+  assert.equal(queryString({ q: "x", cursor: "C" }, ["cursor"]), "q=x");
+  assert.equal(queryString({ gone: undefined }), "");
 });

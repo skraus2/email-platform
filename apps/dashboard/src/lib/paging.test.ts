@@ -69,3 +69,15 @@ test("an empty page or a repeated cursor ends the loop", async () => {
   assert.deepEqual(stuck, { rows: [1, 2], more: true });
   assert.equal(calls, 2);
 });
+
+test("a single page larger than the cap reports more rows", async () => {
+  const got = await collectPages(
+    async () => ({
+      data: Array.from({ length: 100 }, (_, i) => i),
+      next_cursor: null,
+    }),
+    50,
+  );
+  assert.equal(got.rows.length, 50);
+  assert.equal(got.more, true);
+});

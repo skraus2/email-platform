@@ -19,11 +19,15 @@ import {
   hasFilters,
   isFailuresView,
   parseEmailFilters,
+  queryString,
   type EmailFilters,
 } from "@/lib/email-filters";
 import { displaySubject } from "@/lib/format";
 import { FilterForm } from "./filter-form";
-import { ResultsReady } from "./results-ready";
+import { ResultsReady, ResultsScope } from "./results-ready";
+
+/** Projects offered in the project filter. */
+const PROJECT_CAP = 500;
 
 export async function generateMetadata({
   searchParams,
@@ -39,11 +43,15 @@ export default async function EmailsPage({
   const params = await searchParams;
   const { filters, errors } = parseEmailFilters(params);
   // Also the session check of this page (see adminFetch).
-  const projects = await adminFetchAll<Project>("/admin/v1/projects");
+  const projects = await adminFetchAll<Project>(
+    "/admin/v1/projects",
+    PROJECT_CAP,
+  );
+  const query = queryString(params);
   const failures = isFailuresView(filters);
 
   return (
-    <>
+    <ResultsScope>
       <h1>{failures ? "Failures" : "Messages"}</h1>
       <p className="muted">
         {failures
@@ -71,10 +79,7 @@ export default async function EmailsPage({
               </li>
             ))}
           </ul>
-          <ResultsReady
-            message="The filters could not be applied."
-            focusId="filter-errors"
-          />
+          <ResultsReady query={query} focusId="filter-errors" />
         </div>
       ) : null}
       <FilterForm
@@ -83,6 +88,7 @@ export default async function EmailsPage({
         errors={errors}
         projects={projects.rows}
         moreProjects={projects.more}
+        projectCap={PROJECT_CAP}
       />
       {/* Persistent, so result changes are announced reliably. */}
       <p id="results-status" role="status" className="visually-hidden" />
@@ -96,15 +102,21 @@ export default async function EmailsPage({
             key={emailsHref(filters, filters.cursor)}
             fallback={<p className="loading">Loading emails…</p>}
           >
-            <EmailResults filters={filters} />
+            <EmailResults filters={filters} query={query} />
           </Suspense>
         </section>
       )}
-    </>
+    </ResultsScope>
   );
 }
 
-async function EmailResults({ filters }: { filters: EmailFilters }) {
+async function EmailResults({
+  filters,
+  query,
+}: {
+  filters: EmailFilters;
+  query: string;
+}) {
   let page: Page<AdminEmail>;
   try {
     page = await adminFetch<Page<AdminEmail>>("/admin/v1/emails", {
@@ -128,7 +140,7 @@ async function EmailResults({ filters }: { filters: EmailFilters }) {
               </>
             ) : null}
           </p>
-          <ResultsReady message={message} focusId="results-h" />
+          <ResultsReady message={message} query={query} focusId="results-h" />
         </div>
       );
     }
@@ -154,7 +166,7 @@ async function EmailResults({ filters }: { filters: EmailFilters }) {
             <Link href="/emails">Clear filters</Link>
           ) : null}
         </p>
-        <ResultsReady message={message} focusId="results-h" />
+        <ResultsReady message={message} query={query} focusId="results-h" />
       </div>
     );
   }
@@ -163,7 +175,7 @@ async function EmailResults({ filters }: { filters: EmailFilters }) {
   const summary = `${count}${filters.cursor ? " on this later page" : ""}, newest first${page.next_cursor ? "; more on the next page" : ""}`;
   return (
     <>
-      <ResultsReady message={`${summary}.`} focusId="results-h" />
+      <ResultsReady message={`${summary}.`} query={query} focusId="results-h" />
       <div
         className="table-wrap"
         role="region"

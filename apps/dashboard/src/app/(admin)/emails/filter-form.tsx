@@ -5,6 +5,7 @@ import {
   EMAIL_STATUSES,
   FAILURE_CODES,
   emailsHref,
+  queryString,
   type EmailFilters,
   type FilterError,
   type FilterField,
@@ -22,6 +23,7 @@ export function FilterForm({
   errors,
   projects,
   moreProjects,
+  projectCap,
 }: {
   params: SearchParams;
   filters: EmailFilters;
@@ -29,6 +31,7 @@ export function FilterForm({
   projects: Project[];
   /** The project list was cut; some projects are not offered. */
   moreProjects: boolean;
+  projectCap: number;
 }) {
   const raw = (field: string) => {
     const v = params[field];
@@ -37,7 +40,7 @@ export function FilterForm({
   const fieldHints: Partial<Record<FilterField, string>> = {
     ...hints,
     project_id: moreProjects
-      ? "Only the first 500 projects are listed."
+      ? `Only the first ${projectCap} projects are listed.`
       : undefined,
   };
   const errorOf = (field: FilterField) => errors.find((e) => e.field === field);
@@ -64,9 +67,7 @@ export function FilterForm({
 
   // The raw query without the page cursor: invalid values count too, so the
   // fields also follow the URL when only an invalid value changed.
-  const formKey = JSON.stringify(
-    Object.entries(params).filter(([k]) => k !== "cursor"),
-  );
+  const formKey = queryString(params, ["cursor"]);
   const templateError = errorOf("template_id");
   const project = raw("project_id").toLowerCase();
   const knownProject = !project || projects.some((p) => p.id === project);

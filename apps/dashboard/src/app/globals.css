@@ -209,6 +209,10 @@ td {
 th {
   white-space: nowrap;
 }
+/* Short ids in tables keep their width; the table scrolls instead. */
+td code {
+  overflow-wrap: normal;
+}
 td .wrap,
 td.wrap {
   max-width: 24rem;
