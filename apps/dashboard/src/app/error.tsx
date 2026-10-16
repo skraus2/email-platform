@@ -7,10 +7,10 @@ import Link from "next/link";
  * At the root it also catches errors of the (admin) layout.
  */
 export default function ErrorPage({
-  reset,
+  retry,
 }: {
   error: Error & { digest?: string };
-  reset: () => void;
+  retry: () => void;
 }) {
   return (
     <main className="login">
@@ -21,7 +21,7 @@ export default function ErrorPage({
         moment.
       </p>
       <div className="actions">
-        <button type="button" onClick={reset}>
+        <button type="button" onClick={() => retry()}>
           Try again
         </button>
         <Link href="/login">Go to sign-in</Link>

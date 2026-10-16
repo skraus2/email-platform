@@ -89,6 +89,7 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm run format:check
+      - run: pnpm --filter dashboard test
       - run: pnpm --filter dashboard lint
       - run: pnpm --filter dashboard typecheck
       - run: pnpm --filter dashboard build

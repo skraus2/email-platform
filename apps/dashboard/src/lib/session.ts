@@ -10,22 +10,36 @@ export async function sessionToken(): Promise<string | undefined> {
 }
 
 /**
- * Stores the token: HttpOnly (never readable by page scripts), SameSite=Lax
- * (shared filter links keep working; every mutation is a POST Server Action
- * whose Origin Next.js checks), Secure in production or over HTTPS, and no
- * longer than the session itself.
+ * Attributes of the session cookie: HttpOnly (never readable by page
+ * scripts), SameSite=Lax (shared filter links keep working; every mutation
+ * is a POST Server Action whose Origin Next.js checks), Secure in production
+ * or over HTTPS, Path=/. Setting and clearing must use the same attributes:
+ * a __Host- cookie without Secure is ignored by browsers, so a clearing
+ * header without it would leave the session in the browser.
  */
-export async function storeSession(token: string, expiresAt: Date) {
+async function cookieAttributes() {
   const https = (await headers()).get("x-forwarded-proto") === "https";
-  (await cookies()).set(SESSION_COOKIE, token, {
+  return {
     httpOnly: true,
-    sameSite: "lax",
+    sameSite: "lax" as const,
     secure: process.env.NODE_ENV === "production" || https,
     path: "/",
+  };
+}
+
+/** Stores the token, no longer than the session itself. */
+export async function storeSession(token: string, expiresAt: Date) {
+  (await cookies()).set(SESSION_COOKIE, token, {
+    ...(await cookieAttributes()),
     expires: expiresAt,
   });
 }
 
+/** Removes the session cookie from the browser. */
 export async function clearSession() {
-  (await cookies()).delete(SESSION_COOKIE);
+  (await cookies()).set(SESSION_COOKIE, "", {
+    ...(await cookieAttributes()),
+    expires: new Date(0),
+    maxAge: 0,
+  });
 }

@@ -30,7 +30,9 @@ export function buildAdminURL(
   }
   const prefix = url.pathname.replace(/\/+$/, "");
   const out = new URL(url.origin + prefix + path);
-  if (out.origin !== url.origin) {
+  // The parser normalises dot segments (also percent-encoded ones) and drops
+  // tabs and newlines; anything it changed was not a plain path.
+  if (out.origin !== url.origin || out.pathname !== prefix + path) {
     throw new Error("invalid admin API path");
   }
   if (query) {

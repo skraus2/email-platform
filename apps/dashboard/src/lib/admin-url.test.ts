@@ -8,6 +8,7 @@ test("builds URLs on the configured origin", () => {
     ["http://127.0.0.1:8081/", "http://127.0.0.1:8081/admin/v1/me"],
     ["http://h:1/pre/", "http://h:1/pre/admin/v1/me"],
     ["https://h:1/pre", "https://h:1/pre/admin/v1/me"],
+    ["http://[::1]:8081", "http://[::1]:8081/admin/v1/me"],
   ]) {
     assert.equal(buildAdminURL(base, "/admin/v1/me").href, want);
   }
@@ -36,6 +37,12 @@ test("refuses bad bases and paths", () => {
     "/admin/v1/me?x=1",
     "/admin/v1/me#x",
     "/admin/v1/a\\b",
+    "/admin/v1/%2e%2e/x",
+    "/admin/v1/%2E./x",
+    "/admin/v1/.%2e/x",
+    "/admin/v1/.\t./x",
+    "/admin/v1/me\n",
+    "/admin/v1/a b",
   ]) {
     assert.throws(() => buildAdminURL("http://127.0.0.1:8081", path), path);
   }
