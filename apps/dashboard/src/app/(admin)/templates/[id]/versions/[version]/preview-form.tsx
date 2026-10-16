@@ -1,30 +1,53 @@
 "use client";
 
-import { useActionState } from "react";
+import { startTransition, useActionState } from "react";
 import { displaySubject } from "@/lib/format";
 import {
   fieldName,
+  previewFailure,
   variableNames,
   type VariableSchema,
   type VariableSpec,
 } from "@/lib/preview-vars";
-import type { PreviewState } from "./actions";
+import type { PreviewOutcome } from "./actions";
+
+type PreviewState =
+  | (PreviewOutcome & {
+      /** Changes on every submit, so a repeated message is announced again. */
+      attempt: number;
+    })
+  | undefined;
 
 /**
  * The preview form: one input per declared variable, posted to a Server
  * Action (values never enter the URL). The rendered HTML is shown only in
  * a sandboxed frame without any allow token: no scripts, no forms, no
  * popups, an opaque origin, and the page's CSP (no remote images).
+ *
+ * The form is submitted from onSubmit rather than through its action prop:
+ * React resets action-prop forms after each submit, which would clear the
+ * entered values and drop focus from the field Enter was pressed in. Only
+ * the form data goes to the server, never the previous result. Before
+ * hydration the form posts to the page itself (method=post), so values
+ * stay out of the URL even then.
  */
 export function PreviewForm({
   action,
   schema,
 }: {
-  action: (prev: PreviewState, form: FormData) => Promise<PreviewState>;
+  action: (form: FormData) => Promise<PreviewOutcome>;
   schema: VariableSchema;
 }) {
-  const [state, formAction, pending] = useActionState<PreviewState, FormData>(
-    action,
+  const [state, dispatch, pending] = useActionState<PreviewState, FormData>(
+    async (prev, form) => {
+      const attempt = (prev?.attempt ?? 0) + 1;
+      try {
+        return { ...(await action(form)), attempt };
+      } catch {
+        // The action itself never throws; this is the request failing.
+        return { ...previewFailure({}, undefined, undefined, ""), attempt };
+      }
+    },
     undefined,
   );
   const names = variableNames(schema);
@@ -35,20 +58,22 @@ export function PreviewForm({
   return (
     <>
       <form
-        action={formAction}
+        method="post"
         className="preview-form"
         onSubmit={(e) => {
+          e.preventDefault();
           if (pending) {
-            e.preventDefault();
+            return;
           }
+          const form = new FormData(e.currentTarget);
+          startTransition(() => dispatch(form));
         }}
       >
         {names.map((name) => (
           <Field
-            key={`${name}-${state?.attempt ?? 0}`}
+            key={name}
             name={name}
             spec={schema[name]}
-            value={state?.values[name] ?? ""}
             error={errorOf(name)}
           />
         ))}
@@ -69,9 +94,11 @@ export function PreviewForm({
           </div>
         ) : null}
         <div className="actions">
-          {/* Kept enabled while pending so focus stays on it; a second submit is ignored. */}
+          {/* Kept enabled while pending so focus stays on it; a second
+              submit is ignored. The label stays the same: the status
+              below announces the progress. */}
           <button type="submit" aria-disabled={pending || undefined}>
-            {pending ? "Rendering…" : "Render preview"}
+            Render preview
           </button>
         </div>
       </form>
@@ -85,9 +112,9 @@ export function PreviewForm({
           <p className="empty">Render the preview to see the result here.</p>
         ) : (
           <>
-            <h4 id="result-subject">Subject</h4>
+            <h4 id="result-subject">Rendered subject</h4>
             <p className="wrap">{displaySubject(result.subject)}</p>
-            <h4 id="result-text">Text part</h4>
+            <h4 id="result-text">Rendered text part</h4>
             {result.text === "" ? (
               <p className="empty">Empty.</p>
             ) : (
@@ -100,7 +127,7 @@ export function PreviewForm({
                 <pre>{result.text}</pre>
               </div>
             )}
-            <h4 id="result-html">HTML part</h4>
+            <h4 id="result-html">Rendered HTML part</h4>
             {result.html === null ? (
               <p className="empty">This version has no HTML part.</p>
             ) : (
@@ -123,12 +150,10 @@ export function PreviewForm({
 function Field({
   name,
   spec,
-  value,
   error,
 }: {
   name: string;
   spec: VariableSpec;
-  value: string;
   error: string | undefined;
 }) {
   const id = `var-${name}`;
@@ -137,7 +162,6 @@ function Field({
   const common = {
     id,
     name: fieldName(name),
-    defaultValue: value,
     "aria-invalid": error ? true : undefined,
     "aria-describedby": error ? `${hintId} ${errorId}` : hintId,
   } as const;
@@ -158,7 +182,6 @@ function Field({
       ) : spec.type === "number" ? (
         <input
           {...common}
-          inputMode="decimal"
           autoComplete="off"
           spellCheck={false}
           required={needed}
@@ -186,8 +209,8 @@ function hint(spec: VariableSpec): string {
       return `Text, up to ${spec.max_length ?? 1000} characters; empty means empty text.`;
     case "number":
       return spec.required
-        ? "A number, for example 12 or -3.5."
-        : "A number, for example 12 or -3.5; leave empty to omit.";
+        ? "A number with a dot for decimals, for example 12 or -3.5."
+        : "A number with a dot for decimals, for example 12 or -3.5; leave empty to omit.";
     case "boolean":
       return spec.required ? "true or false." : "true, false or not set.";
   }

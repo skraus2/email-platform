@@ -3,6 +3,7 @@ import { test } from "node:test";
 import {
   apiFieldError,
   buildPreviewVariables,
+  previewFailure,
   fieldName,
   isVersion,
   variableNames,
@@ -146,14 +147,6 @@ test("error messages never contain the value", () => {
   }
 });
 
-test("entered values are returned for refilling the form", () => {
-  const out = buildPreviewVariables(
-    { name: SCHEMA.name, amount: SCHEMA.amount, beta: SCHEMA.beta },
-    form({ "v.name": "Ann", "v.amount": "oops", "v.beta": "true" }),
-  );
-  assert.deepEqual(out.values, { name: "Ann", amount: "oops", beta: "true" });
-});
-
 test("variable names are sorted; field names are prefixed", () => {
   assert.deepEqual(variableNames(SCHEMA), [
     "amount",
@@ -192,5 +185,62 @@ test("an admin API message naming a declared variable becomes a field error", ()
     "",
   ]) {
     assert.equal(apiFieldError(SCHEMA, m), undefined, m);
+  }
+});
+
+test("preview failures map to fixed messages; only render errors show the API text", () => {
+  assert.deepEqual(
+    previewFailure(
+      SCHEMA,
+      422,
+      "variables_invalid",
+      "variables.vip: must be true or false",
+    ),
+    {
+      error: "Check these variables:",
+      fieldErrors: [{ name: "vip", message: "Must be true or false." }],
+    },
+  );
+  assert.deepEqual(
+    previewFailure(
+      SCHEMA,
+      422,
+      "render_failed",
+      "html: output is larger than 524288 bytes",
+    ),
+    {
+      error:
+        "The template could not be rendered: html: output is larger than 524288 bytes",
+      fieldErrors: [],
+    },
+  );
+  assert.deepEqual(
+    previewFailure(
+      SCHEMA,
+      422,
+      "variables_invalid",
+      "variables: a variable is not declared by this template version",
+    ),
+    {
+      error:
+        "The template could not be rendered: variables: a variable is not declared by this template version",
+      fieldErrors: [],
+    },
+  );
+  const generic = "Preview is unavailable right now. Try again later.";
+  for (const [status, code, want] of [
+    [422, "something_new", generic],
+    [404, "not_found", "This template version does not exist."],
+    [413, "payload_too_large", "The variables are too large to preview."],
+    [400, "invalid_json", generic],
+    [503, "service_unavailable", generic],
+    [500, "internal_error", generic],
+    [undefined, undefined, generic],
+  ] as const) {
+    assert.deepEqual(
+      previewFailure(SCHEMA, status, code, "raw API text"),
+      { error: want, fieldErrors: [] },
+      `${status} ${code}`,
+    );
   }
 });

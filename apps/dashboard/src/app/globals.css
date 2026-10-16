@@ -293,7 +293,7 @@ ul.plain {
 
 /* Source and rendered text: shown as stored, long parts scroll. */
 .source {
-  max-height: 24rem;
+  max-height: min(24rem, 60vh);
   overflow: auto;
   border: 1px solid var(--line);
   padding: 0.5rem 0.75rem;
@@ -307,7 +307,7 @@ ul.plain {
 }
 .preview-form {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(16rem, 100%), 1fr));
   gap: 1rem 1.5rem;
   margin-block: 1rem;
   padding: 1rem;
@@ -324,11 +324,16 @@ ul.plain {
 .preview-frame {
   display: block;
   width: 100%;
-  height: 32rem;
+  height: min(32rem, 70vh);
   resize: vertical;
   overflow: auto;
   border: 1px solid var(--line);
   background: #fff;
+}
+/* Focus inside the frame is drawn by the email document, if at all. */
+.preview-frame:focus {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
 }
 
 @media (max-width: 40rem) {

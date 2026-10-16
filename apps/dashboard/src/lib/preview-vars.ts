@@ -17,9 +17,6 @@ export type VariableValue = string | number | boolean;
 
 export type VariableError = { name: string; message: string };
 
-/** Characters kept per entered value when it is sent back to the form. */
-const ECHO_CAP = 10_000;
-
 /** A decimal number literal, as an operator would type it (no hex, no NaN). */
 const NUMBER = /^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/;
 
@@ -50,18 +47,12 @@ export function fieldName(name: string): string {
 export function buildPreviewVariables(
   schema: VariableSchema,
   get: (field: string) => string | null,
-): {
-  variables: Record<string, VariableValue>;
-  errors: VariableError[];
-  values: Record<string, string>;
-} {
+): { variables: Record<string, VariableValue>; errors: VariableError[] } {
   const variables: Record<string, VariableValue> = {};
   const errors: VariableError[] = [];
-  const values: Record<string, string> = {};
   for (const name of variableNames(schema)) {
     const spec = schema[name];
     const raw = get(fieldName(name)) ?? "";
-    values[name] = [...raw].slice(0, ECHO_CAP).join("");
     const fail = (message: string) => errors.push({ name, message });
     switch (spec.type) {
       case "string": {
@@ -99,7 +90,7 @@ export function buildPreviewVariables(
       }
     }
   }
-  return { variables, errors, values };
+  return { variables, errors };
 }
 
 const API_FIELD = /^variables\.([a-z][a-z0-9_]{0,39}): ([\s\S]+)$/;
@@ -122,4 +113,43 @@ export function apiFieldError(
     name: m[1],
     message: `${reason.charAt(0).toUpperCase()}${reason.slice(1)}${reason.endsWith(".") ? "" : "."}`,
   };
+}
+
+const UNAVAILABLE = "Preview is unavailable right now. Try again later.";
+
+/**
+ * What the operator sees when a preview fails, from the admin API answer
+ * (status and error code; both undefined when the API was not reached).
+ * Only the two documented 422 codes show the API message, which names
+ * variables and template parts, never values; anything else gets a fixed
+ * text.
+ */
+export function previewFailure(
+  schema: VariableSchema,
+  status: number | undefined,
+  code: string | undefined,
+  message: string,
+): { error: string; fieldErrors: VariableError[] } {
+  if (
+    status === 422 &&
+    (code === "variables_invalid" || code === "render_failed")
+  ) {
+    const field = apiFieldError(schema, message);
+    return field
+      ? { error: "Check these variables:", fieldErrors: [field] }
+      : {
+          error: `The template could not be rendered: ${message}`,
+          fieldErrors: [],
+        };
+  }
+  if (status === 404) {
+    return { error: "This template version does not exist.", fieldErrors: [] };
+  }
+  if (status === 413) {
+    return {
+      error: "The variables are too large to preview.",
+      fieldErrors: [],
+    };
+  }
+  return { error: UNAVAILABLE, fieldErrors: [] };
 }

@@ -76,17 +76,23 @@ export default async function VersionPage({ params }: Props) {
   return (
     <>
       <p>
-        <Link href={base}>
+        <Link href={base} prefetch={false}>
           All versions<span className="visually-hidden"> of this template</span>
         </Link>
       </p>
       <h1 className="wrap">
         {displayName(t.name)}, version {v.version}
       </h1>
-      <p className="muted">
-        Published <Timestamp iso={v.created_at} /> · template{" "}
-        <code>{t.id}</code>
-      </p>
+      <dl className="meta">
+        <dt>Published</dt>
+        <dd>
+          <Timestamp iso={v.created_at} />
+        </dd>
+        <dt>Template</dt>
+        <dd>
+          <code>{t.id}</code>
+        </dd>
+      </dl>
       {newer ? (
         <p className="notice">
           This is an older version.{" "}

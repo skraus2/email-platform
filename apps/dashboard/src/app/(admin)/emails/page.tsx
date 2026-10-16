@@ -222,7 +222,6 @@ async function EmailResults({
                     <Link
                       href={`/templates/${encodeURIComponent(e.template_id)}/versions/${e.template_version}`}
                       prefetch={false}
-                      title={e.template_id}
                     >
                       <span className="visually-hidden">Template </span>
                       <code>{e.template_id.slice(0, 8)}…</code> version{" "}
