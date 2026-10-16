@@ -1,4 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
+import { SESSION_COOKIE } from "./lib/cookie";
 
 /**
  * Sets a per-request Content Security Policy with a script nonce and sends
@@ -27,7 +28,7 @@ export function proxy(request: NextRequest) {
   ].join("; ");
 
   const { pathname } = request.nextUrl;
-  if (pathname !== "/login" && !request.cookies.has("ep_session")) {
+  if (pathname !== "/login" && !request.cookies.has(SESSION_COOKIE)) {
     const url = request.nextUrl.clone();
     url.pathname = "/login";
     url.search = "";
@@ -48,6 +49,15 @@ function withHeaders(res: NextResponse, csp: string) {
   res.headers.set("Cache-Control", "no-store");
   res.headers.set("Referrer-Policy", "no-referrer");
   res.headers.set("X-Content-Type-Options", "nosniff");
+  res.headers.set(
+    "Permissions-Policy",
+    "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
+  );
+  if (process.env.NODE_ENV === "production") {
+    // Production runs behind TLS (the session cookie is Secure); browsers
+    // ignore this header over plain HTTP.
+    res.headers.set("Strict-Transport-Security", "max-age=31536000");
+  }
   return res;
 }
 

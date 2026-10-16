@@ -3,8 +3,9 @@ import { adminFetch, type Me } from "@/lib/admin-api";
 import { logout } from "../actions";
 
 /**
- * Every page in this group needs a valid admin session: the layout asks the
- * admin API who is signed in (a rejected session ends at the login page).
+ * The shell of the signed-in console. It shows who is signed in; it is not
+ * the session check of the pages below (layouts do not re-run on client
+ * navigation): every page loads its data through adminFetch, which is.
  */
 export default async function AdminLayout({ children }: LayoutProps<"/">) {
   const me = await adminFetch<Me>("/admin/v1/me");
@@ -14,14 +15,19 @@ export default async function AdminLayout({ children }: LayoutProps<"/">) {
         Skip to content
       </a>
       <header className="topbar">
+        <Link href="/" className="brand">
+          Email Platform
+        </Link>
         <nav aria-label="Main">
-          <Link href="/" className="brand">
-            Email Platform
-          </Link>
+          <ul>
+            <li>
+              <Link href="/">Overview</Link>
+            </li>
+          </ul>
         </nav>
         <form action={logout} className="user">
           <span>
-            Signed in as <strong>{me.username}</strong>
+            Signed in as <strong className="wrap">{me.username}</strong>
           </span>
           <button type="submit">Sign out</button>
         </form>

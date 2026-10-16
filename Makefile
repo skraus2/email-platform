@@ -101,8 +101,9 @@ lint-web: ## ESLint + TypeScript typecheck for the dashboard
 	$(PNPM) --filter dashboard typecheck
 
 .PHONY: test
-test: ## Go unit tests (no external dependencies)
+test: ## Go and dashboard unit tests (no external dependencies)
 	go test -race ./...
+	$(PNPM) --filter dashboard test
 
 .PHONY: test-integration
 test-integration: ## Go integration tests against Compose PostgreSQL (needs `make up`)

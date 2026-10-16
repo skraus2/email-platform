@@ -4,7 +4,7 @@ import "./globals.css";
 
 // No next/font/google: builds must not fetch from external services.
 export const metadata: Metadata = {
-  title: "Email Platform",
+  title: { template: "%s · Email Platform", default: "Email Platform" },
   description: "Internal email platform dashboard",
   robots: { index: false, follow: false },
 };
