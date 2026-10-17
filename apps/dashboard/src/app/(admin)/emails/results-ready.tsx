@@ -31,9 +31,22 @@ export function ResultsScope({
   children: React.ReactNode;
 }) {
   const opened = useRef(query);
+  const navigated = useRef(false);
   const last = useRef<string | undefined>(undefined);
+  // Runs at the commit of each navigation's page shell, before the results
+  // of that query (streamed later) are marked.
+  useEffect(() => {
+    if (query !== opened.current) {
+      navigated.current = true;
+    }
+  }, [query]);
   const markShown = useCallback<MarkShown>((shown) => {
-    const kind = shownKind(opened.current, last.current, shown);
+    const kind = shownKind(
+      opened.current,
+      last.current,
+      shown,
+      navigated.current,
+    );
     last.current = shown;
     return kind;
   }, []);
