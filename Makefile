@@ -118,11 +118,15 @@ build: ## Build Go binaries into ./bin and the dashboard
 check: fmt-check lint test build ## Fast full gate (no Docker needed)
 
 .PHONY: ci
-ci: check test-integration smoke ## Local superset of CI gates (needs `make up migrate`)
+ci: check test-integration smoke test-e2e ## Local superset of CI gates (needs `make up migrate`)
 
 .PHONY: smoke
 smoke: ## Real API + worker: health, send, idempotency, 422/429, log leaks, SIGTERM
 	./scripts/smoke.sh
+
+.PHONY: test-e2e
+test-e2e: ## Dashboard browser E2E (Playwright, Chromium) against real API + worker on a throwaway DB (needs `make up`)
+	./scripts/e2e.sh $(ARGS)
 
 .PHONY: load
 load: ## Load measurement against real binaries (needs `make up migrate`; LOAD_ARGS="-c 20 -n 2000")
