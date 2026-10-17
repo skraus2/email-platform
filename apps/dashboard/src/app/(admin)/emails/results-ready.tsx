@@ -7,26 +7,35 @@ import {
   useEffect,
   useRef,
 } from "react";
+import { shownKind, type ShownKind } from "@/lib/results-visit";
 
 /**
  * Records that the results of a query are shown and tells whether they are
  * the first of this visit, the same as last time, or new.
  */
-type MarkShown = (query: string) => "first" | "same" | "new";
+type MarkShown = (query: string) => ShownKind;
 
 const ShownContext = createContext<MarkShown | null>(null);
 
 /**
  * One visit of the messages list. It stays mounted while only the query
  * changes (filters, paging) and is new after leaving the list, so going back
- * to it counts as a fresh visit.
+ * to it counts as a fresh visit. `query` is the raw query string of the
+ * page; the one it mounts with is the visit's opening query.
  */
-export function ResultsScope({ children }: { children: React.ReactNode }) {
+export function ResultsScope({
+  query,
+  children,
+}: {
+  query: string;
+  children: React.ReactNode;
+}) {
+  const opened = useRef(query);
   const last = useRef<string | undefined>(undefined);
-  const markShown = useCallback<MarkShown>((query) => {
-    const before = last.current;
-    last.current = query;
-    return before === undefined ? "first" : before === query ? "same" : "new";
+  const markShown = useCallback<MarkShown>((shown) => {
+    const kind = shownKind(opened.current, last.current, shown);
+    last.current = shown;
+    return kind;
   }, []);
   return (
     <ShownContext.Provider value={markShown}>{children}</ShownContext.Provider>

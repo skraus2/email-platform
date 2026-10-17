@@ -51,7 +51,7 @@ export default async function EmailsPage({
   const failures = isFailuresView(filters);
 
   return (
-    <ResultsScope>
+    <ResultsScope query={query}>
       <h1>{failures ? "Failures" : "Messages"}</h1>
       <p className="muted">
         {failures
