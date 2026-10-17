@@ -49,6 +49,9 @@ trap cleanup EXIT
 # Needles are added as soon as each secret exists.
 LOGS=(api worker dashboard)
 tr ',' '\n' <<<"$WEBHOOK_KEKS" | sed 's/^[^:]*://' >"$TMP/needles"
+# The credentials part of the database URL ("user:password@").
+DB_CREDS="$(sed -nE 's#^[a-z]+://([^@/]+@).*#\1#p' <<<"$TEST_DATABASE_URL")"
+[[ -n "$DB_CREDS" ]] && printf '%s\n' "$DB_CREDS" >>"$TMP/needles"
 redact() { grep -viFf "$TMP/needles" "$1" || true; }
 fail() {
   echo "E2E FAIL: $*" >&2
@@ -63,6 +66,10 @@ echo "database $DB created"
 go build -o "$TMP/" ./cmd/api ./cmd/worker ./cmd/admin ./cmd/migrate
 "$TMP/migrate" up >/dev/null || fail "migrate"
 
+# A leftover process on a port would answer in place of this run's API.
+for addr in "$API_ADDR" "$ADMIN_ADDR" "127.0.0.1:$E2E_DASHBOARD_PORT"; do
+  ! curl -s -o /dev/null --max-time 2 "http://$addr/" || fail "port $addr is in use"
+done
 HTTP_ADDR="$API_ADDR" ADMIN_HTTP_ADDR="$ADMIN_ADDR" LOG_FORMAT=json "$TMP/api" >"$TMP/api.log" 2>&1 &
 API_PID=$!
 for _ in $(seq 1 100); do
@@ -70,8 +77,7 @@ for _ in $(seq 1 100); do
   sleep 0.1
 done
 curl -fsS "http://$API_ADDR/readyz" >/dev/null 2>&1 || fail "api not ready"
-# A leftover process on the port would answer too; ours must still run.
-kill -0 "$API_PID" 2>/dev/null || fail "api exited (port in use?)"
+kill -0 "$API_PID" 2>/dev/null || fail "api exited"
 echo "api ready on $API_ADDR (admin $ADMIN_ADDR)"
 
 # Seed while the worker is down: the email whose recipient is suppressed
@@ -82,19 +88,20 @@ export E2E_API_URL="http://$API_ADDR" E2E_ADMIN_API_URL="http://$ADMIN_ADDR"
 
 PROVIDER_RATE_PER_SECOND=100 LOG_FORMAT=json "$TMP/worker" >"$TMP/worker.log" 2>&1 &
 WORKER_PID=$!
-kill -0 "$WORKER_PID" 2>/dev/null || fail "worker exited"
 (cd "$ROOT/apps/dashboard" && pnpm exec node e2e/seed.mts wait) || fail "seeded emails did not reach a final state"
 echo "seed complete"
 
-pnpm --filter dashboard build >"$TMP/build.log" 2>&1 || { cat "$TMP/build.log" >&2; fail "dashboard build"; }
+# The dashboard needs neither the database nor the key-encryption key.
+NO_SECRETS=(env -u DATABASE_URL -u TEST_DATABASE_URL -u WEBHOOK_KEKS)
+"${NO_SECRETS[@]}" pnpm --filter dashboard build >"$TMP/build.log" 2>&1 || { cat "$TMP/build.log" >&2; fail "dashboard build"; }
 echo "dashboard built"
 
-# The dashboard needs neither the database nor the key-encryption key. Its
-# server log and the signed-in browser state stay in the run directory.
+# The dashboard's server log and the signed-in browser state stay in the
+# run directory.
 export E2E_DASHBOARD_LOG="$TMP/dashboard.log" E2E_AUTH_STATE="$TMP/admin-state.json"
 touch "$E2E_DASHBOARD_LOG"
 status=0
-(cd "$ROOT/apps/dashboard" && env -u DATABASE_URL -u WEBHOOK_KEKS ADMIN_API_URL="http://$ADMIN_ADDR" \
+(cd "$ROOT/apps/dashboard" && "${NO_SECRETS[@]}" ADMIN_API_URL="http://$ADMIN_ADDR" \
   pnpm exec playwright test "$@") || status=$?
 # The shared session's token must not appear in any log either.
 [[ -s "$E2E_AUTH_STATE" ]] && sed -nE 's/.*"value": "([^"]+)".*/\1/p' "$E2E_AUTH_STATE" >>"$TMP/needles"
@@ -106,11 +113,7 @@ wait "$WORKER_PID" || fail "worker exited non-zero after SIGTERM"
 # After shutdown, so that lines written while stopping are checked too.
 logs=("$TMP/api.log" "$TMP/worker.log" "$TMP/dashboard.log")
 if grep -qiFf "$TMP/needles" "${logs[@]}"; then
-  echo "E2E FAIL: logs contain a secret, session token, preview value or recipient address" >&2
-  exit 1
-fi
-if grep -q 'email_platform:email_platform@' "${logs[@]}"; then
-  echo "E2E FAIL: database password appeared in logs" >&2
+  echo "E2E FAIL: logs contain a secret, database credentials, session token, preview value or recipient address" >&2
   exit 1
 fi
 echo "E2E OK"

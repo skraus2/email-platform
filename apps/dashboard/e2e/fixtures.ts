@@ -6,7 +6,7 @@ import {
   type Response,
 } from "@playwright/test";
 
-/** What the seed step created (written by e2e/seed.ts, read by the specs). */
+/** What the seed step created (written by e2e/seed.mts, read by the specs). */
 export type Seed = {
   projectId: string;
   projectName: string;
@@ -57,19 +57,21 @@ export async function login(page: Page, account: Account = seed().admin) {
 }
 
 /** A Content-Security-Policy header as directive → sources. */
-function directives(csp: string): Map<string, string[]> {
-  const map = new Map<string, string[]>();
+function directives(csp: string): Record<string, string[]> {
+  const map: Record<string, string[]> = {};
   for (const part of csp.split(";")) {
     const [name, ...sources] = part.trim().split(/\s+/);
     if (name) {
-      map.set(name, sources);
+      // Browsers enforce the first of repeated directives; none may repeat.
+      expect(map[name], `directive ${name} repeated`).toBeUndefined();
+      map[name] = sources;
     }
   }
   return map;
 }
 
 /**
- * Asserts the security headers of a page response: the exact production
+ * Asserts the security headers of a page response: exactly the production
  * policy, and every script element in the served HTML carrying the nonce
  * of its `script-src` (scripts Next.js adds later are trusted through
  * 'strict-dynamic'). Returns the nonce, so callers can check it is fresh
@@ -81,17 +83,23 @@ export async function expectSecureDocument(
   expect(res, "navigation response").not.toBeNull();
   const headers = res!.headers();
   const csp = directives(headers["content-security-policy"] ?? "");
-  const script = csp.get("script-src") ?? [];
-  const nonce = /^'nonce-([A-Za-z0-9+/=]+)'$/.exec(script[1] ?? "")?.[1];
+  const nonce = /^'nonce-([A-Za-z0-9+/=]+)'$/.exec(
+    csp["script-src"]?.[1] ?? "",
+  )?.[1];
   expect(nonce, "script-src nonce").toBeTruthy();
-  expect(script).toEqual(["'self'", `'nonce-${nonce}'`, "'strict-dynamic'"]);
-  expect(csp.get("default-src")).toEqual(["'self'"]);
-  expect(csp.get("style-src")).toEqual(["'self'", "'unsafe-inline'"]);
-  expect(csp.get("img-src")).toEqual(["'self'", "data:"]);
-  expect(csp.get("object-src")).toEqual(["'none'"]);
-  expect(csp.get("base-uri")).toEqual(["'none'"]);
-  expect(csp.get("form-action")).toEqual(["'self'"]);
-  expect(csp.get("frame-ancestors")).toEqual(["'none'"]);
+  expect(csp).toEqual({
+    "default-src": ["'self'"],
+    "script-src": ["'self'", `'nonce-${nonce}'`, "'strict-dynamic'"],
+    "style-src": ["'self'", "'unsafe-inline'"],
+    "img-src": ["'self'", "data:"],
+    "font-src": ["'self'"],
+    "connect-src": ["'self'"],
+    "object-src": ["'none'"],
+    "base-uri": ["'none'"],
+    "form-action": ["'self'"],
+    "frame-ancestors": ["'none'"],
+    "frame-src": ["'self'"],
+  });
   expect(headers["cache-control"]).toContain("no-store");
   const html = await res!.text();
   const tags = html.match(/<script\b[^>]*>/g) ?? [];

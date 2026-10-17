@@ -42,14 +42,24 @@ test("the template lists its versions and an old version shows its source unchan
       .evaluate((el) => el.textContent);
   // After the client navigation and in the server-rendered page (the HTML
   // parser drops a newline right after <pre>).
+  // A server render that lost the newline would be repaired by hydration
+  // with a console error, so errors fail the check.
+  const errors: string[] = [];
+  page.on("console", (m) => {
+    if (m.type() === "error") {
+      errors.push(m.text());
+    }
+  });
   for (const load of ["navigation", "reload"]) {
     if (load === "reload") {
       await page.reload();
+      await page.waitForLoadState("networkidle");
     }
     expect(await source("Subject"), load).toBe(s.order.v1.subject);
     expect(await source("Text part"), load).toBe(s.order.v1.text);
     expect(await source("HTML part"), load).toBe(s.order.v1.html);
   }
+  expect(errors).toEqual([]);
 });
 
 test("the preview renders escaped HTML in a sandboxed frame without remote content", async ({

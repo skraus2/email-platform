@@ -43,9 +43,10 @@ export default defineConfig({
     },
   ],
   webServer: {
+    // The shell expands the log path itself (no quoting in JS).
     command:
       `pnpm exec next start -H 127.0.0.1 -p ${port}` +
-      (serverLog ? ` >>'${serverLog}' 2>&1` : ""),
+      (serverLog ? ' >>"$E2E_DASHBOARD_LOG" 2>&1' : ""),
     url: `${baseURL}/login`,
     reuseExistingServer: false,
     timeout: 60_000,
