@@ -69,37 +69,44 @@ test("a session revoked elsewhere ends at the login page", async ({
   }
 });
 
-test("wrong passwords show one generic message and then the lockout", async ({
-  page,
-}) => {
-  const { locked } = seed();
-  await page.goto("/login");
-  const attempt = async (password: string) => {
-    await page.getByLabel("Username").fill(locked.username);
-    await page.getByLabel("Password").fill(password);
-    // Wait for the action's answer: the alert of the previous attempt has
-    // the same text.
-    await Promise.all([
-      page.waitForResponse(
-        (r) => r.request().method() === "POST" && r.url().endsWith("/login"),
-      ),
-      page.getByRole("button", { name: "Sign in" }).click(),
-    ]);
-  };
-  for (let i = 1; i <= 5; i++) {
-    await attempt(`wrong-password-${i}`);
-    await expect(page.getByRole("main").getByRole("alert")).toHaveText(
-      "Username or password is wrong.",
+test.describe("sign-in throttling", () => {
+  // The lock persists in the database, so a retry could never pass.
+  test.describe.configure({ retries: 0 });
+
+  test("wrong passwords show one generic message and then the lockout", async ({
+    page,
+  }) => {
+    const { locked } = seed();
+    await page.goto("/login");
+    const attempt = async (username: string, password: string) => {
+      await page.getByLabel("Username").fill(username);
+      await page.getByLabel("Password").fill(password);
+      // Wait for the action's answer: the alert of the previous attempt has
+      // the same text.
+      await Promise.all([
+        page.waitForResponse(
+          (r) => r.request().method() === "POST" && r.url().endsWith("/login"),
+        ),
+        page.getByRole("button", { name: "Sign in" }).click(),
+      ]);
+    };
+    const alert = page.getByRole("main").getByRole("alert");
+    // An unknown name gets the same answer as a wrong password.
+    await attempt("e2e-nobody", "wrong-password-0");
+    await expect(alert).toHaveText("Username or password is wrong.");
+    for (let i = 1; i <= 5; i++) {
+      await attempt(locked.username, `wrong-password-${i}`);
+      await expect(alert).toHaveText("Username or password is wrong.");
+      await expect(page.getByLabel("Username")).toHaveValue(locked.username);
+      await expect(page.getByLabel("Password")).toHaveValue("");
+    }
+    // The sixth attempt is refused even with the right password.
+    await attempt(locked.username, locked.password);
+    await expect(alert).toHaveText(
+      /^Too many failed attempts\. Try again in \d+ minutes?\.$/,
     );
-    await expect(page.getByLabel("Username")).toHaveValue(locked.username);
-    await expect(page.getByLabel("Password")).toHaveValue("");
-  }
-  // The sixth attempt is refused even with the right password.
-  await attempt(locked.password);
-  await expect(page.getByRole("main").getByRole("alert")).toHaveText(
-    /^Too many failed attempts\. Try again in \d+ minutes?\.$/,
-  );
-  await expect(page).toHaveURL(LOGIN);
+    await expect(page).toHaveURL(LOGIN);
+  });
 });
 
 test("sign-in sets a strict session cookie and every page carries a nonce CSP", async ({
@@ -130,7 +137,8 @@ test("sign-in sets a strict session cookie and every page carries a nonce CSP", 
     "ep_session",
   );
 
-  for (const path of [
+  const nonces = new Set<string>();
+  const paths = [
     "/",
     "/emails",
     `/emails/${s.emails.templateEmailId}`,
@@ -140,11 +148,14 @@ test("sign-in sets a strict session cookie and every page carries a nonce CSP", 
     "/projects",
     `/projects/${s.projectId}`,
     "/login",
-  ]) {
+  ];
+  for (const path of paths) {
     await test.step(path, async () => {
-      await expectSecureDocument(await page.goto(path));
+      nonces.add(await expectSecureDocument(await page.goto(path)));
     });
   }
+  // A fresh nonce per response.
+  expect(nonces.size).toBe(paths.length);
 });
 
 test("sign-out ends the session and removes the cookie", async ({

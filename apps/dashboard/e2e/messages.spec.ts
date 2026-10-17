@@ -54,7 +54,12 @@ test("filtering by status and recipient narrows the list and keeps the filters i
   await expect(failed).toContainText("suppressed");
 
   // The Failures view is the same list preset to status=failed.
-  await page.getByRole("link", { name: "Failures" }).click();
+  await page.goto("/");
+  await page
+    .getByRole("navigation", { name: "Main" })
+    .getByRole("link", { name: "Failures" })
+    .click();
+  await expect(page).toHaveURL(/\/emails\?status=failed$/);
   await expect(page.getByRole("heading", { name: "Failures" })).toBeVisible();
   await expect(rows(page)).toHaveCount(1);
 

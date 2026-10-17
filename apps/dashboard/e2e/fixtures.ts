@@ -56,28 +56,42 @@ export async function login(page: Page, account: Account = seed().admin) {
   await expect(page.getByText("Signed in as")).toBeVisible();
 }
 
-/** The script nonce of a Content-Security-Policy header. */
-export function cspNonce(csp: string | undefined): string {
-  const m = /'nonce-([^']+)'/.exec(csp ?? "");
-  if (!m) {
-    throw new Error(`no nonce in CSP: ${csp}`);
+/** A Content-Security-Policy header as directive → sources. */
+function directives(csp: string): Map<string, string[]> {
+  const map = new Map<string, string[]>();
+  for (const part of csp.split(";")) {
+    const [name, ...sources] = part.trim().split(/\s+/);
+    if (name) {
+      map.set(name, sources);
+    }
   }
-  return m[1];
+  return map;
 }
 
 /**
- * Asserts the security headers of a page response and that every script
- * element in the served HTML carries the nonce of its CSP header (scripts
- * that Next.js adds later are trusted through 'strict-dynamic').
+ * Asserts the security headers of a page response: the exact production
+ * policy, and every script element in the served HTML carrying the nonce
+ * of its `script-src` (scripts Next.js adds later are trusted through
+ * 'strict-dynamic'). Returns the nonce, so callers can check it is fresh
+ * per response.
  */
-export async function expectSecureDocument(res: Response | null) {
+export async function expectSecureDocument(
+  res: Response | null,
+): Promise<string> {
   expect(res, "navigation response").not.toBeNull();
   const headers = res!.headers();
-  const csp = headers["content-security-policy"];
-  const nonce = cspNonce(csp);
-  expect(csp).toContain("frame-ancestors 'none'");
-  expect(csp).toContain("img-src 'self' data:");
-  expect(csp).toContain("base-uri 'none'");
+  const csp = directives(headers["content-security-policy"] ?? "");
+  const script = csp.get("script-src") ?? [];
+  const nonce = /^'nonce-([A-Za-z0-9+/=]+)'$/.exec(script[1] ?? "")?.[1];
+  expect(nonce, "script-src nonce").toBeTruthy();
+  expect(script).toEqual(["'self'", `'nonce-${nonce}'`, "'strict-dynamic'"]);
+  expect(csp.get("default-src")).toEqual(["'self'"]);
+  expect(csp.get("style-src")).toEqual(["'self'", "'unsafe-inline'"]);
+  expect(csp.get("img-src")).toEqual(["'self'", "data:"]);
+  expect(csp.get("object-src")).toEqual(["'none'"]);
+  expect(csp.get("base-uri")).toEqual(["'none'"]);
+  expect(csp.get("form-action")).toEqual(["'self'"]);
+  expect(csp.get("frame-ancestors")).toEqual(["'none'"]);
   expect(headers["cache-control"]).toContain("no-store");
   const html = await res!.text();
   const tags = html.match(/<script\b[^>]*>/g) ?? [];
@@ -87,6 +101,7 @@ export async function expectSecureDocument(res: Response | null) {
       `nonce="${nonce}"`,
     );
   }
+  return nonce!;
 }
 
 /**

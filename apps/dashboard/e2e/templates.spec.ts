@@ -40,9 +40,16 @@ test("the template lists its versions and an old version shows its source unchan
       .getByRole("region", { name, exact: true })
       .locator("pre")
       .evaluate((el) => el.textContent);
-  expect(await source("Subject")).toBe(s.order.v1.subject);
-  expect(await source("Text part")).toBe(s.order.v1.text);
-  expect(await source("HTML part")).toBe(s.order.v1.html);
+  // After the client navigation and in the server-rendered page (the HTML
+  // parser drops a newline right after <pre>).
+  for (const load of ["navigation", "reload"]) {
+    if (load === "reload") {
+      await page.reload();
+    }
+    expect(await source("Subject"), load).toBe(s.order.v1.subject);
+    expect(await source("Text part"), load).toBe(s.order.v1.text);
+    expect(await source("HTML part"), load).toBe(s.order.v1.html);
+  }
 });
 
 test("the preview renders escaped HTML in a sandboxed frame without remote content", async ({
@@ -70,9 +77,16 @@ test("the preview renders escaped HTML in a sandboxed frame without remote conte
     }
   });
   const sandboxed: string[] = [];
+  const cspReports: string[] = [];
   page.on("console", (m) => {
     if (/sandboxed/i.test(m.text())) {
       sandboxed.push(m.text());
+    }
+    if (
+      /Content Security Policy/i.test(m.text()) &&
+      m.text().includes(REMOTE_HOST)
+    ) {
+      cspReports.push(m.text());
     }
   });
   await page.goto(`/templates/${s.order.id}/versions/2`);
@@ -110,6 +124,9 @@ test("the preview renders escaped HTML in a sandboxed frame without remote conte
       .evaluate((img) => (img as HTMLImageElement).naturalWidth),
   ).toBe(0);
   await expect.poll(() => sandboxed.length).toBeGreaterThan(0);
+  // The same console stream reports CSP violations (the suite-wide check
+  // relies on it).
+  await expect.poll(() => cspReports.length).toBeGreaterThan(0);
   await expect.poll(() => blocked.length).toBeGreaterThan(0);
   expect(blocked).toEqual(remote);
   expect(answered).toEqual([]);

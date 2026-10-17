@@ -1,4 +1,5 @@
 import { defineConfig, devices } from "@playwright/test";
+import { AUTH_STATE } from "./e2e/paths";
 
 /**
  * Browser end-to-end tests of the production build against the real API.
@@ -9,6 +10,9 @@ import { defineConfig, devices } from "@playwright/test";
 const port = Number(process.env.E2E_DASHBOARD_PORT ?? 3100);
 const baseURL = `http://127.0.0.1:${port}`;
 const ci = Boolean(process.env.CI);
+// The run script collects the server log in its run directory and checks it
+// for leaked secrets.
+const serverLog = process.env.E2E_DASHBOARD_LOG;
 
 export default defineConfig({
   testDir: "e2e",
@@ -33,17 +37,19 @@ export default defineConfig({
       name: "chromium",
       use: {
         ...devices["Desktop Chrome"],
-        storageState: "e2e/.auth/admin.json",
+        storageState: AUTH_STATE,
       },
       dependencies: ["setup"],
     },
   ],
   webServer: {
-    command: `pnpm exec next start -H 127.0.0.1 -p ${port}`,
+    command:
+      `pnpm exec next start -H 127.0.0.1 -p ${port}` +
+      (serverLog ? ` >>'${serverLog}' 2>&1` : ""),
     url: `${baseURL}/login`,
     reuseExistingServer: false,
     timeout: 60_000,
-    stdout: "ignore",
+    stdout: "pipe",
     stderr: "pipe",
   },
 });

@@ -3,15 +3,16 @@
  * and the /v1 API, then (second call) waits until every seeded email has
  * reached a final state. Run by scripts/e2e.sh with Node's type stripping:
  *
- *   node e2e/seed.ts seed   (API running, worker not yet started)
- *   node e2e/seed.ts wait   (after the worker started)
+ *   node e2e/seed.mts seed   (API running, worker not yet started)
+ *   node e2e/seed.mts wait   (after the worker started)
  *
- * Secrets go to the seed file (mode 0600) and to the needles file the
- * script checks the logs against; passwords reach the CLI on stdin only.
+ * Secrets go to the seed file (mode 0600) and, as soon as each exists, to
+ * the needles file the script checks the logs against; passwords reach the
+ * CLI on stdin only.
  */
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import type { Account, Seed } from "./fixtures";
 
 const env = (name: string): string => {
@@ -101,7 +102,21 @@ function password(): string {
   return randomBytes(24).toString("base64url");
 }
 
+/** Adds values the logs must never contain (the script redacts them too). */
+function needles(...values: string[]) {
+  appendFileSync(env("E2E_NEEDLES"), `${values.join("\n")}\n`, {
+    mode: 0o600,
+  });
+}
+
 async function seedAll() {
+  const previewValue = `e2e-preview-${randomBytes(6).toString("hex")}`;
+  needles(
+    ...Object.keys(RECIPIENTS),
+    TEMPLATE_RECIPIENT,
+    BLOCKED,
+    previewValue,
+  );
   const projectName = "E2E shop";
   const projectId = admin(["project", "create", "-name", projectName]).split(
     "\t",
@@ -114,10 +129,12 @@ async function seedAll() {
     "-scopes",
     "emails:send,emails:read,templates:read,templates:write",
   ]);
+  needles(apiKey);
   const accounts: Account[] = ["e2e-admin", "e2e-locked"].map((username) => ({
     username,
     password: password(),
   }));
+  needles(...accounts.map((a) => a.password));
   for (const a of accounts) {
     admin(["user", "create", "-username", a.username], `${a.password}\n`);
   }
@@ -183,7 +200,6 @@ async function seedAll() {
     "manual",
   ]);
 
-  const previewValue = `e2e-preview-${randomBytes(6).toString("hex")}`;
   const seed: Seed = {
     projectId,
     projectName,
@@ -204,17 +220,6 @@ async function seedAll() {
     previewValue,
   };
   writeFileSync(SEED, JSON.stringify(seed, null, 2), { mode: 0o600 });
-  const needles = [
-    apiKey,
-    ...accounts.map((a) => a.password),
-    ...Object.keys(RECIPIENTS),
-    TEMPLATE_RECIPIENT,
-    BLOCKED,
-    previewValue,
-  ];
-  writeFileSync(env("E2E_NEEDLES"), `${needles.join("\n")}\n`, {
-    mode: 0o600,
-  });
 }
 
 async function waitFinal() {
@@ -239,5 +244,5 @@ if (step === "seed") {
 } else if (step === "wait") {
   await waitFinal();
 } else {
-  throw new Error("usage: node e2e/seed.ts seed|wait");
+  throw new Error("usage: node e2e/seed.mts seed|wait");
 }
