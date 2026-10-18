@@ -104,6 +104,14 @@ func (r Registrar) Create(ctx context.Context, projectID uuid.UUID, rawURL strin
 	if err != nil {
 		return Endpoint{}, "", fmt.Errorf("generate endpoint id: %w", err)
 	}
+	// A project at its cap is refused without taking the project lock, so
+	// repeated refused creates do not queue other writers of the project
+	// behind it; the locked count below stays authoritative.
+	if n, err := store.New(r.Pool).CountWebhookEndpoints(ctx, projectID); err != nil {
+		return Endpoint{}, "", fmt.Errorf("count webhook endpoints: %w", err)
+	} else if n >= int64(r.MaxEndpoints) {
+		return Endpoint{}, "", ErrEndpointLimit
+	}
 	secret := NewSecret()
 	ct, kid, err := r.Keys.Encrypt([]byte(secret), id, projectID)
 	if err != nil {

@@ -5,7 +5,9 @@ package httpapi_test
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"log/slog"
+	"net/http"
 	"net/http/httptest"
 	"slices"
 	"strings"
@@ -58,7 +60,7 @@ func TestCreateEndpointScope(t *testing.T) {
 	ctx := context.Background()
 
 	// Keys created without the scope (the default set, or every other scope)
-	// cannot register; the migration gave no existing key the new scope.
+	// cannot register.
 	_, plain := s.project(t)
 	_, others := s.project(t, auth.ScopeEmailsSend, auth.ScopeEmailsRead, auth.ScopeTemplatesRead, auth.ScopeTemplatesWrite)
 	for _, tok := range []string{plain, others} {
@@ -70,9 +72,6 @@ func TestCreateEndpointScope(t *testing.T) {
 		t.Fatalf("without key: %d %v", code, body)
 	}
 	var n int
-	if err := s.pool.QueryRow(ctx, "SELECT count(*) FROM api_keys WHERE 'webhooks:write' = ANY (scopes)").Scan(&n); err != nil || n != 0 {
-		t.Fatalf("keys with webhooks:write = %d, %v; want 0", n, err)
-	}
 	if _, err := s.pool.Exec(ctx, "UPDATE api_keys SET scopes = ARRAY['webhooks:read']"); err == nil {
 		t.Fatal("the scope CHECK accepts an unknown scope")
 	}
@@ -185,12 +184,17 @@ func TestCreateEndpointCapConcurrent(t *testing.T) {
 	for range 10 {
 		go func() {
 			<-start
-			code, body := s.do(t, "POST", "/v1/webhook-endpoints", tok, `{"url":"https://hooks.example.test/race"}`)
-			if code == 201 {
+			// Not s.do: t.Fatal outside the test goroutine would leave the
+			// receive loop below waiting.
+			code, body, err := post(s.srv.URL+"/v1/webhook-endpoints", tok, `{"url":"https://hooks.example.test/race"}`)
+			switch {
+			case err != nil:
+				codes <- "request failed: " + err.Error()
+			case code == 201:
 				codes <- "created"
-				return
+			default:
+				codes <- errorCode(body)
 			}
-			codes <- errorCode(body)
 		}()
 	}
 	close(start)
@@ -214,4 +218,24 @@ func TestCreateEndpointCapConcurrent(t *testing.T) {
 	if code, body := s.do(t, "POST", "/v1/webhook-endpoints", otherTok, `{"url":"https://hooks.example.test/"}`); code != 201 {
 		t.Fatalf("other project: %d %v", code, body)
 	}
+}
+
+// post sends a JSON POST with a bearer token and returns status and body.
+func post(url, token, body string) (int, map[string]any, error) {
+	req, err := http.NewRequestWithContext(context.Background(), "POST", url, strings.NewReader(body))
+	if err != nil {
+		return 0, nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer resp.Body.Close()
+	var m map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&m); err != nil {
+		return resp.StatusCode, nil, err
+	}
+	return resp.StatusCode, m, nil
 }

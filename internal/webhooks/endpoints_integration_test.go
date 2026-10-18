@@ -8,6 +8,7 @@ import (
 	"errors"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -337,5 +338,38 @@ func TestCreateEndpointCap(t *testing.T) {
 	}
 	if list, err := ListEndpoints(ctx, q, racing.ID); err != nil || len(list) != 10 {
 		t.Fatalf("endpoints = %d, %v; want 10", len(list), err)
+	}
+}
+
+// A held project lock makes a create give up after the lock timeout with
+// ErrBusy instead of waiting or failing as an internal error.
+func TestCreateEndpointBusy(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	pool, q, projectID := setup(t)
+	reg := registrar(pool, keyring(t, "k1:"+key(1)), lax)
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(ctx, "SELECT 1 FROM projects WHERE id = $1 FOR NO KEY UPDATE", projectID); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	_, _, err = reg.Create(ctx, projectID, "https://hooks.example.test/", nil)
+	waited := time.Since(start)
+	_ = tx.Rollback(ctx)
+	if !errors.Is(err, ErrBusy) {
+		t.Fatalf("lock held: err = %v, want ErrBusy", err)
+	}
+	if waited < 2500*time.Millisecond || waited > 9500*time.Millisecond {
+		t.Fatalf("gave up after %v, want about the 3s lock timeout", waited)
+	}
+	if list, _ := ListEndpoints(ctx, q, projectID); len(list) != 0 {
+		t.Fatalf("busy create stored %d endpoints", len(list))
+	}
+	if _, _, err := reg.Create(ctx, projectID, "https://hooks.example.test/", nil); err != nil {
+		t.Fatalf("after the lock is released: %v", err)
 	}
 }

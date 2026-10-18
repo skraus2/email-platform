@@ -117,15 +117,20 @@ register() {
     -d '{"url":"http://127.0.0.1:9/registered","event_types":["email.complained"]}'
 }
 code=$(register "$ADDR")
-[[ "$code" == 503 ]] && grep -q '"webhook_registration_disabled"' "$TMP/reg.json" ||
-  fail "registration without a key-encryption key: $code $(cat "$TMP/reg.json")"
+# On failure only the status and error code are printed: a 201 body would
+# carry a secret.
+reg_error() { sed -nE 's/.*"code":"([a-z_]+)".*/\1/p' "$TMP/reg.json"; }
+[[ "$code" == 503 && "$(reg_error)" == webhook_registration_disabled ]] ||
+  fail "registration without a key-encryption key: $code $(reg_error)"
 grep -qi '^retry-after:' "$TMP/reg.headers" && fail "disabled registration sends Retry-After"
 code=$(register "$ADDR2")
-[[ "$code" == 201 ]] || fail "POST /v1/webhook-endpoints: $code $(cat "$TMP/reg.json")"
+[[ "$code" == 201 ]] || fail "POST /v1/webhook-endpoints: $code $(reg_error)"
 sed -nE 's/.*"secret":"(whsec_[A-Za-z0-9_-]+)".*/\1/p' "$TMP/reg.json" >>"$TMP/needles"
 grep -q '"secret":"whsec_' "$TMP/reg.json" || fail "registration returned no secret"
 reg_id=$(sed -nE 's/.*"id":"([0-9a-f-]{36})".*/\1/p' "$TMP/reg.json")
 "$TMP/admin" webhook disable -project "$project" -id "$reg_id" >/dev/null || fail "admin webhook disable $reg_id"
+grep -q 'registration through the API is enabled' "$TMP/api2.log" || fail "second api did not log that registration is enabled"
+grep -q 'registration through the API is enabled' "$TMP/api.log" && fail "api without the key logs registration as enabled"
 echo "POST /v1/webhook-endpoints -> 503 webhook_registration_disabled without the key, 201 with it"
 subject="smoke $(date +%s)-$RANDOM"
 code=$(curl -sS -o "$TMP/post.json" -w '%{http_code}' -X POST "http://$ADDR/v1/emails" \
