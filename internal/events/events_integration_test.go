@@ -704,8 +704,11 @@ func TestIngestSuppressesDeletedEmail(t *testing.T) {
 		if out != events.UnknownEmail {
 			t.Errorf("%s = %v, want UnknownEmail", name, out)
 		}
-		if c.warn != "" && (line["msg"] != c.warn || line["level"] != "WARN") {
+		switch {
+		case c.warn != "" && (line["msg"] != c.warn || line["level"] != "WARN"):
 			t.Errorf("%s: log %v, want warning %q", name, line, c.warn)
+		case c.warn == "" && line["level"] != "INFO":
+			t.Errorf("%s: log %v, want an info line", name, line)
 		}
 	}
 	if got := suppressed(f.projectID); len(got) != 2 {
@@ -765,13 +768,7 @@ func TestIngestSuppressesEmailDeletedWhileWaiting(t *testing.T) {
 		done <- result{out, err}
 	}()
 	// Commit only once the ingest is really waiting for the email row lock.
-	deadline := time.Now().Add(10 * time.Second)
-	for f.count(t, "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'") == 0 {
-		if time.Now().After(deadline) {
-			t.Fatal("ingest never waited for the email row lock")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	waitForLockWait(t, f.pool)
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
