@@ -129,10 +129,16 @@ func TestScopes(t *testing.T) {
 	if err := ValidateScopes([]string{ScopeTemplatesRead, ScopeTemplatesWrite}); err != nil {
 		t.Fatal(err)
 	}
+	if err := ValidateScopes([]string{ScopeWebhooksWrite}); err != nil {
+		t.Fatal(err)
+	}
 	if slices.Contains(DefaultScopes, ScopeTemplatesWrite) || slices.Contains(DefaultScopes, ScopeTemplatesRead) {
 		t.Fatal("new keys must not get template scopes unless asked")
 	}
-	for _, bad := range [][]string{nil, {}, {"emails:delete"}, {"templates:delete"}, {"Templates:read"}, {ScopeEmailsSend, ScopeEmailsSend}} {
+	if slices.Contains(DefaultScopes, ScopeWebhooksWrite) {
+		t.Fatal("new keys must not get the webhook scope unless asked")
+	}
+	for _, bad := range [][]string{nil, {}, {"emails:delete"}, {"templates:delete"}, {"Templates:read"}, {"webhooks:read"}, {ScopeEmailsSend, ScopeEmailsSend}} {
 		if err := ValidateScopes(bad); err == nil {
 			t.Errorf("ValidateScopes(%v) = nil, want error", bad)
 		}

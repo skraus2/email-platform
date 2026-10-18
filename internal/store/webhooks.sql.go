@@ -12,6 +12,18 @@ import (
 	"github.com/google/uuid"
 )
 
+const countWebhookEndpoints = `-- name: CountWebhookEndpoints :one
+SELECT count(*) FROM webhook_endpoints WHERE project_id = $1
+`
+
+// Active and disabled endpoints both count against the cap.
+func (q *Queries) CountWebhookEndpoints(ctx context.Context, projectID uuid.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countWebhookEndpoints, projectID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const expireStaleDeliveries = `-- name: ExpireStaleDeliveries :execrows
 UPDATE webhook_deliveries
 SET status = 'failed', last_error_code = 'expired', next_attempt_at = NULL, updated_at = now()
@@ -296,6 +308,19 @@ func (q *Queries) LockEndpointsNotUnderKey(ctx context.Context, secretKeyID stri
 	return items, nil
 }
 
+const lockProjectForWebhooks = `-- name: LockProjectForWebhooks :one
+SELECT id FROM projects WHERE id = $1 FOR NO KEY UPDATE
+`
+
+// Serialises endpoint creation per project so the endpoint cap holds. NO KEY
+// UPDATE does not block the KEY SHARE locks of email or endpoint inserts.
+func (q *Queries) LockProjectForWebhooks(ctx context.Context, id uuid.UUID) (uuid.UUID, error) {
+	row := q.db.QueryRow(ctx, lockProjectForWebhooks, id)
+	var id_2 uuid.UUID
+	err := row.Scan(&id_2)
+	return id_2, err
+}
+
 const lockWebhookEndpoint = `-- name: LockWebhookEndpoint :one
 SELECT id, project_id, url, event_types, secret_ciphertext, secret_key_id, status, created_at, updated_at FROM webhook_endpoints WHERE id = $1 AND project_id = $2 FOR NO KEY UPDATE
 `
@@ -433,6 +458,16 @@ func (q *Queries) SetWebhookEndpointStatus(ctx context.Context, arg SetWebhookEn
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const setWebhookLockTimeout = `-- name: SetWebhookLockTimeout :exec
+SET LOCAL lock_timeout = '3s'
+`
+
+// Bounds the wait for the project row lock in this transaction.
+func (q *Queries) SetWebhookLockTimeout(ctx context.Context) error {
+	_, err := q.db.Exec(ctx, setWebhookLockTimeout)
+	return err
 }
 
 const updateWebhookSecret = `-- name: UpdateWebhookSecret :exec

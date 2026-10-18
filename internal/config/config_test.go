@@ -88,6 +88,8 @@ func TestLoadRejectsInvalid(t *testing.T) {
 		{"provider rate too high", map[string]string{"DATABASE_URL": devURL, "PROVIDER_RATE_PER_SECOND": "20000"}, "PROVIDER_RATE_PER_SECOND"},
 		{"rate limit zero", map[string]string{"DATABASE_URL": devURL, "API_RATE_LIMIT_PER_MINUTE": "0"}, "API_RATE_LIMIT_PER_MINUTE"},
 		{"rate limit too high", map[string]string{"DATABASE_URL": devURL, "API_RATE_LIMIT_PER_MINUTE": "1000001"}, "API_RATE_LIMIT_PER_MINUTE"},
+		{"webhook endpoint cap zero", map[string]string{"DATABASE_URL": devURL, "WEBHOOK_MAX_ENDPOINTS_PER_PROJECT": "0"}, "WEBHOOK_MAX_ENDPOINTS_PER_PROJECT"},
+		{"webhook endpoint cap too high", map[string]string{"DATABASE_URL": devURL, "WEBHOOK_MAX_ENDPOINTS_PER_PROJECT": "101"}, "WEBHOOK_MAX_ENDPOINTS_PER_PROJECT"},
 		{"template cap zero", map[string]string{"DATABASE_URL": devURL, "TEMPLATE_MAX_PER_PROJECT": "0"}, "TEMPLATE_MAX_PER_PROJECT"},
 		{"version cap too high", map[string]string{"DATABASE_URL": devURL, "TEMPLATE_MAX_VERSIONS": "10001"}, "TEMPLATE_MAX_VERSIONS"},
 		{"template storage below 1 MiB", map[string]string{"DATABASE_URL": devURL, "TEMPLATE_MAX_STORAGE_BYTES": "1048575"}, "TEMPLATE_MAX_STORAGE_BYTES"},
@@ -195,6 +197,9 @@ func TestLoadRetryDefaults(t *testing.T) {
 	if cfg.TemplateMaxPerProject != 200 || cfg.TemplateMaxVersions != 500 || cfg.TemplateMaxStorageBytes != 50<<20 || cfg.TemplateWritesPerMinute != 60 ||
 		cfg.AdminSessionIdle != 30*time.Minute || cfg.AdminSessionMax != 12*time.Hour {
 		t.Errorf("template caps = %d %d %d %d", cfg.TemplateMaxPerProject, cfg.TemplateMaxVersions, cfg.TemplateMaxStorageBytes, cfg.TemplateWritesPerMinute)
+	}
+	if cfg.WebhookMaxEndpointsPerProject != 10 {
+		t.Errorf("WebhookMaxEndpointsPerProject = %d, want 10", cfg.WebhookMaxEndpointsPerProject)
 	}
 	if cfg.SendMaxAttempts != 8 || cfg.RetryBaseDelay != 30*time.Second || cfg.RetryMaxDelay != time.Hour {
 		t.Fatalf("retry defaults = %d %v %v", cfg.SendMaxAttempts, cfg.RetryBaseDelay, cfg.RetryMaxDelay)

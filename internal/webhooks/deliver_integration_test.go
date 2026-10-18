@@ -167,7 +167,7 @@ func (f *deliveryFixture) state(t *testing.T, id uuid.UUID) deliveryState {
 
 func (f *deliveryFixture) endpoint(t *testing.T, url string, types ...string) (Endpoint, string) {
 	t.Helper()
-	e, secret, err := CreateEndpoint(context.Background(), f.q, f.keys, lax, f.projectID, url, types)
+	e, secret, err := registrar(f.pool, f.keys, lax).Create(context.Background(), f.projectID, url, types)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -190,7 +190,7 @@ func TestOutboxCreatesDeliveries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := CreateEndpoint(ctx, f.q, f.keys, lax, other.ID, "https://other.example.test/", nil); err != nil {
+	if _, _, err := registrar(f.pool, f.keys, lax).Create(ctx, other.ID, "https://other.example.test/", nil); err != nil {
 		t.Fatal(err)
 	}
 

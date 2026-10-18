@@ -1,3 +1,16 @@
+-- name: SetWebhookLockTimeout :exec
+-- Bounds the wait for the project row lock in this transaction.
+SET LOCAL lock_timeout = '3s';
+
+-- name: LockProjectForWebhooks :one
+-- Serialises endpoint creation per project so the endpoint cap holds. NO KEY
+-- UPDATE does not block the KEY SHARE locks of email or endpoint inserts.
+SELECT id FROM projects WHERE id = $1 FOR NO KEY UPDATE;
+
+-- name: CountWebhookEndpoints :one
+-- Active and disabled endpoints both count against the cap.
+SELECT count(*) FROM webhook_endpoints WHERE project_id = $1;
+
 -- name: InsertWebhookEndpoint :one
 INSERT INTO webhook_endpoints (id, project_id, url, event_types, secret_ciphertext, secret_key_id)
 VALUES ($1, $2, $3, $4, $5, $6)

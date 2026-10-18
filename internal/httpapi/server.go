@@ -32,6 +32,9 @@ type Deps struct {
 	Authenticate Authenticator
 	Emails       EmailService
 	Templates    TemplateService
+	// Webhooks registers webhook endpoints; nil turns the route into
+	// 503 webhook_registration_disabled.
+	Webhooks WebhookRegistrar
 }
 
 // Server holds the HTTP handler and readiness state.
@@ -41,13 +44,14 @@ type Server struct {
 	authenticate Authenticator
 	emails       EmailService
 	templates    TemplateService
+	webhooks     WebhookRegistrar
 	draining     atomic.Bool
 	handler      http.Handler
 }
 
 // New builds the API handler.
 func New(d Deps) *Server {
-	s := &Server{logger: d.Logger, checks: d.Checks, authenticate: d.Authenticate, emails: d.Emails, templates: d.Templates}
+	s := &Server{logger: d.Logger, checks: d.Checks, authenticate: d.Authenticate, emails: d.Emails, templates: d.Templates, webhooks: d.Webhooks}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
@@ -71,6 +75,8 @@ func New(d Deps) *Server {
 	mux.HandleFunc("/v1/templates/{id}/versions", methodNotAllowed(http.MethodPost))
 	mux.HandleFunc("GET /v1/templates/{id}/versions/{version}", s.requireScope(auth.ScopeTemplatesRead, s.handleGetVersion))
 	mux.HandleFunc("/v1/templates/{id}/versions/{version}", methodNotAllowed(http.MethodGet))
+	mux.HandleFunc("POST /v1/webhook-endpoints", s.requireScope(auth.ScopeWebhooksWrite, s.handleCreateWebhookEndpoint))
+	mux.HandleFunc("/v1/webhook-endpoints", methodNotAllowed(http.MethodPost))
 	mux.HandleFunc("/", handleNotFound)
 
 	s.handler = requestLogger(s.logger, mux)

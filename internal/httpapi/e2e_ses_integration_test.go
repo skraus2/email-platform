@@ -141,7 +141,7 @@ func TestSESEndToEnd(t *testing.T) {
 	}
 	targets := webhooks.TargetPolicy{AllowHTTP: true, AllowPrivate: true}
 	receiver := newHookReceiver(t)
-	if _, receiver.secret, err = webhooks.CreateEndpoint(ctx, s.q, keys, targets, projectID, receiver.srv.URL, nil); err != nil {
+	if _, receiver.secret, err = (webhooks.Registrar{Pool: s.pool, Keys: keys, Policy: targets, MaxEndpoints: 10}).Create(ctx, projectID, receiver.srv.URL, nil); err != nil {
 		t.Fatal(err)
 	}
 

@@ -70,7 +70,8 @@ go build -o "$TMP/" ./cmd/api ./cmd/worker ./cmd/admin ./cmd/migrate
 for addr in "$API_ADDR" "$ADMIN_ADDR" "127.0.0.1:$E2E_DASHBOARD_PORT"; do
   ! curl -s -o /dev/null --max-time 2 "http://$addr/" || fail "port $addr is in use"
 done
-HTTP_ADDR="$API_ADDR" ADMIN_HTTP_ADDR="$ADMIN_ADDR" LOG_FORMAT=json "$TMP/api" >"$TMP/api.log" 2>&1 &
+# The API runs without the key-encryption key (webhook registration off).
+env -u WEBHOOK_KEKS HTTP_ADDR="$API_ADDR" ADMIN_HTTP_ADDR="$ADMIN_ADDR" LOG_FORMAT=json "$TMP/api" >"$TMP/api.log" 2>&1 &
 API_PID=$!
 for _ in $(seq 1 100); do
   curl -fsS "http://$API_ADDR/readyz" >/dev/null 2>&1 && break

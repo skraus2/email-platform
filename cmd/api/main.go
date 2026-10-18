@@ -24,6 +24,7 @@ import (
 	"github.com/skraus2/email-platform/internal/logging"
 	"github.com/skraus2/email-platform/internal/store"
 	"github.com/skraus2/email-platform/internal/templates"
+	"github.com/skraus2/email-platform/internal/webhooks"
 )
 
 func main() {
@@ -64,9 +65,17 @@ func run() error {
 	if cfg.RequireVerifiedSender {
 		service.RequireVerifiedSenders()
 	}
+	// Registration through the API is opt-in: only an API process given the
+	// webhook key-encryption keys can store new endpoint secrets.
+	var registrar httpapi.WebhookRegistrar
+	if cfg.WebhookKeys != nil {
+		registrar = webhooks.Registrar{Pool: pool, Keys: cfg.WebhookKeys, Policy: cfg.WebhookTargets, MaxEndpoints: cfg.WebhookMaxEndpointsPerProject}
+		logger.Info("webhook endpoint registration through the API is enabled")
+	}
 	api := httpapi.New(httpapi.Deps{
 		Logger:    logger,
 		Emails:    service,
+		Webhooks:  registrar,
 		Templates: templates.NewStore(pool, cfg.TemplateMaxPerProject, cfg.TemplateMaxVersions, int64(cfg.TemplateMaxStorageBytes), cfg.TemplateWritesPerMinute),
 		Authenticate: func(ctx context.Context, token string) (auth.Principal, error) {
 			return auth.Authenticate(ctx, queries.GetActiveKeyByPrefix, token)

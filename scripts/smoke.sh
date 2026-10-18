@@ -15,7 +15,9 @@ set -euo pipefail
 # shellcheck source=scripts/local-guard.sh
 source "$(dirname "$0")/local-guard.sh"
 # The worker needs a key-encryption key for webhook secrets; a run-local one
-# is generated unless the environment provides one.
+# is generated unless the environment provides one. The first API runs
+# without it (registration through the API off, the default); the second
+# gets it and registers endpoints.
 export WEBHOOK_KEKS="${WEBHOOK_KEKS:-run:$(openssl rand -base64 32)}"
 ADDR="127.0.0.1:${SMOKE_PORT:-18080}"
 # A second API that requires verified senders, and the webhook receiver.
@@ -25,6 +27,7 @@ RECV_ADDR="127.0.0.1:${SMOKE_RECV_PORT:-18090}"
 ADMIN_ADDR="127.0.0.1:${SMOKE_ADMIN_PORT:-18082}"
 TMP="$(mktemp -d)"
 cleanup() {
+  [[ -n "${hookkey:-}" ]] && "$TMP/admin" key revoke -prefix "$(cut -d_ -f2 <<<"$hookkey")" >/dev/null 2>&1 || true
   [[ -n "${key:-}" ]] && "$TMP/admin" key revoke -prefix "$(cut -d_ -f2 <<<"$key")" >/dev/null 2>&1 || true
   # Pending deliveries of this run must not reach whatever binds the port later.
   [[ -s "$TMP/webhook.out" ]] && "$TMP/admin" webhook disable -project "$project" -id "$(head -1 "$TMP/webhook.out" | cut -f1)" >/dev/null 2>&1 || true
@@ -38,7 +41,7 @@ go build -o "$TMP/" ./cmd/api ./cmd/worker ./cmd/admin
 go build -tags smoke -o "$TMP/" ./cmd/webhookrecv
 
 # A low rate limit so that the smoke run can reach it.
-HTTP_ADDR="$ADDR" ADMIN_HTTP_ADDR="$ADMIN_ADDR" LOG_FORMAT=json API_RATE_LIMIT_PER_MINUTE=20 "$TMP/api" >"$TMP/api.log" 2>&1 &
+env -u WEBHOOK_KEKS HTTP_ADDR="$ADDR" ADMIN_HTTP_ADDR="$ADMIN_ADDR" LOG_FORMAT=json API_RATE_LIMIT_PER_MINUTE=20 "$TMP/api" >"$TMP/api.log" 2>&1 &
 API_PID=$!
 HTTP_ADDR="$ADDR2" ADMIN_HTTP_ADDR=off LOG_FORMAT=json REQUIRE_VERIFIED_SENDER=true "$TMP/api" >"$TMP/api2.log" 2>&1 &
 API2_PID=$!
@@ -101,6 +104,29 @@ sed -nE 's/^secret \(shown once, store it now\): (whsec_[A-Za-z0-9_-]+)$/\1/p' "
 [[ -s "$TMP/whsec" ]] || fail "admin webhook create printed no secret"
 cat "$TMP/whsec" >>"$TMP/needles"
 echo "admin webhook create -> endpoint for http://$RECV_ADDR/hooks"
+
+# Registration through the API: off on the first API (no key-encryption key),
+# on for the second. The registered endpoint only subscribes to complaints
+# (never produced by Mailpit) and is disabled right away.
+hookkey=$("$TMP/admin" key create -project "$project" -scopes webhooks:write 2>"$TMP/admin.err") || fail "admin key create webhooks:write: $(cat "$TMP/admin.err")"
+printf '%s\n' "$hookkey" >>"$TMP/needles"
+printf 'Authorization: Bearer %s\n' "$hookkey" >"$TMP/hook.header"
+register() {
+  curl -sS -D "$TMP/reg.headers" -o "$TMP/reg.json" -w '%{http_code}' -X POST "http://$1/v1/webhook-endpoints" \
+    -H @"$TMP/hook.header" -H 'Content-Type: application/json' \
+    -d '{"url":"http://127.0.0.1:9/registered","event_types":["email.complained"]}'
+}
+code=$(register "$ADDR")
+[[ "$code" == 503 ]] && grep -q '"webhook_registration_disabled"' "$TMP/reg.json" ||
+  fail "registration without a key-encryption key: $code $(cat "$TMP/reg.json")"
+grep -qi '^retry-after:' "$TMP/reg.headers" && fail "disabled registration sends Retry-After"
+code=$(register "$ADDR2")
+[[ "$code" == 201 ]] || fail "POST /v1/webhook-endpoints: $code $(cat "$TMP/reg.json")"
+sed -nE 's/.*"secret":"(whsec_[A-Za-z0-9_-]+)".*/\1/p' "$TMP/reg.json" >>"$TMP/needles"
+grep -q '"secret":"whsec_' "$TMP/reg.json" || fail "registration returned no secret"
+reg_id=$(sed -nE 's/.*"id":"([0-9a-f-]{36})".*/\1/p' "$TMP/reg.json")
+"$TMP/admin" webhook disable -project "$project" -id "$reg_id" >/dev/null || fail "admin webhook disable $reg_id"
+echo "POST /v1/webhook-endpoints -> 503 webhook_registration_disabled without the key, 201 with it"
 subject="smoke $(date +%s)-$RANDOM"
 code=$(curl -sS -o "$TMP/post.json" -w '%{http_code}' -X POST "http://$ADDR/v1/emails" \
   -H @"$TMP/auth.header" -H 'Content-Type: application/json' \

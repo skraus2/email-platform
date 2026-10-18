@@ -58,6 +58,8 @@ services:
     environment:
       <<: *app-env
       HTTP_ADDR: 0.0.0.0:8080
+      # No WEBHOOK_KEKS here on purpose: webhook registration through the
+      # API stays off (503) unless the operator adds it.
     ports:
       - "127.0.0.1:8080:8080"
     depends_on:

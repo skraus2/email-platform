@@ -12,7 +12,8 @@ set -euo pipefail
 # shellcheck source=scripts/local-guard.sh
 source "$(dirname "$0")/local-guard.sh"
 # The worker needs a key-encryption key for webhook secrets; a run-local one
-# is generated unless the environment provides one.
+# is generated unless the environment provides one. The API runs without
+# it (webhook registration through the API off).
 export WEBHOOK_KEKS="${WEBHOOK_KEKS:-run:$(openssl rand -base64 32)}"
 ADDR="127.0.0.1:${RESILIENCE_PORT:-18081}"
 MAILPIT_URL="${TEST_MAILPIT_URL:-http://127.0.0.1:8025}"
@@ -46,7 +47,7 @@ export LOG_FORMAT=json SEND_MAX_ATTEMPTS=20 RETRY_BASE_DELAY=1s RETRY_MAX_DELAY=
 go build -o "$TMP/" ./cmd/api ./cmd/worker ./cmd/admin
 
 start_api() {
-  HTTP_ADDR="$ADDR" "$TMP/api" >>"$TMP/api.log" 2>&1 &
+  env -u WEBHOOK_KEKS HTTP_ADDR="$ADDR" "$TMP/api" >>"$TMP/api.log" 2>&1 &
   API_PID=$!
 }
 start_worker() {

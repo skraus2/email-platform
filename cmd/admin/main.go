@@ -5,7 +5,7 @@
 //	admin project list
 //	admin project disable -id <uuid>
 //	admin project enable -id <uuid>
-//	admin key create -project <uuid> [-scopes emails:send,emails:read,templates:read,templates:write]
+//	admin key create -project <uuid> [-scopes emails:send,emails:read,templates:read,templates:write,webhooks:write]
 //	admin key list -project <uuid>
 //	admin key revoke -prefix <prefix>
 //	admin email list -project <uuid> [-status failed] [-limit 50]
@@ -59,7 +59,7 @@ const usage = `usage:
   admin project list
   admin project disable -id <uuid>
   admin project enable -id <uuid>
-  admin key create -project <uuid> [-scopes emails:send,emails:read,templates:read,templates:write]
+  admin key create -project <uuid> [-scopes emails:send,emails:read,templates:read,templates:write,webhooks:write]
   admin key list -project <uuid>
   admin key revoke -prefix <prefix>
   admin email list -project <uuid> [-status failed] [-limit 50]
@@ -291,7 +291,12 @@ func webhook(ctx context.Context, cfg config.Config, pool *pgxpool.Pool, q *stor
 		if events != "" {
 			types = strings.Split(events, ",")
 		}
-		e, secret, err := webhooks.CreateEndpoint(ctx, q, cfg.WebhookKeys, cfg.WebhookTargets, pid, rawURL, types)
+		reg := webhooks.Registrar{Pool: pool, Keys: cfg.WebhookKeys, Policy: cfg.WebhookTargets, MaxEndpoints: cfg.WebhookMaxEndpointsPerProject}
+		e, secret, err := reg.Create(ctx, pid, rawURL, types)
+		if errors.Is(err, webhooks.ErrEndpointLimit) {
+			return fmt.Errorf("%w (WEBHOOK_MAX_ENDPOINTS_PER_PROJECT=%d; disabled endpoints count): reuse an endpoint with `admin webhook rotate-secret` or raise the limit",
+				err, cfg.WebhookMaxEndpointsPerProject)
+		}
 		if err != nil {
 			return err
 		}

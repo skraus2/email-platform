@@ -39,6 +39,29 @@ func keyring(t *testing.T, spec string) *Keyring {
 	return k
 }
 
+// registrar creates endpoints with a cap no test here reaches by accident.
+func registrar(pool *pgxpool.Pool, keys *Keyring, policy TargetPolicy) Registrar {
+	return Registrar{Pool: pool, Keys: keys, Policy: policy, MaxEndpoints: 100}
+}
+
+// warmPool opens every connection of the pool up front, so racing callers
+// really run concurrently instead of queueing behind connection setup.
+func warmPool(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	n := int(pool.Config().MaxConns)
+	conns := make([]*pgxpool.Conn, 0, n)
+	for range n {
+		c, err := pool.Acquire(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		conns = append(conns, c)
+	}
+	for _, c := range conns {
+		c.Release()
+	}
+}
+
 func storedRow(t *testing.T, q *store.Queries, projectID, id uuid.UUID) store.WebhookEndpoint {
 	t.Helper()
 	rows, err := q.ListWebhookEndpoints(context.Background(), projectID)
@@ -57,10 +80,10 @@ func storedRow(t *testing.T, q *store.Queries, projectID, id uuid.UUID) store.We
 func TestCreateAndListEndpoints(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	_, q, projectID := setup(t)
+	pool, q, projectID := setup(t)
 	keys := keyring(t, "k1:"+key(1))
 
-	e, secret, err := CreateEndpoint(ctx, q, keys, lax, projectID, "http://127.0.0.1:9000/hook?token=t0k", nil)
+	e, secret, err := registrar(pool, keys, lax).Create(ctx, projectID, "http://127.0.0.1:9000/hook?token=t0k", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +98,7 @@ func TestCreateAndListEndpoints(t *testing.T) {
 		t.Fatalf("stored secret decrypts to %q, %v", got, err)
 	}
 
-	only, _, err := CreateEndpoint(ctx, q, keys, lax, projectID, "https://hooks.example.test/a",
+	only, _, err := registrar(pool, keys, lax).Create(ctx, projectID, "https://hooks.example.test/a",
 		[]string{"email.bounced", "email.complained", "email.bounced"})
 	if err != nil || !slices.Equal(only.EventTypes, []string{"email.bounced", "email.complained"}) {
 		t.Fatalf("subset = %+v, %v", only, err)
@@ -91,14 +114,14 @@ func TestCreateAndListEndpoints(t *testing.T) {
 		"private refused": {"https://10.0.0.1/", nil, TargetPolicy{}},
 		"metadata":        {"https://169.254.169.254/", nil, lax},
 	} {
-		if _, _, err := CreateEndpoint(ctx, q, keys, tc.policy, projectID, tc.url, tc.types); err == nil {
+		if _, _, err := registrar(pool, keys, tc.policy).Create(ctx, projectID, tc.url, tc.types); err == nil {
 			t.Errorf("%s: accepted", name)
 		}
 	}
-	if _, _, err := CreateEndpoint(ctx, q, nil, lax, projectID, "https://hooks.example.test/", nil); !errors.Is(err, ErrNoKeys) {
+	if _, _, err := registrar(pool, nil, lax).Create(ctx, projectID, "https://hooks.example.test/", nil); !errors.Is(err, ErrNoKeys) {
 		t.Errorf("no keys: err = %v", err)
 	}
-	if _, _, err := CreateEndpoint(ctx, q, keys, lax, uuid.New(), "https://hooks.example.test/", nil); !errors.Is(err, ErrUnknownProject) {
+	if _, _, err := registrar(pool, keys, lax).Create(ctx, uuid.New(), "https://hooks.example.test/", nil); !errors.Is(err, ErrUnknownProject) {
 		t.Errorf("unknown project: err = %v", err)
 	}
 
@@ -120,7 +143,7 @@ func TestEndpointStatusAndRotation(t *testing.T) {
 	ctx := context.Background()
 	pool, q, projectID := setup(t)
 	keys := keyring(t, "k1:"+key(1))
-	e, secret, err := CreateEndpoint(ctx, q, keys, lax, projectID, "https://hooks.example.test/", nil)
+	e, secret, err := registrar(pool, keys, lax).Create(ctx, projectID, "https://hooks.example.test/", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,7 +191,7 @@ func TestReencryptMovesSecretsToActiveKey(t *testing.T) {
 	var secrets []string
 	var ids []uuid.UUID
 	for range 3 {
-		e, s, err := CreateEndpoint(ctx, q, old, lax, projectID, "https://hooks.example.test/", nil)
+		e, s, err := registrar(pool, old, lax).Create(ctx, projectID, "https://hooks.example.test/", nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -209,7 +232,7 @@ func TestReencryptIsAtomic(t *testing.T) {
 	k1 := keyring(t, "k1:"+key(1))
 	var ids []uuid.UUID
 	for range 2 {
-		e, _, err := CreateEndpoint(ctx, q, k1, lax, projectID, "https://hooks.example.test/", nil)
+		e, _, err := registrar(pool, k1, lax).Create(ctx, projectID, "https://hooks.example.test/", nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -217,7 +240,7 @@ func TestReencryptIsAtomic(t *testing.T) {
 	}
 	// Created last, so it sorts last: encrypted under a key that the
 	// re-encryption below does not know.
-	lost, _, err := CreateEndpoint(ctx, q, keyring(t, "k0:"+key(9)), lax, projectID, "https://hooks.example.test/", nil)
+	lost, _, err := registrar(pool, keyring(t, "k0:"+key(9)), lax).Create(ctx, projectID, "https://hooks.example.test/", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -231,5 +254,88 @@ func TestReencryptIsAtomic(t *testing.T) {
 	}
 	if kid := storedRow(t, q, projectID, lost.ID).SecretKeyID; kid != "k0" {
 		t.Fatalf("undecryptable endpoint changed to %s", kid)
+	}
+}
+
+// The cap counts active and disabled endpoints of the project only, and
+// holds when creates race.
+func TestCreateEndpointCap(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	pool, q, projectID := setup(t)
+	keys := keyring(t, "k1:"+key(1))
+	capped := Registrar{Pool: pool, Keys: keys, Policy: lax, MaxEndpoints: 3}
+
+	first, _, err := capped.Create(ctx, projectID, "https://hooks.example.test/1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := SetEndpointActive(ctx, pool, projectID, first.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 2 {
+		if _, _, err := capped.Create(ctx, projectID, "https://hooks.example.test/n", nil); err != nil {
+			t.Fatalf("create %d: %v", i+2, err)
+		}
+	}
+	if _, _, err := capped.Create(ctx, projectID, "https://hooks.example.test/over", nil); !errors.Is(err, ErrEndpointLimit) {
+		t.Fatalf("create over the cap (one endpoint disabled): err = %v, want ErrEndpointLimit", err)
+	}
+	other, err := auth.CreateProject(ctx, q, "other")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := capped.Create(ctx, other.ID, "https://hooks.example.test/other", nil); err != nil {
+		t.Fatalf("another project's endpoints count against this one: %v", err)
+	}
+	// Validation failures never count and never reach the database.
+	if _, _, err := capped.Create(ctx, other.ID, "ftp://hooks.example.test/", nil); !errors.Is(err, ErrForbiddenTarget) {
+		t.Fatalf("bad scheme: err = %v", err)
+	}
+	if _, _, err := capped.Create(ctx, other.ID, "https://hooks.example.test/", []string{"email.opened"}); !errors.Is(err, ErrUnknownEventType) {
+		t.Fatalf("unknown type: err = %v", err)
+	}
+	if _, _, err := (Registrar{Pool: pool, Keys: keys, Policy: lax}).Create(ctx, other.ID, "https://hooks.example.test/", nil); err == nil {
+		t.Fatal("a registrar without a cap accepted a create")
+	}
+
+	// Ten concurrent creates with one slot left: exactly one wins.
+	racing, err := auth.CreateProject(ctx, q, "racing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ten := Registrar{Pool: pool, Keys: keys, Policy: lax, MaxEndpoints: 10}
+	for range 9 {
+		if _, _, err := ten.Create(ctx, racing.ID, "https://hooks.example.test/pre", nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	warmPool(t, pool)
+	errs := make(chan error, 10)
+	start := make(chan struct{})
+	for range 10 {
+		go func() {
+			<-start
+			_, _, err := ten.Create(ctx, racing.ID, "https://hooks.example.test/race", nil)
+			errs <- err
+		}()
+	}
+	close(start)
+	var ok, limited int
+	for range 10 {
+		switch err := <-errs; {
+		case err == nil:
+			ok++
+		case errors.Is(err, ErrEndpointLimit):
+			limited++
+		default:
+			t.Errorf("unexpected error: %v", err)
+		}
+	}
+	if ok != 1 || limited != 9 {
+		t.Fatalf("ok = %d, limited = %d; want 1 and 9", ok, limited)
+	}
+	if list, err := ListEndpoints(ctx, q, racing.ID); err != nil || len(list) != 10 {
+		t.Fatalf("endpoints = %d, %v; want 10", len(list), err)
 	}
 }

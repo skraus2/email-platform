@@ -132,6 +132,22 @@ func TestWebhookCommands(t *testing.T) {
 		t.Error("unknown delivery status accepted")
 	}
 
+	// The cap counts the disabled endpoint above.
+	t.Setenv("WEBHOOK_MAX_ENDPOINTS_PER_PROJECT", "1")
+	if _, err := admin(t, "webhook", "create", "-project", project, "-url", "https://h.example.test/"); err == nil ||
+		!strings.Contains(err.Error(), "WEBHOOK_MAX_ENDPOINTS_PER_PROJECT=1") || !strings.Contains(err.Error(), "rotate-secret") {
+		t.Fatalf("over the cap: err = %v", err)
+	}
+	t.Setenv("WEBHOOK_MAX_ENDPOINTS_PER_PROJECT", "")
+
+	// Keys get the registration scope only when asked for it.
+	if out, err := admin(t, "key", "create", "-project", project, "-scopes", "emails:send,webhooks:write"); err != nil || !strings.Contains(out, "ep_") {
+		t.Fatalf("key with webhooks:write = %q, %v", out, err)
+	}
+	if out, err := admin(t, "key", "list", "-project", project); err != nil || !strings.Contains(out, "webhooks:write") {
+		t.Fatalf("key list = %q, %v", out, err)
+	}
+
 	t.Setenv("WEBHOOK_KEKS", "")
 	if _, err := admin(t, "webhook", "create", "-project", project, "-url", "https://h.example.test/"); err == nil || !strings.Contains(err.Error(), "WEBHOOK_KEKS") {
 		t.Fatalf("without keys: err = %v", err)

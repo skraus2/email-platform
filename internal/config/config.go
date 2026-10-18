@@ -88,6 +88,9 @@ type Config struct {
 	WebhookKeys *webhooks.Keyring
 	// WebhookTargets limits which webhook URLs and addresses may be called.
 	WebhookTargets webhooks.TargetPolicy
+	// WebhookMaxEndpointsPerProject caps a project's webhook endpoints,
+	// active and disabled.
+	WebhookMaxEndpointsPerProject int
 	// Webhook delivery (worker): requests per delivery, one request's
 	// timeout, parallel deliveries, and the backoff between attempts.
 	WebhookMaxAttempts    int
@@ -216,6 +219,7 @@ func Load(lookup LookupFunc) (Config, error) {
 	}
 	cfg.WebhookTargets.AllowPrivate, errs = boolSetting(get, "WEBHOOK_ALLOW_PRIVATE", devDefault, errs)
 
+	cfg.WebhookMaxEndpointsPerProject, errs = intInRange(get, "WEBHOOK_MAX_ENDPOINTS_PER_PROJECT", "10", 1, 100, errs)
 	cfg.WebhookMaxAttempts, errs = intInRange(get, "WEBHOOK_MAX_ATTEMPTS", "12", 1, 25, errs)
 	cfg.WebhookConcurrency, errs = intInRange(get, "WEBHOOK_CONCURRENCY", "5", 1, 100, errs)
 	cfg.WebhookTimeout, errs = positiveDuration(get, "WEBHOOK_TIMEOUT", "10s", errs)

@@ -48,6 +48,16 @@ var ErrNotFound = errors.New("webhook endpoint not found")
 // ErrUnknownProject means the project does not exist.
 var ErrUnknownProject = errors.New("project not found")
 
+// ErrUnknownEventType means an event type is not one of EventTypes.
+var ErrUnknownEventType = errors.New("unknown webhook event type")
+
+// ErrEndpointLimit means the project already has as many endpoints as the
+// cap allows (active and disabled).
+var ErrEndpointLimit = errors.New("project has reached its webhook endpoint limit")
+
+// ErrBusy means the create could not take the project lock in time; retry.
+var ErrBusy = errors.New("webhook endpoint creation busy")
+
 func normalizeTypes(types []string) ([]string, error) {
 	if len(types) == 0 {
 		return slices.Clone(EventTypes), nil
@@ -55,7 +65,7 @@ func normalizeTypes(types []string) ([]string, error) {
 	var out []string
 	for _, t := range types {
 		if !slices.Contains(EventTypes, t) {
-			return nil, fmt.Errorf("unknown event type %q; known: %v", t, EventTypes)
+			return nil, fmt.Errorf("%w %q; known: %v", ErrUnknownEventType, t, EventTypes)
 		}
 		if !slices.Contains(out, t) {
 			out = append(out, t)
@@ -64,14 +74,25 @@ func normalizeTypes(types []string) ([]string, error) {
 	return out, nil
 }
 
-// CreateEndpoint registers an endpoint (all event types when types is empty)
-// and returns it with its new secret. The secret is stored only encrypted and
-// cannot be read back: show it to the operator once.
-func CreateEndpoint(ctx context.Context, q *store.Queries, keys *Keyring, policy TargetPolicy, projectID uuid.UUID, rawURL string, types []string) (Endpoint, string, error) {
-	if keys == nil {
+// Registrar creates webhook endpoints, at most MaxEndpoints per project.
+type Registrar struct {
+	Pool         *pgxpool.Pool
+	Keys         *Keyring
+	Policy       TargetPolicy
+	MaxEndpoints int
+}
+
+// Create registers an endpoint (all event types when types is empty) and
+// returns it with its new secret. The secret is stored only encrypted and
+// cannot be read back: show it once.
+func (r Registrar) Create(ctx context.Context, projectID uuid.UUID, rawURL string, types []string) (Endpoint, string, error) {
+	if r.Keys == nil {
 		return Endpoint{}, "", ErrNoKeys
 	}
-	u, err := policy.ValidateURL(rawURL)
+	if r.MaxEndpoints < 1 {
+		return Endpoint{}, "", errors.New("webhook endpoint cap must be at least 1")
+	}
+	u, err := r.Policy.ValidateURL(rawURL)
 	if err != nil {
 		return Endpoint{}, "", err
 	}
@@ -84,21 +105,46 @@ func CreateEndpoint(ctx context.Context, q *store.Queries, keys *Keyring, policy
 		return Endpoint{}, "", fmt.Errorf("generate endpoint id: %w", err)
 	}
 	secret := NewSecret()
-	ct, kid, err := keys.Encrypt([]byte(secret), id, projectID)
+	ct, kid, err := r.Keys.Encrypt([]byte(secret), id, projectID)
 	if err != nil {
 		return Endpoint{}, "", err
 	}
-	row, err := q.InsertWebhookEndpoint(ctx, store.InsertWebhookEndpointParams{
-		ID: id, ProjectID: projectID, Url: u.String(), EventTypes: types, SecretCiphertext: ct, SecretKeyID: kid,
+	var e Endpoint
+	err = pgx.BeginFunc(ctx, r.Pool, func(tx pgx.Tx) error {
+		q := store.New(tx)
+		if err := q.SetWebhookLockTimeout(ctx); err != nil {
+			return fmt.Errorf("lock timeout: %w", err)
+		}
+		if _, err := q.LockProjectForWebhooks(ctx, projectID); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return ErrUnknownProject
+			}
+			return fmt.Errorf("lock project: %w", err)
+		}
+		n, err := q.CountWebhookEndpoints(ctx, projectID)
+		if err != nil {
+			return fmt.Errorf("count webhook endpoints: %w", err)
+		}
+		if n >= int64(r.MaxEndpoints) {
+			return ErrEndpointLimit
+		}
+		row, err := q.InsertWebhookEndpoint(ctx, store.InsertWebhookEndpointParams{
+			ID: id, ProjectID: projectID, Url: u.String(), EventTypes: types, SecretCiphertext: ct, SecretKeyID: kid,
+		})
+		if err != nil {
+			return fmt.Errorf("insert webhook endpoint: %w", err)
+		}
+		e = endpointFromRow(row)
+		return nil
 	})
 	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) && pgErr.Code == "23503" {
-		return Endpoint{}, "", ErrUnknownProject
+	if errors.As(err, &pgErr) && pgErr.Code == "55P03" && ctx.Err() == nil {
+		return Endpoint{}, "", ErrBusy
 	}
 	if err != nil {
-		return Endpoint{}, "", fmt.Errorf("insert webhook endpoint: %w", err)
+		return Endpoint{}, "", err
 	}
-	return endpointFromRow(row), secret, nil
+	return e, secret, nil
 }
 
 // ListEndpoints returns the project's endpoints, oldest first.
