@@ -12,6 +12,28 @@ import (
 	"github.com/google/uuid"
 )
 
+const deleteOldEvents = `-- name: DeleteOldEvents :execrows
+DELETE FROM email_events WHERE id IN (
+    SELECT ev.id FROM email_events ev
+    JOIN emails e ON e.id = ev.email_id AND e.project_id = ev.project_id
+    WHERE ev.received_at < $1
+      AND e.finished_at IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM webhook_deliveries wd
+                      WHERE wd.event_id = ev.id AND wd.project_id = ev.project_id AND wd.status = 'pending')
+    LIMIT 1000)
+`
+
+// Retention: one batch of events received before the cutoff. Kept: events
+// with a pending webhook delivery (the cascade would drop it) and events of
+// unfinished emails (still projected once the send completes).
+func (q *Queries) DeleteOldEvents(ctx context.Context, before time.Time) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteOldEvents, before)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const insertPlatformEvent = `-- name: InsertPlatformEvent :one
 INSERT INTO email_events (project_id, email_id, origin, type, provider, occurred_at, details)
 VALUES ($1, $2, 'platform', $3, $4, now(), $5)

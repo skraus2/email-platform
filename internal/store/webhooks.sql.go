@@ -24,6 +24,23 @@ func (q *Queries) CountWebhookEndpoints(ctx context.Context, projectID uuid.UUID
 	return count, err
 }
 
+const deleteOldDeliveries = `-- name: DeleteOldDeliveries :execrows
+DELETE FROM webhook_deliveries WHERE id IN (
+    SELECT d.id FROM webhook_deliveries d
+    WHERE d.status IN ('delivered', 'failed') AND d.updated_at < $1
+    LIMIT 1000)
+`
+
+// Retention: one batch of finished deliveries last changed before the cutoff.
+// Pending deliveries are never deleted by age.
+func (q *Queries) DeleteOldDeliveries(ctx context.Context, before time.Time) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteOldDeliveries, before)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const expireStaleDeliveries = `-- name: ExpireStaleDeliveries :execrows
 UPDATE webhook_deliveries
 SET status = 'failed', last_error_code = 'expired', next_attempt_at = NULL, updated_at = now()

@@ -21,6 +21,7 @@ import (
 	"github.com/skraus2/email-platform/internal/events/ses"
 	"github.com/skraus2/email-platform/internal/jobs"
 	"github.com/skraus2/email-platform/internal/logging"
+	"github.com/skraus2/email-platform/internal/retention"
 	"github.com/skraus2/email-platform/internal/webhooks"
 )
 
@@ -93,6 +94,10 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	pruner := retention.Pruner{
+		Pool: pool, Logger: logger, EventRetention: cfg.EventRetention,
+		DeliveryRetention: cfg.WebhookDeliveryRetention, EmailRetention: cfg.EmailRetention,
+	}
 	worker, err := jobs.NewWorker(jobs.WorkerConfig{
 		Pool:   pool,
 		Logger: logger,
@@ -100,7 +105,8 @@ func run() error {
 			SendEmail:      dispatcher.SendEmail,
 			DeliverWebhook: deliverer.Deliver,
 			Cleanup: func(ctx context.Context) error {
-				return errors.Join(dispatcher.Cleanup(ctx), deliverer.Cleanup(ctx))
+				// Expiry first, so retention sees the final states.
+				return errors.Join(dispatcher.Cleanup(ctx), deliverer.Cleanup(ctx), pruner.Run(ctx))
 			},
 		},
 		Retry:       jobs.RetryPolicy{Base: cfg.RetryBaseDelay, Max: cfg.RetryMaxDelay},

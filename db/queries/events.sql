@@ -42,3 +42,16 @@ LIMIT $3;
 
 -- name: ProviderEventOwner :one
 SELECT project_id, email_id FROM email_events WHERE provider = $1 AND provider_event_id = $2;
+
+-- name: DeleteOldEvents :execrows
+-- Retention: one batch of events received before the cutoff. Kept: events
+-- with a pending webhook delivery (the cascade would drop it) and events of
+-- unfinished emails (still projected once the send completes).
+DELETE FROM email_events WHERE id IN (
+    SELECT ev.id FROM email_events ev
+    JOIN emails e ON e.id = ev.email_id AND e.project_id = ev.project_id
+    WHERE ev.received_at < sqlc.arg(before)
+      AND e.finished_at IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM webhook_deliveries wd
+                      WHERE wd.event_id = ev.id AND wd.project_id = ev.project_id AND wd.status = 'pending')
+    LIMIT 1000);

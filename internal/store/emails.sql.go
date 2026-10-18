@@ -51,6 +51,27 @@ func (q *Queries) DeleteEmailContent(ctx context.Context, arg DeleteEmailContent
 	return err
 }
 
+const deleteOldEmails = `-- name: DeleteOldEmails :execrows
+DELETE FROM emails WHERE id IN (
+    SELECT e.id FROM emails e
+    WHERE e.finished_at < $1::timestamptz
+      AND NOT EXISTS (SELECT 1 FROM email_events ev
+                      JOIN webhook_deliveries wd ON wd.event_id = ev.id AND wd.project_id = ev.project_id
+                      WHERE ev.email_id = e.id AND ev.project_id = e.project_id AND wd.status = 'pending')
+    LIMIT 1000)
+`
+
+// Retention (opt-in): one batch of emails finished before the cutoff, with
+// their content, idempotency keys, events and deliveries (cascade). Kept:
+// unfinished emails and emails with a pending webhook delivery.
+func (q *Queries) DeleteOldEmails(ctx context.Context, before time.Time) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteOldEmails, before)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const expireOpenEmails = `-- name: ExpireOpenEmails :many
 UPDATE emails
 SET status = 'failed', last_error = 'expired', error_code = 'expired', finished_at = now(), updated_at = now()

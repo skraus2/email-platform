@@ -46,12 +46,13 @@ func TestLoadOverrides(t *testing.T) {
 		"LOG_FORMAT":       "text",
 		"SHUTDOWN_TIMEOUT": "3s",
 		"PROVIDER_TIMEOUT": "2s",
+		"EMAIL_RETENTION":  "720h",
 	}))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
 	if cfg.Env != EnvTest || cfg.HTTPAddr != ":9090" || cfg.LogLevel != slog.LevelDebug ||
-		cfg.LogFormat != "text" || cfg.ShutdownTimeout != 3*time.Second {
+		cfg.LogFormat != "text" || cfg.ShutdownTimeout != 3*time.Second || cfg.EmailRetention != 720*time.Hour {
 		t.Errorf("unexpected config: %+v", cfg)
 	}
 }
@@ -88,6 +89,12 @@ func TestLoadRejectsInvalid(t *testing.T) {
 		{"provider rate too high", map[string]string{"DATABASE_URL": devURL, "PROVIDER_RATE_PER_SECOND": "20000"}, "PROVIDER_RATE_PER_SECOND"},
 		{"rate limit zero", map[string]string{"DATABASE_URL": devURL, "API_RATE_LIMIT_PER_MINUTE": "0"}, "API_RATE_LIMIT_PER_MINUTE"},
 		{"rate limit too high", map[string]string{"DATABASE_URL": devURL, "API_RATE_LIMIT_PER_MINUTE": "1000001"}, "API_RATE_LIMIT_PER_MINUTE"},
+		{"event retention below 15 days", map[string]string{"DATABASE_URL": devURL, "EVENT_RETENTION": "359h"}, "EVENT_RETENTION"},
+		{"event retention not a duration", map[string]string{"DATABASE_URL": devURL, "EVENT_RETENTION": "90d"}, "EVENT_RETENTION"},
+		{"delivery retention below 1 day", map[string]string{"DATABASE_URL": devURL, "WEBHOOK_DELIVERY_RETENTION": "23h"}, "WEBHOOK_DELIVERY_RETENTION"},
+		{"email retention below 30 days", map[string]string{"DATABASE_URL": devURL, "EMAIL_RETENTION": "719h"}, "EMAIL_RETENTION"},
+		{"email retention negative", map[string]string{"DATABASE_URL": devURL, "EMAIL_RETENTION": "-800h"}, "EMAIL_RETENTION"},
+		{"email retention not a duration", map[string]string{"DATABASE_URL": devURL, "EMAIL_RETENTION": "forever"}, "EMAIL_RETENTION"},
 		{"webhook endpoint cap zero", map[string]string{"DATABASE_URL": devURL, "WEBHOOK_MAX_ENDPOINTS_PER_PROJECT": "0"}, "WEBHOOK_MAX_ENDPOINTS_PER_PROJECT"},
 		{"webhook endpoint cap too high", map[string]string{"DATABASE_URL": devURL, "WEBHOOK_MAX_ENDPOINTS_PER_PROJECT": "101"}, "WEBHOOK_MAX_ENDPOINTS_PER_PROJECT"},
 		{"template cap zero", map[string]string{"DATABASE_URL": devURL, "TEMPLATE_MAX_PER_PROJECT": "0"}, "TEMPLATE_MAX_PER_PROJECT"},
@@ -197,6 +204,9 @@ func TestLoadRetryDefaults(t *testing.T) {
 	if cfg.TemplateMaxPerProject != 200 || cfg.TemplateMaxVersions != 500 || cfg.TemplateMaxStorageBytes != 50<<20 || cfg.TemplateWritesPerMinute != 60 ||
 		cfg.AdminSessionIdle != 30*time.Minute || cfg.AdminSessionMax != 12*time.Hour {
 		t.Errorf("template caps = %d %d %d %d", cfg.TemplateMaxPerProject, cfg.TemplateMaxVersions, cfg.TemplateMaxStorageBytes, cfg.TemplateWritesPerMinute)
+	}
+	if cfg.EventRetention != 90*24*time.Hour || cfg.WebhookDeliveryRetention != 30*24*time.Hour || cfg.EmailRetention != 0 {
+		t.Errorf("retention = %v %v %v; want 2160h 720h off", cfg.EventRetention, cfg.WebhookDeliveryRetention, cfg.EmailRetention)
 	}
 	if cfg.WebhookMaxEndpointsPerProject != 10 {
 		t.Errorf("WebhookMaxEndpointsPerProject = %d, want 10", cfg.WebhookMaxEndpointsPerProject)

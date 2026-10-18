@@ -136,3 +136,15 @@ FROM emails
 WHERE provider = $1 AND finished_at > now() - interval '24 hours'
 ORDER BY finished_at
 OFFSET $2 LIMIT 1;
+
+-- name: DeleteOldEmails :execrows
+-- Retention (opt-in): one batch of emails finished before the cutoff, with
+-- their content, idempotency keys, events and deliveries (cascade). Kept:
+-- unfinished emails and emails with a pending webhook delivery.
+DELETE FROM emails WHERE id IN (
+    SELECT e.id FROM emails e
+    WHERE e.finished_at < sqlc.arg(before)::timestamptz
+      AND NOT EXISTS (SELECT 1 FROM email_events ev
+                      JOIN webhook_deliveries wd ON wd.event_id = ev.id AND wd.project_id = ev.project_id
+                      WHERE ev.email_id = e.id AND ev.project_id = e.project_id AND wd.status = 'pending')
+    LIMIT 1000);

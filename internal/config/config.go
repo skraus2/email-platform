@@ -88,6 +88,11 @@ type Config struct {
 	WebhookKeys *webhooks.Keyring
 	// WebhookTargets limits which webhook URLs and addresses may be called.
 	WebhookTargets webhooks.TargetPolicy
+	// Retention (worker cleanup): events and finished webhook deliveries are
+	// deleted after these ages; EmailRetention 0 keeps emails forever.
+	EventRetention           time.Duration
+	WebhookDeliveryRetention time.Duration
+	EmailRetention           time.Duration
 	// WebhookMaxEndpointsPerProject caps a project's webhook endpoints,
 	// active and disabled.
 	WebhookMaxEndpointsPerProject int
@@ -219,6 +224,12 @@ func Load(lookup LookupFunc) (Config, error) {
 	}
 	cfg.WebhookTargets.AllowPrivate, errs = boolSetting(get, "WEBHOOK_ALLOW_PRIVATE", devDefault, errs)
 
+	cfg.EventRetention, errs = minDuration(get, "EVENT_RETENTION", "2160h", 360*time.Hour,
+		"(longer than the 14-day SQS redelivery window)", errs)
+	cfg.WebhookDeliveryRetention, errs = minDuration(get, "WEBHOOK_DELIVERY_RETENTION", "720h", 24*time.Hour, "", errs)
+	if get("EMAIL_RETENTION", "") != "" {
+		cfg.EmailRetention, errs = minDuration(get, "EMAIL_RETENTION", "", 720*time.Hour, "(or empty to keep emails)", errs)
+	}
 	cfg.WebhookMaxEndpointsPerProject, errs = intInRange(get, "WEBHOOK_MAX_ENDPOINTS_PER_PROJECT", "10", 1, 100, errs)
 	cfg.WebhookMaxAttempts, errs = intInRange(get, "WEBHOOK_MAX_ATTEMPTS", "12", 1, 25, errs)
 	cfg.WebhookConcurrency, errs = intInRange(get, "WEBHOOK_CONCURRENCY", "5", 1, 100, errs)
@@ -405,6 +416,18 @@ func rateInRange(get func(string, string) string, key, def string, errs []error)
 // maxBodyMaxAge caps the content safety net so it cannot be disabled by
 // configuration.
 const maxBodyMaxAge = 720 * time.Hour
+
+// minDuration parses a duration that must be at least min.
+func minDuration(get func(string, string) string, key, def string, minimum time.Duration, why string, errs []error) (time.Duration, []error) {
+	d, err := time.ParseDuration(get(key, def))
+	switch {
+	case err != nil:
+		return 0, append(errs, fmt.Errorf("%s invalid: %w", key, err))
+	case d < minimum:
+		return 0, append(errs, errors.New(strings.TrimSpace(fmt.Sprintf("%s must be at least %v %s", key, minimum, why))))
+	}
+	return d, errs
+}
 
 func positiveDuration(get func(string, string) string, key, def string, errs []error) (time.Duration, []error) {
 	d, err := time.ParseDuration(get(key, def))

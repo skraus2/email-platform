@@ -91,3 +91,11 @@ RETURNING admin_user_id;
 
 -- name: DeleteAdminSessionsOfUser :execrows
 DELETE FROM admin_sessions WHERE admin_user_id = (SELECT id FROM admin_users WHERE username = $1);
+
+-- name: DeleteExpiredAdminSessions :execrows
+-- Retention: one batch of sessions past their absolute expiry or unused since
+-- the idle cutoff.
+DELETE FROM admin_sessions WHERE id IN (
+    SELECT s.id FROM admin_sessions s
+    WHERE s.expires_at < now() OR s.last_seen_at < sqlc.arg(idle_before)
+    LIMIT 1000);

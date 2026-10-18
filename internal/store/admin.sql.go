@@ -83,6 +83,23 @@ func (q *Queries) DeleteAdminSessionsOfUser(ctx context.Context, username string
 	return result.RowsAffected(), nil
 }
 
+const deleteExpiredAdminSessions = `-- name: DeleteExpiredAdminSessions :execrows
+DELETE FROM admin_sessions WHERE id IN (
+    SELECT s.id FROM admin_sessions s
+    WHERE s.expires_at < now() OR s.last_seen_at < $1
+    LIMIT 1000)
+`
+
+// Retention: one batch of sessions past their absolute expiry or unused since
+// the idle cutoff.
+func (q *Queries) DeleteExpiredAdminSessions(ctx context.Context, idleBefore time.Time) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteExpiredAdminSessions, idleBefore)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const getAdminSession = `-- name: GetAdminSession :one
 SELECT s.id, s.admin_user_id, s.last_seen_at, s.expires_at, u.username
 FROM admin_sessions s JOIN admin_users u ON u.id = s.admin_user_id

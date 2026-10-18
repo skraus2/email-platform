@@ -92,3 +92,11 @@ JOIN email_events ev ON ev.id = d.event_id AND ev.project_id = d.project_id
 WHERE d.project_id = $1 AND (sqlc.narg(status)::text IS NULL OR d.status = sqlc.narg(status))
 ORDER BY d.created_at DESC, d.id DESC
 LIMIT $2;
+
+-- name: DeleteOldDeliveries :execrows
+-- Retention: one batch of finished deliveries last changed before the cutoff.
+-- Pending deliveries are never deleted by age.
+DELETE FROM webhook_deliveries WHERE id IN (
+    SELECT d.id FROM webhook_deliveries d
+    WHERE d.status IN ('delivered', 'failed') AND d.updated_at < sqlc.arg(before)
+    LIMIT 1000);
