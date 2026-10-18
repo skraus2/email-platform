@@ -142,6 +142,9 @@ type ProviderEvent struct {
 	// They are used only to suppress them when the email itself no longer
 	// exists; never stored with the event, never logged.
 	Recipients []string
+	// RecipientsDropped counts named addresses that were unusable or over
+	// the limit (logged as a number only).
+	RecipientsDropped int
 }
 
 // Outcome of an ingest. Every outcome except an error is final: the event
@@ -250,29 +253,34 @@ func suppressionReason(e ProviderEvent) string {
 // more): a complaint or permanent bounce still suppresses the addresses the
 // provider names, in the event's project, so a deleted email cannot let its
 // recipient be mailed again. Nothing else is stored.
-func suppressUnknown(ctx context.Context, q *store.Queries, e ProviderEvent) (Outcome, string, error) {
+// It returns the outcome, a warning for a suppression that could not be
+// made, and how many addresses were newly suppressed.
+func suppressUnknown(ctx context.Context, q *store.Queries, e ProviderEvent) (Outcome, string, int64, error) {
 	reason := suppressionReason(e)
 	if reason == "" {
-		return UnknownEmail, "", nil
+		return UnknownEmail, "", 0, nil
 	}
 	if len(e.Recipients) == 0 {
-		return UnknownEmail, "suppressing event without usable recipient", nil
+		return UnknownEmail, "suppressing event without usable recipient", 0, nil
 	}
 	// The suppression's project must exist: an insert for a missing one
 	// would fail on every redelivery.
 	exists, err := q.ProjectExists(ctx, e.ProjectID)
 	if err != nil {
-		return 0, "", fmt.Errorf("check project: %w", err)
+		return 0, "", 0, fmt.Errorf("check project: %w", err)
 	}
 	if !exists {
-		return UnknownEmail, "", nil
+		return UnknownEmail, "suppressing event for unknown project", 0, nil
 	}
+	var added int64
 	for _, addr := range e.Recipients {
-		if _, err := q.AddSuppression(ctx, store.AddSuppressionParams{ProjectID: e.ProjectID, Recipient: addr, Reason: reason}); err != nil {
-			return 0, "", fmt.Errorf("suppress recipient: %w", err)
+		n, err := q.AddSuppression(ctx, store.AddSuppressionParams{ProjectID: e.ProjectID, Recipient: addr, Reason: reason})
+		if err != nil {
+			return 0, "", 0, fmt.Errorf("suppress recipient: %w", err)
 		}
+		added += n
 	}
-	return UnknownEmailSuppressed, "", nil
+	return UnknownEmailSuppressed, "", added, nil
 }
 
 // Ingest stores a provider event in its own transaction, suppresses the
@@ -289,14 +297,15 @@ func (r *Recorder) Ingest(ctx context.Context, e ProviderEvent) (Outcome, error)
 	)
 	var out Outcome
 	var warn string
+	var added int64
 	err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
-		out, warn = 0, ""
+		out, warn, added = 0, "", 0
 		q := store.New(tx)
 		// Lock the email first: the worker's finish takes the same row lock,
 		// so either it sees this event or this ingest sees its status.
 		email, err := q.LockEmailForEvent(ctx, store.LockEmailForEventParams{ID: e.EmailID, ProjectID: e.ProjectID})
 		if errors.Is(err, pgx.ErrNoRows) {
-			out, warn, err = suppressUnknown(ctx, q, e)
+			out, warn, added, err = suppressUnknown(ctx, q, e)
 			return err
 		}
 		if err != nil {
@@ -368,11 +377,18 @@ func (r *Recorder) Ingest(ctx context.Context, e ProviderEvent) (Outcome, error)
 	if err != nil {
 		return 0, fmt.Errorf("ingest event: %w", err)
 	}
+	attrs := []any{slog.String("outcome", out.String())}
+	if out == UnknownEmailSuppressed {
+		attrs = append(attrs, slog.Int64("suppressed", added))
+	}
+	if e.RecipientsDropped > 0 {
+		attrs = append(attrs, slog.Int("recipients_dropped", e.RecipientsDropped))
+	}
 	if warn != "" {
 		// The recipient is never logged unmasked; the email id identifies it.
-		log.WarnContext(ctx, warn, slog.String("outcome", out.String()))
+		log.WarnContext(ctx, warn, attrs...)
 	} else {
-		log.InfoContext(ctx, "provider event", slog.String("outcome", out.String()))
+		log.InfoContext(ctx, "provider event", attrs...)
 	}
 	return out, nil
 }

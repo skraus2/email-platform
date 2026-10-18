@@ -216,8 +216,8 @@ func TestParseRecipients(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"ok@example.test", "Second@Example.test"}; !slices.Equal(ev.Recipients, want) {
-		t.Fatalf("recipients = %v, want %v", ev.Recipients, want)
+	if want := []string{"ok@example.test", "Second@Example.test"}; !slices.Equal(ev.Recipients, want) || ev.RecipientsDropped != 6 {
+		t.Fatalf("recipients = %v, dropped %d; want %v, 6", ev.Recipients, ev.RecipientsDropped, want)
 	}
 	if ev.Type != "complained" || ev.ProviderEventID != "0107019a-complaint-feedback-0001" {
 		t.Fatalf("event = %+v", ev)
@@ -228,8 +228,8 @@ func TestParseRecipients(t *testing.T) {
 	for i := range many {
 		many[i] = fmt.Sprintf("r%d@example.test", i)
 	}
-	if ev, err = Parse(withRecipients(list(many...))); err != nil || len(ev.Recipients) != 50 || ev.Recipients[49] != "r49@example.test" {
-		t.Fatalf("capped: %d recipients, %v", len(ev.Recipients), err)
+	if ev, err = Parse(withRecipients(list(many...))); err != nil || len(ev.Recipients) != 50 || ev.Recipients[49] != "r49@example.test" || ev.RecipientsDropped != 10 {
+		t.Fatalf("capped: %d recipients, %d dropped, %v", len(ev.Recipients), ev.RecipientsDropped, err)
 	}
 
 	// No recipients section at all: still a valid complaint, nothing to suppress.

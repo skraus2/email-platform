@@ -67,20 +67,17 @@ const maxIDLen = 512
 // maximum per message).
 const maxRecipients = 50
 
-// addresses returns the usable addresses of a recipient list: at most
-// maxRecipients entries are read, and only those that pass the send rule for
-// addresses are kept.
-func addresses(list []recipient) []string {
+// addresses returns the usable addresses of a recipient list and how many
+// entries were dropped: at most maxRecipients entries are read, and only
+// those that pass the send rule for addresses are kept.
+func addresses(list []recipient) ([]string, int) {
 	var out []string
 	for i, r := range list {
-		if i == maxRecipients {
-			break
-		}
-		if emails.ValidateAddress(r.EmailAddress) == nil {
+		if i < maxRecipients && emails.ValidateAddress(r.EmailAddress) == nil {
 			out = append(out, r.EmailAddress)
 		}
 	}
-	return out
+	return out, len(list) - len(out)
 }
 
 func invalid(reason string) error { return fmt.Errorf("%w: %s", ErrInvalid, reason) }
@@ -158,7 +155,7 @@ func convert(e sesEvent) (events.ProviderEvent, error) {
 		ev.Type, ev.ProviderEventID = "bounced", b.FeedbackID
 		ev.Details["bounce_type"] = b.BounceType
 		if b.BounceType == "Permanent" {
-			ev.Recipients = addresses(b.BouncedRecipients)
+			ev.Recipients, ev.RecipientsDropped = addresses(b.BouncedRecipients)
 		}
 		optional(ev.Details, "bounce_subtype", b.BounceSubType, bounceSubTypes)
 		if ev.OccurredAt, err = timestamp(b.Timestamp); err != nil {
@@ -170,7 +167,7 @@ func convert(e sesEvent) (events.ProviderEvent, error) {
 			return events.ProviderEvent{}, invalid("complaint without a usable feedback id")
 		}
 		ev.Type, ev.ProviderEventID = "complained", c.FeedbackID
-		ev.Recipients = addresses(c.ComplainedRecipients)
+		ev.Recipients, ev.RecipientsDropped = addresses(c.ComplainedRecipients)
 		optional(ev.Details, "complaint_feedback_type", c.ComplaintFeedbackType, feedbackTypes)
 		if ev.OccurredAt, err = timestamp(c.Timestamp); err != nil {
 			return events.ProviderEvent{}, err
