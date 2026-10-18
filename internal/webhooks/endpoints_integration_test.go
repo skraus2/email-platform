@@ -353,6 +353,7 @@ func TestCreateEndpointBusy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
 	if _, err := tx.Exec(ctx, "SELECT 1 FROM projects WHERE id = $1 FOR NO KEY UPDATE", projectID); err != nil {
 		t.Fatal(err)
 	}
