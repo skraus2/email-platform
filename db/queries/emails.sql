@@ -137,14 +137,25 @@ WHERE provider = $1 AND finished_at > now() - interval '24 hours'
 ORDER BY finished_at
 OFFSET $2 LIMIT 1;
 
--- name: DeleteOldEmails :execrows
--- Retention (opt-in): one batch of emails finished before the cutoff, with
--- their content, idempotency keys, events and deliveries (cascade). Kept:
--- unfinished emails and emails with a pending webhook delivery.
-DELETE FROM emails WHERE id IN (
-    SELECT e.id FROM emails e
-    WHERE e.finished_at < sqlc.arg(before)::timestamptz
-      AND NOT EXISTS (SELECT 1 FROM email_events ev
-                      JOIN webhook_deliveries wd ON wd.event_id = ev.id AND wd.project_id = ev.project_id
-                      WHERE ev.email_id = e.id AND ev.project_id = e.project_id AND wd.status = 'pending')
-    LIMIT 1000);
+-- name: LockOldEmails :many
+-- Retention (opt-in), step 1 of a batch: lock finished emails older than the
+-- cutoff that have no pending webhook delivery. SKIP LOCKED leaves emails an
+-- event ingest is working on for a later run.
+SELECT e.id FROM emails e
+WHERE e.finished_at < sqlc.arg(before)::timestamptz
+  AND NOT EXISTS (SELECT 1 FROM email_events ev
+                  JOIN webhook_deliveries wd ON wd.event_id = ev.id AND wd.project_id = ev.project_id
+                  WHERE ev.email_id = e.id AND ev.project_id = e.project_id AND wd.status = 'pending')
+LIMIT sqlc.arg(batch_size)
+FOR UPDATE OF e SKIP LOCKED;
+
+-- name: DeleteLockedEmails :execrows
+-- Retention step 2, a new statement and therefore a fresh snapshot: deletes
+-- the locked emails with their content, idempotency keys, events and
+-- deliveries (cascade), re-checking for a pending delivery committed after
+-- step 1 read.
+DELETE FROM emails e
+WHERE e.id = ANY (sqlc.arg(ids)::uuid[])
+  AND NOT EXISTS (SELECT 1 FROM email_events ev
+                  JOIN webhook_deliveries wd ON wd.event_id = ev.id AND wd.project_id = ev.project_id
+                  WHERE ev.email_id = e.id AND ev.project_id = e.project_id AND wd.status = 'pending');

@@ -93,9 +93,10 @@ RETURNING admin_user_id;
 DELETE FROM admin_sessions WHERE admin_user_id = (SELECT id FROM admin_users WHERE username = $1);
 
 -- name: DeleteExpiredAdminSessions :execrows
--- Retention: one batch of sessions past their absolute expiry or unused since
--- the idle cutoff.
+-- Retention: one batch of sessions past their absolute expiry or unused for
+-- longer than the largest valid idle timeout (24h), both on the database
+-- clock like the session check itself.
 DELETE FROM admin_sessions WHERE id IN (
     SELECT s.id FROM admin_sessions s
-    WHERE s.expires_at < now() OR s.last_seen_at < sqlc.arg(idle_before)
-    LIMIT 1000);
+    WHERE s.expires_at < now() OR s.last_seen_at < now() - interval '24 hours'
+    LIMIT sqlc.arg(batch_size));

@@ -11,16 +11,20 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/skraus2/email-platform/internal/database"
 	"github.com/skraus2/email-platform/internal/store"
 )
 
-// sessionIdleBound is the longest valid admin session idle timeout. Sessions
-// unused for longer are deleted whatever the API process is configured
-// with; the API refuses shorter idle sessions itself.
-const sessionIdleBound = 24 * time.Hour
+// Minimum retention periods. Events must outlive the 14-day SQS redelivery
+// window, or a redelivered provider event could be stored twice.
+const (
+	MinEventRetention    = 15 * 24 * time.Hour
+	MinDeliveryRetention = 24 * time.Hour
+	MinEmailRetention    = 30 * 24 * time.Hour
+)
 
 // Pruner runs the retention deletes. EmailRetention 0 keeps emails.
 type Pruner struct {
@@ -31,9 +35,24 @@ type Pruner struct {
 	EmailRetention    time.Duration
 }
 
+func (p Pruner) validate() error {
+	switch {
+	case p.EventRetention < MinEventRetention:
+		return fmt.Errorf("event retention %v is below the minimum %v", p.EventRetention, MinEventRetention)
+	case p.DeliveryRetention < MinDeliveryRetention:
+		return fmt.Errorf("webhook delivery retention %v is below the minimum %v", p.DeliveryRetention, MinDeliveryRetention)
+	case p.EmailRetention != 0 && p.EmailRetention < MinEmailRetention:
+		return fmt.Errorf("email retention %v is below the minimum %v", p.EmailRetention, MinEmailRetention)
+	}
+	return nil
+}
+
 // Run deletes one pass of expired rows in batches. A failing kind does not
 // stop the others; their errors are joined.
 func (p Pruner) Run(ctx context.Context) error {
+	if err := p.validate(); err != nil {
+		return fmt.Errorf("retention: %w", err)
+	}
 	q := store.New(p.Pool)
 	now := time.Now()
 	var errs []error
@@ -46,19 +65,37 @@ func (p Pruner) Run(ctx context.Context) error {
 	}
 
 	deliveries := prune("webhook deliveries", func(ctx context.Context) (int64, error) {
-		return q.DeleteOldDeliveries(ctx, now.Add(-p.DeliveryRetention))
+		return q.DeleteOldDeliveries(ctx, store.DeleteOldDeliveriesParams{Before: now.Add(-p.DeliveryRetention), BatchSize: database.BatchSize})
 	})
 	events := prune("events", func(ctx context.Context) (int64, error) {
-		return q.DeleteOldEvents(ctx, now.Add(-p.EventRetention))
+		return q.DeleteOldEvents(ctx, store.DeleteOldEventsParams{Before: now.Add(-p.EventRetention), BatchSize: database.BatchSize})
 	})
 	var emails int64
 	if p.EmailRetention > 0 {
-		emails = prune("emails", func(ctx context.Context) (int64, error) {
-			return q.DeleteOldEmails(ctx, now.Add(-p.EmailRetention))
+		// The batch size counts locked emails (what the loop needs); emails
+		// counts the ones actually deleted.
+		prune("emails", func(ctx context.Context) (int64, error) {
+			var locked int
+			var deleted int64
+			err := pgx.BeginFunc(ctx, p.Pool, func(tx pgx.Tx) error {
+				tq := store.New(tx)
+				ids, err := tq.LockOldEmails(ctx, store.LockOldEmailsParams{Before: now.Add(-p.EmailRetention), BatchSize: database.BatchSize})
+				if err != nil || len(ids) == 0 {
+					return err
+				}
+				locked = len(ids)
+				deleted, err = tq.DeleteLockedEmails(ctx, ids)
+				return err
+			})
+			if err != nil {
+				return 0, err
+			}
+			emails += deleted
+			return int64(locked), nil
 		})
 	}
 	sessions := prune("admin sessions", func(ctx context.Context) (int64, error) {
-		return q.DeleteExpiredAdminSessions(ctx, now.Add(-sessionIdleBound))
+		return q.DeleteExpiredAdminSessions(ctx, database.BatchSize)
 	})
 
 	if deliveries > 0 || events > 0 || emails > 0 || sessions > 0 {

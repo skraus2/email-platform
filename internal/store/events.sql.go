@@ -20,14 +20,19 @@ DELETE FROM email_events WHERE id IN (
       AND e.finished_at IS NOT NULL
       AND NOT EXISTS (SELECT 1 FROM webhook_deliveries wd
                       WHERE wd.event_id = ev.id AND wd.project_id = ev.project_id AND wd.status = 'pending')
-    LIMIT 1000)
+    LIMIT $2)
 `
+
+type DeleteOldEventsParams struct {
+	Before    time.Time
+	BatchSize int32
+}
 
 // Retention: one batch of events received before the cutoff. Kept: events
 // with a pending webhook delivery (the cascade would drop it) and events of
 // unfinished emails (still projected once the send completes).
-func (q *Queries) DeleteOldEvents(ctx context.Context, before time.Time) (int64, error) {
-	result, err := q.db.Exec(ctx, deleteOldEvents, before)
+func (q *Queries) DeleteOldEvents(ctx context.Context, arg DeleteOldEventsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteOldEvents, arg.Before, arg.BatchSize)
 	if err != nil {
 		return 0, err
 	}

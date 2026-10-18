@@ -99,4 +99,4 @@ LIMIT $2;
 DELETE FROM webhook_deliveries WHERE id IN (
     SELECT d.id FROM webhook_deliveries d
     WHERE d.status IN ('delivered', 'failed') AND d.updated_at < sqlc.arg(before)
-    LIMIT 1000);
+    LIMIT sqlc.arg(batch_size));

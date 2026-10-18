@@ -28,13 +28,18 @@ const deleteOldDeliveries = `-- name: DeleteOldDeliveries :execrows
 DELETE FROM webhook_deliveries WHERE id IN (
     SELECT d.id FROM webhook_deliveries d
     WHERE d.status IN ('delivered', 'failed') AND d.updated_at < $1
-    LIMIT 1000)
+    LIMIT $2)
 `
+
+type DeleteOldDeliveriesParams struct {
+	Before    time.Time
+	BatchSize int32
+}
 
 // Retention: one batch of finished deliveries last changed before the cutoff.
 // Pending deliveries are never deleted by age.
-func (q *Queries) DeleteOldDeliveries(ctx context.Context, before time.Time) (int64, error) {
-	result, err := q.db.Exec(ctx, deleteOldDeliveries, before)
+func (q *Queries) DeleteOldDeliveries(ctx context.Context, arg DeleteOldDeliveriesParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteOldDeliveries, arg.Before, arg.BatchSize)
 	if err != nil {
 		return 0, err
 	}

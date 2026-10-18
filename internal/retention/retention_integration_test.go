@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"errors"
 	"log/slog"
 	"strings"
 	"testing"
@@ -205,7 +206,8 @@ func TestPruneEmails(t *testing.T) {
 	f.exec(`INSERT INTO idempotency_keys (project_id, operation, key, fingerprint, email_id) VALUES ($1, 'create_email', 'k', $2, $3)`,
 		f.project, make([]byte, 32), old)
 	oldEvent := f.event(old, finishedAt)
-	oldDelivery := f.delivery(oldEvent, "delivered", finishedAt)
+	// Recent, so only the cascade from the email can remove it.
+	oldDelivery := f.delivery(oldEvent, "delivered", now.Add(-day))
 
 	held := f.email("held@example.test", finishedAt)
 	heldDelivery := f.delivery(f.event(held, finishedAt), "pending", finishedAt)
@@ -219,8 +221,8 @@ func TestPruneEmails(t *testing.T) {
 	if err := f.pruner(&logs, 0).Run(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if !f.exists("emails", old) {
-		t.Fatal("email deleted although email retention is off")
+	if !f.exists("emails", old) || !f.exists("webhook_deliveries", oldDelivery) {
+		t.Fatal("email or its delivery deleted although email retention is off")
 	}
 
 	logs.Reset()
@@ -289,7 +291,108 @@ func TestPruneBatches(t *testing.T) {
 		FROM generate_series(1, 10)`, f.project, email)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := f.pruner(&logs, 0).Run(ctx); err == nil {
-		t.Fatal("cancelled run returned no error")
+	if err := f.pruner(&logs, 0).Run(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled run: err = %v, want context.Canceled", err)
+	}
+	if n := f.count(`SELECT count(*) FROM email_events`); n != 10 {
+		t.Fatalf("cancelled run deleted events: %d left, want 10", n)
+	}
+}
+
+// An event ingest holding an old email's row lock while it adds a pending
+// delivery: the email must survive, its delivery too.
+func TestPruneEmailsSkipsEmailsBeingUpdated(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	ctx := context.Background()
+	email := f.email("busy@example.test", time.Now().Add(-40*day))
+
+	ingest, err := f.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ingest.Rollback(context.Background()) })
+	if _, err := ingest.Exec(ctx, `SELECT 1 FROM emails WHERE id = $1 FOR UPDATE`, email); err != nil {
+		t.Fatal(err)
+	}
+	var eventID uuid.UUID
+	if err := ingest.QueryRow(ctx, `INSERT INTO email_events (project_id, email_id, origin, type, occurred_at)
+		VALUES ($1, $2, 'platform', 'captured', now()) RETURNING id`, f.project, email).Scan(&eventID); err != nil {
+		t.Fatal(err)
+	}
+	endpoint := f.endpoint()
+	if _, err := ingest.Exec(ctx, `INSERT INTO webhook_deliveries (project_id, endpoint_id, event_id) VALUES ($1, $2, $3)`,
+		f.project, endpoint, eventID); err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan error, 1)
+	var logs bytes.Buffer
+	go func() { done <- f.pruner(&logs, 30*day).Run(ctx) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		// Still waiting for the lock: let the ingest commit first.
+		if err := ingest.Commit(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = ingest.Commit(ctx)
+	if !f.exists("emails", email) || !f.exists("email_events", eventID) {
+		t.Fatal("email deleted while an ingest was adding a pending delivery")
+	}
+	if n := f.count(`SELECT count(*) FROM webhook_deliveries WHERE event_id = $1 AND status = 'pending'`, eventID); n != 1 {
+		t.Fatalf("pending deliveries = %d, want 1", n)
+	}
+}
+
+// One kind failing does not stop the others.
+func TestPruneContinuesAfterAFailingKind(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	now := time.Now()
+	email := f.email("a@example.test", now.Add(-200*day))
+	event := f.event(email, now.Add(-100*day))
+	f.delivery(f.event(email, now), "delivered", now.Add(-40*day))
+	user := f.id(`INSERT INTO admin_users (username, password_hash) VALUES ('ops', '$argon2id$x') RETURNING id`)
+	session := f.id(`INSERT INTO admin_sessions (admin_user_id, token_hash, created_at, last_seen_at, expires_at)
+		VALUES ($1, $2, now() - interval '2 days', now() - interval '2 days', now() - interval '1 day') RETURNING id`,
+		user, make([]byte, 32))
+	f.exec(`CREATE FUNCTION refuse() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'refused'; END $$`)
+	f.exec(`CREATE TRIGGER refuse_delivery_delete BEFORE DELETE ON webhook_deliveries FOR EACH ROW EXECUTE FUNCTION refuse()`)
+
+	var logs bytes.Buffer
+	err := f.pruner(&logs, 0).Run(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "webhook deliveries") {
+		t.Fatalf("err = %v, want the delivery failure", err)
+	}
+	if f.exists("email_events", event) || f.exists("admin_sessions", session) {
+		t.Fatal("a failing delivery delete stopped event or session retention")
+	}
+}
+
+// A Pruner with retention below the minimums deletes nothing.
+func TestPruneRefusesShortRetention(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	email := f.email("a@example.test", time.Now().Add(-2*day))
+	event := f.event(email, time.Now().Add(-day))
+	for _, p := range []Pruner{
+		{Pool: f.pool, Logger: slog.New(slog.DiscardHandler), DeliveryRetention: 30 * day},
+		{Pool: f.pool, Logger: slog.New(slog.DiscardHandler), EventRetention: 90 * day},
+		{Pool: f.pool, Logger: slog.New(slog.DiscardHandler), EventRetention: 90 * day, DeliveryRetention: 30 * day, EmailRetention: day},
+	} {
+		if err := p.Run(context.Background()); err == nil {
+			t.Errorf("%+v: no error", p)
+		}
+	}
+	if !f.exists("email_events", event) || !f.exists("emails", email) {
+		t.Fatal("a misconfigured run deleted data")
 	}
 }

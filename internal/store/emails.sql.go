@@ -51,21 +51,20 @@ func (q *Queries) DeleteEmailContent(ctx context.Context, arg DeleteEmailContent
 	return err
 }
 
-const deleteOldEmails = `-- name: DeleteOldEmails :execrows
-DELETE FROM emails WHERE id IN (
-    SELECT e.id FROM emails e
-    WHERE e.finished_at < $1::timestamptz
-      AND NOT EXISTS (SELECT 1 FROM email_events ev
-                      JOIN webhook_deliveries wd ON wd.event_id = ev.id AND wd.project_id = ev.project_id
-                      WHERE ev.email_id = e.id AND ev.project_id = e.project_id AND wd.status = 'pending')
-    LIMIT 1000)
+const deleteLockedEmails = `-- name: DeleteLockedEmails :execrows
+DELETE FROM emails e
+WHERE e.id = ANY ($1::uuid[])
+  AND NOT EXISTS (SELECT 1 FROM email_events ev
+                  JOIN webhook_deliveries wd ON wd.event_id = ev.id AND wd.project_id = ev.project_id
+                  WHERE ev.email_id = e.id AND ev.project_id = e.project_id AND wd.status = 'pending')
 `
 
-// Retention (opt-in): one batch of emails finished before the cutoff, with
-// their content, idempotency keys, events and deliveries (cascade). Kept:
-// unfinished emails and emails with a pending webhook delivery.
-func (q *Queries) DeleteOldEmails(ctx context.Context, before time.Time) (int64, error) {
-	result, err := q.db.Exec(ctx, deleteOldEmails, before)
+// Retention step 2, a new statement and therefore a fresh snapshot: deletes
+// the locked emails with their content, idempotency keys, events and
+// deliveries (cascade), re-checking for a pending delivery committed after
+// step 1 read.
+func (q *Queries) DeleteLockedEmails(ctx context.Context, ids []uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteLockedEmails, ids)
 	if err != nil {
 		return 0, err
 	}
@@ -478,6 +477,44 @@ func (q *Queries) ListProjectEmailsByRecipient(ctx context.Context, arg ListProj
 			return nil, err
 		}
 		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const lockOldEmails = `-- name: LockOldEmails :many
+SELECT e.id FROM emails e
+WHERE e.finished_at < $1::timestamptz
+  AND NOT EXISTS (SELECT 1 FROM email_events ev
+                  JOIN webhook_deliveries wd ON wd.event_id = ev.id AND wd.project_id = ev.project_id
+                  WHERE ev.email_id = e.id AND ev.project_id = e.project_id AND wd.status = 'pending')
+LIMIT $2
+FOR UPDATE OF e SKIP LOCKED
+`
+
+type LockOldEmailsParams struct {
+	Before    time.Time
+	BatchSize int32
+}
+
+// Retention (opt-in), step 1 of a batch: lock finished emails older than the
+// cutoff that have no pending webhook delivery. SKIP LOCKED leaves emails an
+// event ingest is working on for a later run.
+func (q *Queries) LockOldEmails(ctx context.Context, arg LockOldEmailsParams) ([]uuid.UUID, error) {
+	rows, err := q.db.Query(ctx, lockOldEmails, arg.Before, arg.BatchSize)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []uuid.UUID{}
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
