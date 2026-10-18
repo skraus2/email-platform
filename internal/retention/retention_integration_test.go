@@ -326,24 +326,16 @@ func TestPruneEmailsSkipsEmailsBeingUpdated(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	done := make(chan error, 1)
+	// The run must skip the locked email instead of waiting for it.
+	runCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
 	var logs bytes.Buffer
-	go func() { done <- f.pruner(&logs, 30*day).Run(ctx) }()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatal(err)
-		}
-	case <-time.After(500 * time.Millisecond):
-		// Still waiting for the lock: let the ingest commit first.
-		if err := ingest.Commit(ctx); err != nil {
-			t.Fatal(err)
-		}
-		if err := <-done; err != nil {
-			t.Fatal(err)
-		}
+	if err := f.pruner(&logs, 30*day).Run(runCtx); err != nil {
+		t.Fatalf("run while the email is locked: %v (it must skip the email, not wait)", err)
 	}
-	_ = ingest.Commit(ctx)
+	if err := ingest.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
 	if !f.exists("emails", email) || !f.exists("email_events", eventID) {
 		t.Fatal("email deleted while an ingest was adding a pending delivery")
 	}
@@ -394,5 +386,26 @@ func TestPruneRefusesShortRetention(t *testing.T) {
 	}
 	if !f.exists("email_events", event) || !f.exists("emails", email) {
 		t.Fatal("a misconfigured run deleted data")
+	}
+}
+
+// The second step re-checks: an email whose pending delivery was committed
+// after the first step read is not deleted.
+func TestDeleteLockedEmailsRechecksPendingDeliveries(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	ctx := context.Background()
+	email := f.email("late@example.test", time.Now().Add(-40*day))
+	delivery := f.delivery(f.event(email, time.Now()), "pending", time.Now())
+	n, err := store.New(f.pool).DeleteLockedEmails(ctx, []uuid.UUID{email})
+	if err != nil || n != 0 {
+		t.Fatalf("deleted = %d, %v; want 0", n, err)
+	}
+	if !f.exists("emails", email) || !f.exists("webhook_deliveries", delivery) {
+		t.Fatal("email with a pending delivery deleted")
+	}
+	plain := f.email("plain@example.test", time.Now().Add(-40*day))
+	if n, err := store.New(f.pool).DeleteLockedEmails(ctx, []uuid.UUID{plain}); err != nil || n != 1 {
+		t.Fatalf("deleted = %d, %v; want 1", n, err)
 	}
 }
