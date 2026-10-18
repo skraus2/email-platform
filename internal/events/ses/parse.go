@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/skraus2/email-platform/internal/emails"
 	"github.com/skraus2/email-platform/internal/events"
 )
 
@@ -35,15 +36,17 @@ type sesEvent struct {
 		Tags             map[string][]string `json:"tags"`
 	} `json:"mail"`
 	Bounce *struct {
-		BounceType    string `json:"bounceType"`
-		BounceSubType string `json:"bounceSubType"`
-		Timestamp     string `json:"timestamp"`
-		FeedbackID    string `json:"feedbackId"`
+		BounceType        string      `json:"bounceType"`
+		BounceSubType     string      `json:"bounceSubType"`
+		BouncedRecipients []recipient `json:"bouncedRecipients"`
+		Timestamp         string      `json:"timestamp"`
+		FeedbackID        string      `json:"feedbackId"`
 	} `json:"bounce"`
 	Complaint *struct {
-		ComplaintFeedbackType string `json:"complaintFeedbackType"`
-		Timestamp             string `json:"timestamp"`
-		FeedbackID            string `json:"feedbackId"`
+		ComplaintFeedbackType string      `json:"complaintFeedbackType"`
+		ComplainedRecipients  []recipient `json:"complainedRecipients"`
+		Timestamp             string      `json:"timestamp"`
+		FeedbackID            string      `json:"feedbackId"`
 	} `json:"complaint"`
 	Delivery *struct {
 		Timestamp string `json:"timestamp"`
@@ -54,13 +57,38 @@ type sesEvent struct {
 	} `json:"deliveryDelay"`
 }
 
+type recipient struct {
+	EmailAddress string `json:"emailAddress"`
+}
+
 const maxIDLen = 512
+
+// maxRecipients bounds how many addresses of one event are read (the SES
+// maximum per message).
+const maxRecipients = 50
+
+// addresses returns the usable addresses of a recipient list: at most
+// maxRecipients entries are read, and only those that pass the send rule for
+// addresses are kept.
+func addresses(list []recipient) []string {
+	var out []string
+	for i, r := range list {
+		if i == maxRecipients {
+			break
+		}
+		if emails.ValidateAddress(r.EmailAddress) == nil {
+			out = append(out, r.EmailAddress)
+		}
+	}
+	return out
+}
 
 func invalid(reason string) error { return fmt.Errorf("%w: %s", ErrInvalid, reason) }
 
 // Parse turns an SES event-publishing message into a provider event. Only
-// non-personal details are kept: no addresses, diagnostic codes, SMTP
-// responses or links.
+// non-personal details are kept: no diagnostic codes, SMTP responses or
+// links, and addresses only in Recipients (complaints and permanent bounces,
+// for suppression).
 func Parse(message string) (events.ProviderEvent, error) {
 	ev, _, err := parse(message)
 	return ev, err
@@ -129,6 +157,9 @@ func convert(e sesEvent) (events.ProviderEvent, error) {
 		}
 		ev.Type, ev.ProviderEventID = "bounced", b.FeedbackID
 		ev.Details["bounce_type"] = b.BounceType
+		if b.BounceType == "Permanent" {
+			ev.Recipients = addresses(b.BouncedRecipients)
+		}
 		optional(ev.Details, "bounce_subtype", b.BounceSubType, bounceSubTypes)
 		if ev.OccurredAt, err = timestamp(b.Timestamp); err != nil {
 			return events.ProviderEvent{}, err
@@ -139,6 +170,7 @@ func convert(e sesEvent) (events.ProviderEvent, error) {
 			return events.ProviderEvent{}, invalid("complaint without a usable feedback id")
 		}
 		ev.Type, ev.ProviderEventID = "complained", c.FeedbackID
+		ev.Recipients = addresses(c.ComplainedRecipients)
 		optional(ev.Details, "complaint_feedback_type", c.ComplaintFeedbackType, feedbackTypes)
 		if ev.OccurredAt, err = timestamp(c.Timestamp); err != nil {
 			return events.ProviderEvent{}, err

@@ -124,6 +124,11 @@ func TestPollerOutcomes(t *testing.T) {
 		{name: "unknown email", body: func(ps *pollerSetup) string { return ps.signed(t, delivery) },
 			ingest:  func(context.Context, events.ProviderEvent) (events.Outcome, error) { return events.UnknownEmail, nil },
 			outcome: "unknown_email", ingested: true, deleted: true},
+		{name: "unknown email suppressed", body: func(ps *pollerSetup) string { return ps.signed(t, delivery) },
+			ingest: func(context.Context, events.ProviderEvent) (events.Outcome, error) {
+				return events.UnknownEmailSuppressed, nil
+			},
+			outcome: "unknown_email_suppressed", ingested: true, deleted: true},
 		{name: "provider mismatch", body: func(ps *pollerSetup) string { return ps.signed(t, delivery) },
 			ingest: func(context.Context, events.ProviderEvent) (events.Outcome, error) {
 				return events.ProviderMismatch, nil

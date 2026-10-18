@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -617,5 +618,135 @@ func TestReusedEventIDIsReported(t *testing.T) {
 	}
 	if got := f.status(t, b); got != "submitted" {
 		t.Fatalf("other email status = %s", got)
+	}
+}
+
+// A complaint or permanent bounce for an email that no longer exists still
+// suppresses the addresses it names, in the tagged project only.
+func TestIngestSuppressesDeletedEmail(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	ctx := context.Background()
+	other, err := auth.CreateProject(ctx, store.New(f.pool), "other")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gone := uuid.New()
+	suppressed := func(project uuid.UUID) []string {
+		rows, err := f.pool.Query(ctx, "SELECT recipient || ':' || reason FROM suppressions WHERE project_id = $1 ORDER BY recipient", project)
+		if err != nil {
+			t.Fatal(err)
+		}
+		list, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		if err != nil {
+			t.Fatal(err)
+		}
+		return list
+	}
+
+	complaint := f.ev(gone, "complained", "complaint-1", map[string]string{"complaint_feedback_type": "abuse"})
+	complaint.Recipients = []string{"late-complainer@example.test"}
+	if out := f.ingest(t, complaint); out != events.UnknownEmailSuppressed {
+		t.Fatalf("complaint = %v, want UnknownEmailSuppressed", out)
+	}
+	bounce := f.ev(gone, "bounced", "bounce-1", map[string]string{"bounce_type": "Permanent"})
+	bounce.Recipients = []string{"gone-mailbox@example.test", "Late-Complainer@Example.test"}
+	if out := f.ingest(t, bounce); out != events.UnknownEmailSuppressed {
+		t.Fatalf("permanent bounce = %v, want UnknownEmailSuppressed", out)
+	}
+	want := []string{"gone-mailbox@example.test:bounce", "late-complainer@example.test:complaint"}
+	if got := suppressed(f.projectID); !slices.Equal(got, want) {
+		t.Fatalf("suppressions = %v, want %v", got, want)
+	}
+	if n := f.count(t, "SELECT count(*) FROM email_events"); n != 0 || len(f.recorded()) != 0 {
+		t.Fatalf("events stored = %d, changes = %d; want none", n, len(f.recorded()))
+	}
+
+	// A redelivery changes nothing.
+	if out := f.ingest(t, complaint); out != events.UnknownEmailSuppressed || len(suppressed(f.projectID)) != 2 {
+		t.Fatalf("redelivery = %v, suppressions %v", out, suppressed(f.projectID))
+	}
+
+	// Not suppressing, no project, no addresses: nothing written.
+	transient := f.ev(gone, "bounced", "bounce-2", map[string]string{"bounce_type": "Transient"})
+	transient.Recipients = []string{"transient@example.test"}
+	noProject := complaint
+	noProject.ProjectID, noProject.ProviderEventID = uuid.New(), "complaint-2"
+	f.logs.Reset()
+	noAddress := f.ev(gone, "complained", "complaint-3", nil)
+	for name, e := range map[string]events.ProviderEvent{"transient bounce": transient, "unknown project": noProject, "no usable address": noAddress} {
+		if out := f.ingest(t, e); out != events.UnknownEmail {
+			t.Errorf("%s = %v, want UnknownEmail", name, out)
+		}
+	}
+	if got := suppressed(f.projectID); len(got) != 2 {
+		t.Fatalf("suppressions = %v", got)
+	}
+	if got := suppressed(other.ID); len(got) != 0 {
+		t.Fatalf("other project suppressions = %v", got)
+	}
+	if !strings.Contains(f.logs.String(), "suppressing event without usable recipient") {
+		t.Errorf("no warning for a suppressing event without a usable address: %s", f.logs.String())
+	}
+
+	// A known email is suppressed by its stored recipient, never by the
+	// payload's addresses.
+	known := f.email(t, "submitted", "ses")
+	kc := f.ev(known, "complained", "complaint-4", nil)
+	kc.Recipients = []string{"someone-else@example.test"}
+	if out := f.ingest(t, kc); out != events.Stored {
+		t.Fatalf("known email complaint = %v", out)
+	}
+	got := suppressed(f.projectID)
+	if !slices.Contains(got, recipient+":complaint") || slices.Contains(got, "someone-else@example.test:complaint") {
+		t.Fatalf("suppressions = %v; want the stored recipient only", got)
+	}
+
+	for _, leak := range []string{"late-complainer", "gone-mailbox", "transient@", "someone-else"} {
+		if strings.Contains(strings.ToLower(f.logs.String()), leak) {
+			t.Errorf("logs contain %q", leak)
+		}
+	}
+}
+
+// An ingest waiting for an email that is deleted meanwhile (retention) takes
+// the deleted-email path.
+func TestIngestSuppressesEmailDeletedWhileWaiting(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	ctx := context.Background()
+	id := f.email(t, "submitted", "ses")
+
+	tx, err := f.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
+	if _, err := tx.Exec(ctx, "DELETE FROM emails WHERE id = $1", id); err != nil {
+		t.Fatal(err)
+	}
+	e := f.ev(id, "complained", "complaint-1", nil)
+	e.Recipients = []string{"waiting@example.test"}
+	done := make(chan events.Outcome, 1)
+	go func() {
+		out, err := f.rec.Ingest(ctx, e)
+		if err != nil {
+			t.Errorf("ingest: %v", err)
+		}
+		done <- out
+	}()
+	select {
+	case out := <-done:
+		t.Fatalf("ingest finished (%v) while the email row was locked", out)
+	case <-time.After(300 * time.Millisecond):
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if out := <-done; out != events.UnknownEmailSuppressed {
+		t.Fatalf("outcome = %v, want UnknownEmailSuppressed", out)
+	}
+	if n := f.count(t, "SELECT count(*) FROM suppressions WHERE recipient = 'waiting@example.test'"); n != 1 {
+		t.Fatalf("suppressions = %d, want 1", n)
 	}
 }

@@ -26,3 +26,6 @@ SELECT k.id, k.project_id, k.secret_hash, k.scopes
 FROM api_keys k
 JOIN projects p ON p.id = k.project_id
 WHERE k.prefix = $1 AND k.revoked_at IS NULL AND p.status = 'active';
+
+-- name: ProjectExists :one
+SELECT EXISTS (SELECT 1 FROM projects WHERE id = $1);

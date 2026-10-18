@@ -167,6 +167,17 @@ func (q *Queries) ListProjects(ctx context.Context) ([]Project, error) {
 	return items, nil
 }
 
+const projectExists = `-- name: ProjectExists :one
+SELECT EXISTS (SELECT 1 FROM projects WHERE id = $1)
+`
+
+func (q *Queries) ProjectExists(ctx context.Context, id uuid.UUID) (bool, error) {
+	row := q.db.QueryRow(ctx, projectExists, id)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const revokeAPIKey = `-- name: RevokeAPIKey :execrows
 UPDATE api_keys SET revoked_at = now() WHERE prefix = $1 AND revoked_at IS NULL
 `

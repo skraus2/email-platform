@@ -1,9 +1,12 @@
 package ses
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
 	"maps"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -166,5 +169,71 @@ func TestParseSendingAccount(t *testing.T) {
 	msg := strings.Replace(fixture(t, "delivery"), `"sendingAccountId":"123456789012",`, ``, 1)
 	if _, account, err := parse(msg); err != nil || account != "" {
 		t.Fatalf("without the field: account = %q, %v; want empty", account, err)
+	}
+}
+
+func TestParseRecipients(t *testing.T) {
+	// Fixtures: only complaints and permanent bounces carry recipients.
+	for name, want := range map[string][]string{
+		"complaint":           {"customer@example.test"},
+		"bounce_permanent":    {"customer@example.test"},
+		"bounce_transient":    nil,
+		"bounce_undetermined": nil,
+		"delivery":            nil,
+		"send":                nil,
+		"reject":              nil,
+		"delivery_delay":      nil,
+	} {
+		ev, err := Parse(fixture(t, name))
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if !slices.Equal(ev.Recipients, want) {
+			t.Errorf("%s: recipients = %v, want %v", name, ev.Recipients, want)
+		}
+		for k, v := range ev.Details {
+			if strings.Contains(v, "@") {
+				t.Errorf("%s: detail %s carries an address", name, k)
+			}
+		}
+	}
+
+	// Unusable addresses are dropped without refusing the event.
+	list := func(addrs ...string) string {
+		var parts []string
+		for _, a := range addrs {
+			b, _ := json.Marshal(a)
+			parts = append(parts, `{"emailAddress":`+string(b)+`}`)
+		}
+		return "[" + strings.Join(parts, ",") + "]"
+	}
+	complaint := fixture(t, "complaint")
+	withRecipients := func(arr string) string {
+		return strings.Replace(complaint, `[{"emailAddress":"customer@example.test"}]`, arr, 1)
+	}
+	ev, err := Parse(withRecipients(list("ok@example.test", "Name <named@example.test>", "ünï@example.test",
+		"a@b@c", "", strings.Repeat("x", 250)+"@example.test", "two@example.test, three@example.test", "Second@Example.test")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"ok@example.test", "Second@Example.test"}; !slices.Equal(ev.Recipients, want) {
+		t.Fatalf("recipients = %v, want %v", ev.Recipients, want)
+	}
+	if ev.Type != "complained" || ev.ProviderEventID != "0107019a-complaint-feedback-0001" {
+		t.Fatalf("event = %+v", ev)
+	}
+
+	// At most 50 entries are read.
+	many := make([]string, 60)
+	for i := range many {
+		many[i] = fmt.Sprintf("r%d@example.test", i)
+	}
+	if ev, err = Parse(withRecipients(list(many...))); err != nil || len(ev.Recipients) != 50 || ev.Recipients[49] != "r49@example.test" {
+		t.Fatalf("capped: %d recipients, %v", len(ev.Recipients), err)
+	}
+
+	// No recipients section at all: still a valid complaint, nothing to suppress.
+	if ev, err = Parse(strings.Replace(complaint, `"complainedRecipients":[{"emailAddress":"customer@example.test"}],`, "", 1)); err != nil || ev.Recipients != nil {
+		t.Fatalf("no recipients: %v, %v", ev.Recipients, err)
 	}
 }
