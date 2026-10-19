@@ -24,6 +24,8 @@ export type Seed = {
     searchId: string;
     searchSubject: string;
     templateEmailId: string;
+    /** The same template sent with version 1. */
+    templateV1: { id: string; subject: string };
     failedId: string;
     recipients: Record<string, number>;
   };

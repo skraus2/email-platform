@@ -2,8 +2,9 @@
 # Browser end-to-end test of the dashboard. Creates a throwaway database on
 # the server of TEST_DATABASE_URL, migrates it, starts the API (public and
 # admin listener) and seeds it through the admin CLI and the /v1 API, starts
-# the worker (Mailpit only), builds the dashboard and runs the Playwright
-# suite, which serves the production build itself. Every process is stopped
+# the worker (Mailpit only), checks the template sends in Mailpit, builds
+# the dashboard and runs the Playwright suite, which serves the production
+# build itself. Every process is stopped
 # and the database dropped on exit. Needs `make up` first.
 # Extra arguments go to `playwright test` (e.g. a spec file or --headed).
 set -euo pipefail
@@ -91,6 +92,8 @@ PROVIDER_RATE_PER_SECOND=100 LOG_FORMAT=json "$TMP/worker" >"$TMP/worker.log" 2>
 WORKER_PID=$!
 (cd "$ROOT/apps/dashboard" && pnpm exec node e2e/seed.mts wait) || fail "seeded emails did not reach a final state"
 echo "seed complete"
+(cd "$ROOT/apps/dashboard" && pnpm exec node e2e/seed.mts check) || fail "template sends"
+echo "template sends (published and version 1) rendered in Mailpit and listed by template"
 
 # The dashboard needs neither the database nor the key-encryption key.
 NO_SECRETS=(env -u DATABASE_URL -u TEST_DATABASE_URL -u WEBHOOK_KEKS)

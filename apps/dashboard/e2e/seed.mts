@@ -5,6 +5,7 @@
  *
  *   node e2e/seed.mts seed   (API running, worker not yet started)
  *   node e2e/seed.mts wait   (after the worker started)
+ *   node e2e/seed.mts check  (after wait: template sends in Mailpit)
  *
  * Secrets go to the seed file (mode 0600) and, as soon as each exists, to
  * the needles file the script checks the logs against; passwords reach the
@@ -25,6 +26,7 @@ const env = (name: string): string => {
 
 const SEED = env("E2E_SEED");
 const API = env("E2E_API_URL");
+const MAILPIT = process.env.TEST_MAILPIT_URL ?? "http://127.0.0.1:8025";
 
 function admin(args: string[], input?: string): string {
   return execFileSync(env("E2E_ADMIN_BIN"), args, {
@@ -59,6 +61,8 @@ const RECIPIENTS: Record<string, number> = {
   [`carol@${DOMAIN}`]: 14,
 };
 const TEMPLATE_RECIPIENT = `dora@${DOMAIN}`;
+/** Sent with version 1: its HTML part must show it escaped. */
+const V1_NAME = "<Ada & Co>";
 const BLOCKED = `blocked@${DOMAIN}`;
 
 const ORDER_V1 = {
@@ -116,6 +120,7 @@ async function seedAll() {
     TEMPLATE_RECIPIENT,
     BLOCKED,
     previewValue,
+    V1_NAME,
   );
   const projectName = "E2E shop";
   const projectId = admin(["project", "create", "-name", projectName]).split(
@@ -183,6 +188,13 @@ async function seedAll() {
     template_version: "published",
     variables: { name: "Ada", headline: "Your order", amount: 12.5, vip: true },
   });
+  const v1Subject = `Order e2e-${randomBytes(6).toString("hex")}`;
+  const templateV1Email = await send({
+    to: TEMPLATE_RECIPIENT,
+    template_id: order.id,
+    template_version: 1,
+    variables: { name: V1_NAME, order: v1Subject.slice("Order ".length) },
+  });
   // Accepted before the suppression exists; the worker's re-check fails it.
   const failed = await send({
     to: BLOCKED,
@@ -210,10 +222,11 @@ async function seedAll() {
     order: { id: order.id, v1: ORDER_V1 },
     large: { id: large.id },
     emails: {
-      total: n + 2,
+      total: n + 3,
       searchId,
       searchSubject,
       templateEmailId: templateEmail.id,
+      templateV1: { id: templateV1Email.id, subject: v1Subject },
       failedId: failed.id,
       recipients: RECIPIENTS,
     },
@@ -238,11 +251,117 @@ async function waitFinal() {
   throw new Error("emails still queued or sending after 60 s");
 }
 
+type MailpitMessage = { Subject: string; Text: string; HTML: string };
+
+/** The Mailpit messages carrying this email's Message-ID (waits up to 5 s). */
+async function mailpitMessages(emailId: string): Promise<MailpitMessage[]> {
+  const get = async <T,>(path: string): Promise<T> => {
+    const res = await fetch(`${MAILPIT}${path}`);
+    if (!res.ok) {
+      throw new Error(`mailpit ${path}: ${res.status}`);
+    }
+    return (await res.json()) as T;
+  };
+  const query = encodeURIComponent(
+    `message-id:"${emailId}@email-platform.local"`,
+  );
+  const deadline = Date.now() + 5_000;
+  for (;;) {
+    const { messages } = await get<{ messages: { ID: string }[] }>(
+      `/api/v1/search?query=${query}`,
+    );
+    if (messages.length > 0 || Date.now() > deadline) {
+      return Promise.all(
+        messages.map((m) =>
+          get<MailpitMessage>(`/api/v1/message/${encodeURIComponent(m.ID)}`),
+        ),
+      );
+    }
+    await new Promise((r) => setTimeout(r, 100));
+  }
+}
+
+/**
+ * Both template sends went through the real worker: each is captured with
+ * its version, Mailpit holds it once with that version's rendered content,
+ * and the list filtered by template returns exactly these two.
+ */
+async function checkTemplateSends() {
+  const s = JSON.parse(readFileSync(SEED, "utf8")) as Seed;
+  const published = s.emails.templateEmailId;
+  const old = s.emails.templateV1.id;
+  const fail = (msg: string): never => {
+    throw new Error(`template send check: ${msg}`);
+  };
+
+  for (const [id, version] of [
+    [published, 2],
+    [old, 1],
+  ] as const) {
+    const e = await v1<{
+      status: string;
+      template_id: string;
+      template_version: number;
+    }>(s.apiKey, `/v1/emails/${id}`);
+    if (
+      e.status !== "captured" ||
+      e.template_id !== s.order.id ||
+      e.template_version !== version
+    ) {
+      fail(
+        `email ${id}: status ${e.status}, version ${e.template_version}, want captured ${version}`,
+      );
+    }
+  }
+
+  const latest = await mailpitMessages(published);
+  if (latest.length !== 1) {
+    fail(`published send: ${latest.length} Mailpit messages, want 1`);
+  }
+  const [l] = latest;
+  if (
+    l.Subject !== "Your order" ||
+    l.Text.trim() !== "Hello Ada, total 12.5 (VIP)" ||
+    !l.HTML.includes(">Hello Ada</p>")
+  ) {
+    fail(`published send rendered ${JSON.stringify(l.Subject)}`);
+  }
+
+  const older = await mailpitMessages(old);
+  if (older.length !== 1) {
+    fail(`version 1 send: ${older.length} Mailpit messages, want 1`);
+  }
+  const [o] = older;
+  if (o.Subject !== s.emails.templateV1.subject) {
+    fail(`version 1 subject ${JSON.stringify(o.Subject)}`);
+  }
+  if (
+    !o.HTML.includes("<p>Version one &lt;Ada &amp; Co&gt;</p>") ||
+    o.HTML.includes(V1_NAME)
+  ) {
+    fail("version 1 HTML part does not show the variable escaped");
+  }
+  if (!o.Text.includes(`Version one for ${V1_NAME}`)) {
+    fail("version 1 text part is missing or does not show the variable");
+  }
+
+  const listed = await v1<{ data: { id: string }[] }>(
+    s.apiKey,
+    `/v1/emails?template_id=${s.order.id}`,
+  );
+  const ids = listed.data.map((e) => e.id);
+  if (ids.length !== 2 || ids[0] !== old || ids[1] !== published) {
+    fail(`listed by template: ${ids.join(",")}, want ${old},${published}`);
+  }
+}
+
 const step = process.argv[2];
 if (step === "seed") {
   await seedAll();
 } else if (step === "wait") {
   await waitFinal();
+} else if (step === "check") {
+  await checkTemplateSends();
 } else {
-  throw new Error("usage: node e2e/seed.mts seed|wait");
+  throw new Error("usage: node e2e/seed.mts seed|wait|check");
 }
