@@ -27,6 +27,14 @@ const env = (name: string): string => {
 const SEED = env("E2E_SEED");
 const API = env("E2E_API_URL");
 const MAILPIT = process.env.TEST_MAILPIT_URL ?? "http://127.0.0.1:8025";
+// Only a local Mailpit can vouch for what the worker sent.
+if (
+  !["127.0.0.1", "localhost", "[::1]", "mailpit"].includes(
+    new URL(MAILPIT).hostname,
+  )
+) {
+  throw new Error("TEST_MAILPIT_URL must point at a local Mailpit");
+}
 
 function admin(args: string[], input?: string): string {
   return execFileSync(env("E2E_ADMIN_BIN"), args, {
@@ -256,7 +264,9 @@ type MailpitMessage = { Subject: string; Text: string; HTML: string };
 /** The Mailpit messages carrying this email's Message-ID (waits up to 5 s). */
 async function mailpitMessages(emailId: string): Promise<MailpitMessage[]> {
   const get = async <T,>(path: string): Promise<T> => {
-    const res = await fetch(`${MAILPIT}${path}`);
+    const res = await fetch(`${MAILPIT}${path}`, {
+      signal: AbortSignal.timeout(5_000),
+    });
     if (!res.ok) {
       throw new Error(`mailpit ${path}: ${res.status}`);
     }
@@ -319,12 +329,14 @@ async function checkTemplateSends() {
     fail(`published send: ${latest.length} Mailpit messages, want 1`);
   }
   const [l] = latest;
-  if (
-    l.Subject !== "Your order" ||
-    l.Text.trim() !== "Hello Ada, total 12.5 (VIP)" ||
-    !l.HTML.includes(">Hello Ada</p>")
-  ) {
-    fail(`published send rendered ${JSON.stringify(l.Subject)}`);
+  if (l.Subject !== "Your order") {
+    fail(`published send subject ${JSON.stringify(l.Subject)}`);
+  }
+  if (l.Text.trim() !== "Hello Ada, total 12.5 (VIP)") {
+    fail(`published send text part ${JSON.stringify(l.Text.trim())}`);
+  }
+  if (!l.HTML.includes(">Hello Ada</p>")) {
+    fail("published send HTML part does not show the rendered greeting");
   }
 
   const older = await mailpitMessages(old);

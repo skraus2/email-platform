@@ -4,8 +4,8 @@
 # admin listener) and seeds it through the admin CLI and the /v1 API, starts
 # the worker (Mailpit only), checks the template sends in Mailpit, builds
 # the dashboard and runs the Playwright suite, which serves the production
-# build itself. Every process is stopped
-# and the database dropped on exit. Needs `make up` first.
+# build itself. Every process is stopped and the database dropped on exit.
+# Needs `make up` first.
 # Extra arguments go to `playwright test` (e.g. a spec file or --headed).
 set -euo pipefail
 
