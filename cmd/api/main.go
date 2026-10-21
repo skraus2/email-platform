@@ -66,6 +66,10 @@ func run() error {
 	if cfg.RequireVerifiedSender {
 		service.RequireVerifiedSenders()
 	}
+	service.LimitScheduleAhead(cfg.ScheduleMaxAhead)
+	// Cancellations are status changes: they reach subscribed webhook
+	// endpoints like those made by the worker.
+	service.Recorder().OnStatusChange(webhooks.NewOutbox(enqueuer).OnStatusChange)
 	// Registration through the API is opt-in: only an API process given the
 	// webhook key-encryption keys can store new endpoint secrets.
 	var registrar httpapi.WebhookRegistrar

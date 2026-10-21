@@ -79,6 +79,9 @@ type Config struct {
 	AudienceMaxPerProject int
 	AudienceMaxContacts   int
 
+	// ScheduleMaxAhead bounds how far in the future a send may be planned.
+	ScheduleMaxAhead time.Duration
+
 	// Admin sessions end after AdminSessionIdle without use or
 	// AdminSessionMax after login.
 	AdminSessionIdle time.Duration
@@ -273,6 +276,10 @@ func Load(lookup LookupFunc) (Config, error) {
 	cfg.ContactMaxPerProject, errs = intInRange(get, "CONTACT_MAX_PER_PROJECT", "250000", 1, 10_000_000, errs)
 	cfg.AudienceMaxPerProject, errs = intInRange(get, "AUDIENCE_MAX_PER_PROJECT", "100", 1, 10_000, errs)
 	cfg.AudienceMaxContacts, errs = intInRange(get, "AUDIENCE_MAX_CONTACTS", "100000", 1, 1_000_000, errs)
+	cfg.ScheduleMaxAhead, errs = positiveDuration(get, "SCHEDULE_MAX_AHEAD", "720h", errs)
+	if cfg.ScheduleMaxAhead > 720*time.Hour || (cfg.ScheduleMaxAhead > 0 && cfg.ScheduleMaxAhead < time.Minute) {
+		errs = append(errs, errors.New("SCHEDULE_MAX_AHEAD must be between 1m and 720h"))
+	}
 	if addr := get("ADMIN_HTTP_ADDR", "127.0.0.1:8081"); addr != "off" {
 		if err := validAdminAddr(addr, cfg.Env == EnvProduction); err != nil {
 			errs = append(errs, fmt.Errorf("ADMIN_HTTP_ADDR: %w", err))

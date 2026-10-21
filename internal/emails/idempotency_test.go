@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -162,6 +163,40 @@ func TestValidateTemplateForm(t *testing.T) {
 		var ve *ValidationError
 		if err := in.Validate(); !errors.As(err, &ve) || ve.Field != tc.field {
 			t.Errorf("%s: %v, want error on %s", name, err, tc.field)
+		}
+	}
+}
+
+func TestScheduledFingerprint(t *testing.T) {
+	at := time.Date(2026, 10, 22, 9, 30, 0, 123456789, time.UTC)
+	raw := CreateInput{From: "a@example.test", To: "b@example.test", Subject: "Hi", Text: "Hello", HTML: "<p>Hello</p>"}
+	tmpl := CreateInput{From: "a@example.test", To: "b@example.test", TemplateID: uuid.MustParse("0192f0aa-0000-7000-8000-000000000001")}
+	base := map[string][]byte{}
+	base["raw"] = raw.Fingerprint()
+	base["template"], _ = tmpl.TemplateFingerprint()
+	for name, in := range map[string]CreateInput{"raw": raw, "template": tmpl} {
+		fp := func(in CreateInput) []byte {
+			if name == "raw" {
+				return in.Fingerprint()
+			}
+			f, _ := in.TemplateFingerprint()
+			return f
+		}
+		in.ScheduledAt = &at
+		scheduled := fp(in)
+		if string(scheduled) == string(base[name]) {
+			t.Errorf("%s: scheduled_at not part of the fingerprint", name)
+		}
+		// Same instant in another zone and below microseconds: same request.
+		other := at.In(time.FixedZone("x", 2*3600)).Add(-789 * time.Nanosecond)
+		in.ScheduledAt = &other
+		if string(fp(in)) != string(scheduled) {
+			t.Errorf("%s: zone or nanoseconds changed the fingerprint", name)
+		}
+		later := at.Add(time.Microsecond)
+		in.ScheduledAt = &later
+		if string(fp(in)) == string(scheduled) {
+			t.Errorf("%s: a different time gave the same fingerprint", name)
 		}
 	}
 }

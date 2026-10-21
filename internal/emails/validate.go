@@ -5,6 +5,7 @@ package emails
 import (
 	"net/mail"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/google/uuid"
@@ -36,6 +37,9 @@ type CreateInput struct {
 	// IdempotencyKey is optional (empty = no deduplication). It is not part
 	// of the payload fingerprint.
 	IdempotencyKey string
+	// ScheduledAt, when set, is the earliest send time; a time at or
+	// before now sends immediately.
+	ScheduledAt *time.Time
 }
 
 // ValidationError names the invalid field. Its message never repeats the

@@ -76,13 +76,23 @@ func (in CreateInput) TemplateFingerprint() ([]byte, error) {
 	}
 	h := sha256.New()
 	h.Write([]byte(templateFingerprintVersion))
-	for _, f := range []string{in.From, in.To, in.TemplateID.String(), version, string(canonical)} {
+	for _, f := range in.withSchedule(in.From, in.To, in.TemplateID.String(), version, string(canonical)) {
 		var n [4]byte
 		binary.BigEndian.PutUint32(n[:], uint32(len(f))) //nolint:gosec // bounded by the request limit
 		h.Write(n[:])
 		h.Write([]byte(f))
 	}
 	return h.Sum(nil), nil
+}
+
+// withSchedule appends the requested send time (UTC, microseconds, as
+// stored) when there is one. Fields are length-prefixed, so requests
+// without a time keep the fingerprint they always had.
+func (in CreateInput) withSchedule(fields ...string) []string {
+	if in.ScheduledAt != nil {
+		fields = append(fields, in.ScheduledAt.UTC().Truncate(time.Microsecond).Format(time.RFC3339Nano))
+	}
+	return fields
 }
 
 // errVariablesNotObject: the variables are not one JSON object with unique
@@ -125,7 +135,7 @@ func decodeUniqueObject(raw []byte, into map[string]any) error {
 func (in CreateInput) Fingerprint() []byte {
 	h := sha256.New()
 	h.Write([]byte(fingerprintVersion))
-	for _, f := range []string{in.From, in.To, in.Subject, in.Text, in.HTML} {
+	for _, f := range in.withSchedule(in.From, in.To, in.Subject, in.Text, in.HTML) {
 		var n [4]byte
 		binary.BigEndian.PutUint32(n[:], uint32(len(f))) //nolint:gosec // fields are bounded far below 4 GiB by the request limit
 		h.Write(n[:])

@@ -12,6 +12,43 @@ import (
 	"github.com/google/uuid"
 )
 
+const cancelEmail = `-- name: CancelEmail :one
+UPDATE emails SET status = 'canceled', finished_at = now(), updated_at = now()
+WHERE id = $1 AND project_id = $2 AND status = 'queued'
+RETURNING id, project_id, sender, recipient, subject, status, provider, provider_id, attempts, last_error, created_at, updated_at, finished_at, error_code, template_id, template_version, scheduled_at
+`
+
+type CancelEmailParams struct {
+	ID        uuid.UUID
+	ProjectID uuid.UUID
+}
+
+// Cancels an email that no attempt has claimed yet.
+func (q *Queries) CancelEmail(ctx context.Context, arg CancelEmailParams) (Email, error) {
+	row := q.db.QueryRow(ctx, cancelEmail, arg.ID, arg.ProjectID)
+	var i Email
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.Sender,
+		&i.Recipient,
+		&i.Subject,
+		&i.Status,
+		&i.Provider,
+		&i.ProviderID,
+		&i.Attempts,
+		&i.LastError,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.FinishedAt,
+		&i.ErrorCode,
+		&i.TemplateID,
+		&i.TemplateVersion,
+		&i.ScheduledAt,
+	)
+	return i, err
+}
+
 const countProviderHandoffs = `-- name: CountProviderHandoffs :one
 SELECT count(*) FROM emails
 WHERE provider = $1 AND finished_at > now() - interval '24 hours'
@@ -26,11 +63,16 @@ func (q *Queries) CountProviderHandoffs(ctx context.Context, provider *string) (
 }
 
 const deleteContentsBefore = `-- name: DeleteContentsBefore :execrows
-DELETE FROM email_contents WHERE created_at < $1
+DELETE FROM email_contents c
+USING emails e
+WHERE e.id = c.email_id AND e.project_id = c.project_id
+  AND c.created_at < $1::timestamptz AND coalesce(e.scheduled_at, e.created_at) < $1::timestamptz
 `
 
-func (q *Queries) DeleteContentsBefore(ctx context.Context, createdAt time.Time) (int64, error) {
-	result, err := q.db.Exec(ctx, deleteContentsBefore, createdAt)
+// Safety net: content older than the retention limit, counted from when its
+// email was due (a scheduled email keeps its content until then).
+func (q *Queries) DeleteContentsBefore(ctx context.Context, cutoff time.Time) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteContentsBefore, cutoff)
 	if err != nil {
 		return 0, err
 	}
@@ -74,7 +116,7 @@ func (q *Queries) DeleteLockedEmails(ctx context.Context, ids []uuid.UUID) (int6
 const expireOpenEmails = `-- name: ExpireOpenEmails :many
 UPDATE emails
 SET status = 'failed', last_error = 'expired', error_code = 'expired', finished_at = now(), updated_at = now()
-WHERE status IN ('queued', 'sending') AND created_at < $1
+WHERE status IN ('queued', 'sending') AND coalesce(scheduled_at, created_at) < $1::timestamptz
 RETURNING id, project_id
 `
 
@@ -83,9 +125,10 @@ type ExpireOpenEmailsRow struct {
 	ProjectID uuid.UUID
 }
 
-// Safety net: emails stuck before a terminal state past the retention limit.
-func (q *Queries) ExpireOpenEmails(ctx context.Context, createdAt time.Time) ([]ExpireOpenEmailsRow, error) {
-	rows, err := q.db.Query(ctx, expireOpenEmails, createdAt)
+// Safety net: emails stuck before a terminal state past the retention limit,
+// counted from when they were due.
+func (q *Queries) ExpireOpenEmails(ctx context.Context, cutoff time.Time) ([]ExpireOpenEmailsRow, error) {
+	rows, err := q.db.Query(ctx, expireOpenEmails, cutoff)
 	if err != nil {
 		return nil, err
 	}
@@ -105,7 +148,7 @@ func (q *Queries) ExpireOpenEmails(ctx context.Context, createdAt time.Time) ([]
 }
 
 const getEmail = `-- name: GetEmail :one
-SELECT id, project_id, sender, recipient, subject, status, provider, provider_id, attempts, last_error, created_at, updated_at, finished_at, error_code, template_id, template_version FROM emails WHERE id = $1 AND project_id = $2
+SELECT id, project_id, sender, recipient, subject, status, provider, provider_id, attempts, last_error, created_at, updated_at, finished_at, error_code, template_id, template_version, scheduled_at FROM emails WHERE id = $1 AND project_id = $2
 `
 
 type GetEmailParams struct {
@@ -133,6 +176,7 @@ func (q *Queries) GetEmail(ctx context.Context, arg GetEmailParams) (Email, erro
 		&i.ErrorCode,
 		&i.TemplateID,
 		&i.TemplateVersion,
+		&i.ScheduledAt,
 	)
 	return i, err
 }
@@ -217,9 +261,9 @@ func (q *Queries) HandoffLeavesWindowIn(ctx context.Context, arg HandoffLeavesWi
 }
 
 const insertEmail = `-- name: InsertEmail :one
-INSERT INTO emails (project_id, sender, recipient, subject, template_id, template_version)
-VALUES ($1, $2, $3, $4, $5, $6)
-RETURNING id, project_id, sender, recipient, subject, status, provider, provider_id, attempts, last_error, created_at, updated_at, finished_at, error_code, template_id, template_version
+INSERT INTO emails (project_id, sender, recipient, subject, template_id, template_version, scheduled_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+RETURNING id, project_id, sender, recipient, subject, status, provider, provider_id, attempts, last_error, created_at, updated_at, finished_at, error_code, template_id, template_version, scheduled_at
 `
 
 type InsertEmailParams struct {
@@ -229,6 +273,7 @@ type InsertEmailParams struct {
 	Subject         string
 	TemplateID      *uuid.UUID
 	TemplateVersion *int32
+	ScheduledAt     *time.Time
 }
 
 func (q *Queries) InsertEmail(ctx context.Context, arg InsertEmailParams) (Email, error) {
@@ -239,6 +284,7 @@ func (q *Queries) InsertEmail(ctx context.Context, arg InsertEmailParams) (Email
 		arg.Subject,
 		arg.TemplateID,
 		arg.TemplateVersion,
+		arg.ScheduledAt,
 	)
 	var i Email
 	err := row.Scan(
@@ -258,6 +304,7 @@ func (q *Queries) InsertEmail(ctx context.Context, arg InsertEmailParams) (Email
 		&i.ErrorCode,
 		&i.TemplateID,
 		&i.TemplateVersion,
+		&i.ScheduledAt,
 	)
 	return i, err
 }
@@ -285,7 +332,7 @@ func (q *Queries) InsertEmailContent(ctx context.Context, arg InsertEmailContent
 }
 
 const listEmails = `-- name: ListEmails :many
-SELECT id, project_id, sender, recipient, subject, status, provider, provider_id, attempts, last_error, created_at, updated_at, finished_at, error_code, template_id, template_version FROM emails
+SELECT id, project_id, sender, recipient, subject, status, provider, provider_id, attempts, last_error, created_at, updated_at, finished_at, error_code, template_id, template_version, scheduled_at FROM emails
 WHERE project_id = $1 AND ($3::text IS NULL OR status = $3)
 ORDER BY created_at DESC, id DESC
 LIMIT $2
@@ -324,6 +371,7 @@ func (q *Queries) ListEmails(ctx context.Context, arg ListEmailsParams) ([]Email
 			&i.ErrorCode,
 			&i.TemplateID,
 			&i.TemplateVersion,
+			&i.ScheduledAt,
 		); err != nil {
 			return nil, err
 		}
@@ -336,7 +384,7 @@ func (q *Queries) ListEmails(ctx context.Context, arg ListEmailsParams) ([]Email
 }
 
 const listProjectEmails = `-- name: ListProjectEmails :many
-SELECT id, project_id, sender, recipient, subject, status, provider, provider_id, attempts, last_error, created_at, updated_at, finished_at, error_code, template_id, template_version FROM emails
+SELECT id, project_id, sender, recipient, subject, status, provider, provider_id, attempts, last_error, created_at, updated_at, finished_at, error_code, template_id, template_version, scheduled_at FROM emails
 WHERE project_id = $1
   AND id < $2::uuid
   AND id >= $3::uuid
@@ -399,6 +447,7 @@ func (q *Queries) ListProjectEmails(ctx context.Context, arg ListProjectEmailsPa
 			&i.ErrorCode,
 			&i.TemplateID,
 			&i.TemplateVersion,
+			&i.ScheduledAt,
 		); err != nil {
 			return nil, err
 		}
@@ -411,7 +460,7 @@ func (q *Queries) ListProjectEmails(ctx context.Context, arg ListProjectEmailsPa
 }
 
 const listProjectEmailsByRecipient = `-- name: ListProjectEmailsByRecipient :many
-SELECT id, project_id, sender, recipient, subject, status, provider, provider_id, attempts, last_error, created_at, updated_at, finished_at, error_code, template_id, template_version FROM emails
+SELECT id, project_id, sender, recipient, subject, status, provider, provider_id, attempts, last_error, created_at, updated_at, finished_at, error_code, template_id, template_version, scheduled_at FROM emails
 WHERE project_id = $1
   AND lower(recipient) = lower($2::text)
   AND id < $3::uuid
@@ -473,6 +522,7 @@ func (q *Queries) ListProjectEmailsByRecipient(ctx context.Context, arg ListProj
 			&i.ErrorCode,
 			&i.TemplateID,
 			&i.TemplateVersion,
+			&i.ScheduledAt,
 		); err != nil {
 			return nil, err
 		}

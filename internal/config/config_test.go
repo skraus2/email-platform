@@ -113,6 +113,8 @@ func TestLoadRejectsInvalid(t *testing.T) {
 		{"admin max above a week", map[string]string{"DATABASE_URL": devURL, "ADMIN_SESSION_MAX": "169h"}, "ADMIN_SESSION_MAX"},
 		{"template writes zero", map[string]string{"DATABASE_URL": devURL, "TEMPLATE_WRITES_PER_MINUTE": "0"}, "TEMPLATE_WRITES_PER_MINUTE"},
 		{"contact cap zero", map[string]string{"DATABASE_URL": devURL, "CONTACT_MAX_PER_PROJECT": "0"}, "CONTACT_MAX_PER_PROJECT"},
+		{"schedule too far", map[string]string{"DATABASE_URL": devURL, "SCHEDULE_MAX_AHEAD": "721h"}, "SCHEDULE_MAX_AHEAD"},
+		{"schedule too short", map[string]string{"DATABASE_URL": devURL, "SCHEDULE_MAX_AHEAD": "30s"}, "SCHEDULE_MAX_AHEAD"},
 		{"audience cap zero", map[string]string{"DATABASE_URL": devURL, "AUDIENCE_MAX_PER_PROJECT": "0"}, "AUDIENCE_MAX_PER_PROJECT"},
 		{"audience size zero", map[string]string{"DATABASE_URL": devURL, "AUDIENCE_MAX_CONTACTS": "0"}, "AUDIENCE_MAX_CONTACTS"},
 		{"template storage not a number", map[string]string{"DATABASE_URL": devURL, "TEMPLATE_MAX_STORAGE_BYTES": "50MiB"}, "TEMPLATE_MAX_STORAGE_BYTES"},
@@ -207,6 +209,9 @@ func TestLoadRetryDefaults(t *testing.T) {
 	if cfg.TemplateMaxPerProject != 200 || cfg.TemplateMaxVersions != 500 || cfg.TemplateMaxStorageBytes != 50<<20 || cfg.TemplateWritesPerMinute != 60 ||
 		cfg.AdminSessionIdle != 30*time.Minute || cfg.AdminSessionMax != 12*time.Hour {
 		t.Errorf("template caps = %d %d %d %d", cfg.TemplateMaxPerProject, cfg.TemplateMaxVersions, cfg.TemplateMaxStorageBytes, cfg.TemplateWritesPerMinute)
+	}
+	if cfg.ScheduleMaxAhead != 720*time.Hour {
+		t.Errorf("ScheduleMaxAhead = %v", cfg.ScheduleMaxAhead)
 	}
 	if cfg.ContactMaxPerProject != 250_000 || cfg.AudienceMaxPerProject != 100 || cfg.AudienceMaxContacts != 100_000 {
 		t.Errorf("contact caps = %d %d %d", cfg.ContactMaxPerProject, cfg.AudienceMaxPerProject, cfg.AudienceMaxContacts)

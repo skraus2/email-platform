@@ -571,7 +571,9 @@ func waitForLockWait(t *testing.T, pool *pgxpool.Pool) {
 
 type noopEnqueuer struct{}
 
-func (noopEnqueuer) EnqueueSendEmail(context.Context, pgx.Tx, jobs.SendEmailArgs) error { return nil }
+func (noopEnqueuer) EnqueueSendEmail(context.Context, pgx.Tx, jobs.SendEmailArgs, jobs.SendOpts) error {
+	return nil
+}
 
 // After a permanent bounce, the next send to that recipient is refused.
 func TestBounceRefusesNextSend(t *testing.T) {

@@ -112,13 +112,36 @@ func NewEnqueuer(pool *pgxpool.Pool, logger *slog.Logger, sendMaxAttempts int) (
 	return &Enqueuer{client: c, maxAttempts: sendMaxAttempts}, nil
 }
 
+// SendOpts adjust a send_email job.
+type SendOpts struct {
+	// ScheduledAt: the job runs not before this time (zero: now).
+	ScheduledAt time.Time
+	// Bulk marks a broadcast send: it is fetched after every available
+	// transactional send of the queue.
+	Bulk bool
+}
+
+// Job priorities within a queue: lower numbers are fetched first.
+const (
+	priorityTransactional = 1
+	priorityBulk          = 2
+)
+
 // EnqueueSendEmail inserts the dispatch job in tx. The job only becomes
 // visible to workers when tx commits, and disappears if it rolls back.
-func (e *Enqueuer) EnqueueSendEmail(ctx context.Context, tx pgx.Tx, args SendEmailArgs) error {
-	if _, err := e.client.InsertTx(ctx, tx, args, &river.InsertOpts{MaxAttempts: e.maxAttempts}); err != nil {
+func (e *Enqueuer) EnqueueSendEmail(ctx context.Context, tx pgx.Tx, args SendEmailArgs, opts SendOpts) error {
+	if _, err := e.client.InsertTx(ctx, tx, args, e.sendOpts(opts)); err != nil {
 		return fmt.Errorf("enqueue send_email: %w", err)
 	}
 	return nil
+}
+
+func (e *Enqueuer) sendOpts(opts SendOpts) *river.InsertOpts {
+	o := &river.InsertOpts{MaxAttempts: e.maxAttempts, ScheduledAt: opts.ScheduledAt, Priority: priorityTransactional}
+	if opts.Bulk {
+		o.Priority = priorityBulk
+	}
+	return o
 }
 
 // EnqueueWebhooks inserts delivery jobs in tx, in the webhook queue.

@@ -47,7 +47,7 @@ func TestEnqueueIsTransactional(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := enq.EnqueueSendEmail(ctx, tx, args); err != nil {
+	if err := enq.EnqueueSendEmail(ctx, tx, args, jobs.SendOpts{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := tx.Rollback(ctx); err != nil {
@@ -58,7 +58,7 @@ func TestEnqueueIsTransactional(t *testing.T) {
 	}
 
 	tx, _ = pool.Begin(ctx)
-	if err := enq.EnqueueSendEmail(ctx, tx, args); err != nil {
+	if err := enq.EnqueueSendEmail(ctx, tx, args, jobs.SendOpts{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -143,7 +143,7 @@ func TestWorkerRunsSendEmailAndCleanup(t *testing.T) {
 	enq, _ := jobs.NewEnqueuer(pool, quiet, testMaxAttempts)
 	args := jobs.SendEmailArgs{EmailID: uuid.New(), ProjectID: uuid.New()}
 	tx, _ := pool.Begin(ctx)
-	if err := enq.EnqueueSendEmail(ctx, tx, args); err != nil {
+	if err := enq.EnqueueSendEmail(ctx, tx, args, jobs.SendOpts{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -177,7 +177,7 @@ func TestStuckJobIsRescuedAndRetried(t *testing.T) {
 	enq, _ := jobs.NewEnqueuer(pool, quiet, testMaxAttempts)
 	args := jobs.SendEmailArgs{EmailID: uuid.New(), ProjectID: uuid.New()}
 	tx, _ := pool.Begin(ctx)
-	if err := enq.EnqueueSendEmail(ctx, tx, args); err != nil {
+	if err := enq.EnqueueSendEmail(ctx, tx, args, jobs.SendOpts{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -235,7 +235,7 @@ func TestStartContextCancelDoesNotCancelRunningJobs(t *testing.T) {
 	}
 	enq, _ := jobs.NewEnqueuer(pool, quiet, testMaxAttempts)
 	tx, _ := pool.Begin(ctx)
-	_ = enq.EnqueueSendEmail(ctx, tx, jobs.SendEmailArgs{EmailID: uuid.New(), ProjectID: uuid.New()})
+	_ = enq.EnqueueSendEmail(ctx, tx, jobs.SendEmailArgs{EmailID: uuid.New(), ProjectID: uuid.New()}, jobs.SendOpts{})
 	_ = tx.Commit(ctx)
 
 	select {
@@ -279,7 +279,7 @@ func TestFailedSendIsRescheduledByPolicy(t *testing.T) {
 	t.Cleanup(func() { _ = w.Stop(5 * time.Second) })
 	enq, _ := jobs.NewEnqueuer(pool, quiet, testMaxAttempts)
 	tx, _ := pool.Begin(ctx)
-	if err := enq.EnqueueSendEmail(ctx, tx, jobs.SendEmailArgs{EmailID: uuid.New(), ProjectID: uuid.New()}); err != nil {
+	if err := enq.EnqueueSendEmail(ctx, tx, jobs.SendEmailArgs{EmailID: uuid.New(), ProjectID: uuid.New()}, jobs.SendOpts{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := tx.Commit(ctx); err != nil {

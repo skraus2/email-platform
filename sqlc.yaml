@@ -29,6 +29,7 @@ sql:
       - db/migrations/00023_operator_search_indexes.sql
       - db/migrations/00027_contacts.sql
       - db/migrations/00028_audiences.sql
+      - db/migrations/00029_scheduled_sends.sql
     queries: db/queries
     gen:
       go:

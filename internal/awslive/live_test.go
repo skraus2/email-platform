@@ -248,4 +248,6 @@ func status(t *testing.T, pool *pgxpool.Pool, e emails.Email) string {
 // noJobs: the test dispatches itself instead of through the job queue.
 type noJobs struct{}
 
-func (noJobs) EnqueueSendEmail(context.Context, pgx.Tx, jobs.SendEmailArgs) error { return nil }
+func (noJobs) EnqueueSendEmail(context.Context, pgx.Tx, jobs.SendEmailArgs, jobs.SendOpts) error {
+	return nil
+}

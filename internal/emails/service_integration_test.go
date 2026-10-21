@@ -28,7 +28,7 @@ const unlimited = 1_000_000
 
 type failingEnqueuer struct{}
 
-func (failingEnqueuer) EnqueueSendEmail(context.Context, pgx.Tx, jobs.SendEmailArgs) error {
+func (failingEnqueuer) EnqueueSendEmail(context.Context, pgx.Tx, jobs.SendEmailArgs, jobs.SendOpts) error {
 	return errors.New("queue unavailable")
 }
 
@@ -144,4 +144,6 @@ func TestContentProjectMustMatchEmailProject(t *testing.T) {
 
 type noopEnqueuer struct{}
 
-func (noopEnqueuer) EnqueueSendEmail(context.Context, pgx.Tx, jobs.SendEmailArgs) error { return nil }
+func (noopEnqueuer) EnqueueSendEmail(context.Context, pgx.Tx, jobs.SendEmailArgs, jobs.SendOpts) error {
+	return nil
+}

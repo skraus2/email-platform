@@ -18,7 +18,7 @@ import (
 // EventTypes are the webhook event types an endpoint can subscribe to.
 var EventTypes = []string{
 	"email.captured", "email.submitted", "email.failed",
-	"email.delivered", "email.bounced", "email.complained",
+	"email.delivered", "email.bounced", "email.complained", "email.canceled",
 }
 
 // Endpoint is a webhook endpoint without its secret.

@@ -32,6 +32,7 @@ type EmailService interface {
 	Get(ctx context.Context, projectID, id uuid.UUID) (emails.Email, error)
 	List(ctx context.Context, projectID uuid.UUID, f emails.ListFilter, limit int) ([]emails.Email, bool, error)
 	Events(ctx context.Context, projectID, id, after uuid.UUID, limit int) ([]events.Event, bool, error)
+	Cancel(ctx context.Context, projectID, id uuid.UUID) (emails.Email, error)
 }
 
 // createEmailRequest mirrors CreateEmailRequest in api/openapi.yaml. The
@@ -45,6 +46,7 @@ type createEmailRequest struct {
 	TemplateID      json.RawMessage `json:"template_id"`
 	TemplateVersion json.RawMessage `json:"template_version"`
 	Variables       json.RawMessage `json:"variables"`
+	ScheduledAt     *string         `json:"scheduled_at"`
 }
 
 func (s *Server) handleCreateEmail(w http.ResponseWriter, r *http.Request) {
@@ -75,6 +77,14 @@ func (s *Server) handleCreateEmail(w http.ResponseWriter, r *http.Request) {
 	if field, msg := parseTemplateForm(req, &in); field != "" {
 		writeError(w, http.StatusUnprocessableEntity, "validation_failed", field+": "+msg)
 		return
+	}
+	if req.ScheduledAt != nil {
+		at, err := time.Parse(time.RFC3339Nano, *req.ScheduledAt)
+		if err != nil {
+			writeError(w, http.StatusUnprocessableEntity, "validation_failed", "scheduled_at: must be an RFC 3339 timestamp")
+			return
+		}
+		in.ScheduledAt = &at
 	}
 
 	p := principalFrom(r.Context())
@@ -135,6 +145,32 @@ func (s *Server) handleCreateEmail(w http.ResponseWriter, r *http.Request) {
 	// The creation response always says "queued"; a replay repeats it even
 	// if the email has moved on (its current status is on GET).
 	writeJSON(w, http.StatusAccepted, map[string]string{"id": e.ID.String(), "status": "queued"})
+}
+
+// handleCancelEmail cancels a queued email of the project.
+func (s *Server) handleCancelEmail(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	p := principalFrom(r.Context())
+	e, err := s.emails.Cancel(r.Context(), p.ProjectID, id)
+	switch {
+	case errors.Is(err, emails.ErrNotFound):
+		writeError(w, http.StatusNotFound, "not_found", "resource not found")
+	case errors.Is(err, emails.ErrNotCancelable):
+		writeError(w, http.StatusConflict, "email_not_cancelable", "only a queued email can be cancelled; GET it for its current status")
+	case database.Unavailable(err):
+		s.logger.ErrorContext(r.Context(), "cancel email: database unavailable",
+			slog.String("project_id", p.ProjectID.String()), slog.Any("error", err))
+		writeUnavailable(w)
+	case err != nil:
+		s.logger.ErrorContext(r.Context(), "cancel email failed",
+			slog.String("project_id", p.ProjectID.String()), slog.Any("error", err))
+		writeError(w, http.StatusInternalServerError, "internal_error", "internal error")
+	default:
+		writeJSON(w, http.StatusOK, toEmailResponse(e))
+	}
 }
 
 func writeInvalidIdempotencyKey(w http.ResponseWriter) {

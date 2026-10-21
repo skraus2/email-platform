@@ -1,6 +1,6 @@
 -- name: InsertEmail :one
-INSERT INTO emails (project_id, sender, recipient, subject, template_id, template_version)
-VALUES ($1, $2, $3, $4, $5, $6)
+INSERT INTO emails (project_id, sender, recipient, subject, template_id, template_version, scheduled_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
 RETURNING *;
 
 -- name: InsertEmailContent :exec
@@ -76,14 +76,26 @@ WHERE id = $1 AND project_id = $2 AND status = 'queued';
 DELETE FROM email_contents WHERE email_id = $1 AND project_id = $2;
 
 -- name: ExpireOpenEmails :many
--- Safety net: emails stuck before a terminal state past the retention limit.
+-- Safety net: emails stuck before a terminal state past the retention limit,
+-- counted from when they were due.
 UPDATE emails
 SET status = 'failed', last_error = 'expired', error_code = 'expired', finished_at = now(), updated_at = now()
-WHERE status IN ('queued', 'sending') AND created_at < $1
+WHERE status IN ('queued', 'sending') AND coalesce(scheduled_at, created_at) < sqlc.arg(cutoff)::timestamptz
 RETURNING id, project_id;
 
 -- name: DeleteContentsBefore :execrows
-DELETE FROM email_contents WHERE created_at < $1;
+-- Safety net: content older than the retention limit, counted from when its
+-- email was due (a scheduled email keeps its content until then).
+DELETE FROM email_contents c
+USING emails e
+WHERE e.id = c.email_id AND e.project_id = c.project_id
+  AND c.created_at < sqlc.arg(cutoff)::timestamptz AND coalesce(e.scheduled_at, e.created_at) < sqlc.arg(cutoff)::timestamptz;
+
+-- name: CancelEmail :one
+-- Cancels an email that no attempt has claimed yet.
+UPDATE emails SET status = 'canceled', finished_at = now(), updated_at = now()
+WHERE id = $1 AND project_id = $2 AND status = 'queued'
+RETURNING *;
 
 -- name: ListEmails :many
 -- Admin failure inspection: newest first, optionally one status only.

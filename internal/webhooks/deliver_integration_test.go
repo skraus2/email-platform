@@ -535,3 +535,38 @@ func TestDelayedProjectionCreatesTwoDeliveries(t *testing.T) {
 		t.Fatalf("deliveries for %v, want [submitted bounced]", types)
 	}
 }
+
+func TestCanceledEventReachesSubscribedEndpoints(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	f := newDeliveryFixture(t)
+	r := newReceiver(t)
+	all, _ := f.endpoint(t, r.srv.URL+"/all")
+	if !slices.Contains(all.EventTypes, "email.canceled") {
+		t.Fatalf("an endpoint without a type list gets %v", all.EventTypes)
+	}
+	f.endpoint(t, r.srv.URL+"/canceled", "email.canceled")
+	f.endpoint(t, r.srv.URL+"/bounces", "email.bounced")
+
+	_, deliveries := f.change(t, "canceled")
+	if len(deliveries) != 2 {
+		t.Fatalf("deliveries = %d, want 2", len(deliveries))
+	}
+	d := f.deliverer(t, lax, 3, 5*time.Second)
+	for _, a := range deliveries {
+		if err := d.Deliver(ctx, a, attempt(1)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.bodies) != 2 {
+		t.Fatalf("requests = %d", len(r.bodies))
+	}
+	for _, body := range r.bodies {
+		var ev struct{ Type string }
+		if err := json.Unmarshal(body, &ev); err != nil || ev.Type != "email.canceled" {
+			t.Fatalf("payload type %q (%v)", ev.Type, err)
+		}
+	}
+}

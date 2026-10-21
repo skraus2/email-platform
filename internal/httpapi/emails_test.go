@@ -54,6 +54,14 @@ func (f *fakeEmails) List(context.Context, uuid.UUID, emails.ListFilter, int) ([
 	return nil, false, nil
 }
 
+func (f *fakeEmails) Cancel(context.Context, uuid.UUID, uuid.UUID) (emails.Email, error) {
+	if f.err != nil {
+		return emails.Email{}, f.err
+	}
+	at := time.Date(2026, 10, 22, 9, 0, 0, 0, time.FixedZone("x", 3600))
+	return emails.Email{ID: uuid.MustParse("01a13601-4b3e-72cd-9dcd-4d9159938763"), Status: "canceled", ScheduledAt: &at}, nil
+}
+
 func (f *fakeEmails) Events(context.Context, uuid.UUID, uuid.UUID, uuid.UUID, int) ([]events.Event, bool, error) {
 	return nil, false, emails.ErrNotFound
 }
@@ -363,4 +371,67 @@ func TestCreateEmailSenderNotVerified(t *testing.T) {
 		t.Fatalf("code = %d, want 422", rec.Code)
 	}
 	assertErrorCode(t, rec, "sender_not_verified")
+}
+
+func TestCancelEmailMapping(t *testing.T) {
+	id := uuid.NewString()
+	for _, tc := range []struct {
+		err    error
+		status int
+		code   string
+	}{
+		{emails.ErrNotFound, 404, "not_found"},
+		{emails.ErrNotCancelable, 409, "email_not_cancelable"},
+		{errors.New("boom secret-detail"), 500, "internal_error"},
+	} {
+		s, _ := emailServer(t, &fakeEmails{err: tc.err}, principal)
+		req := httptest.NewRequest(http.MethodPost, "/v1/emails/"+id+"/cancel", nil)
+		req.Header.Set("Authorization", "Bearer "+testToken)
+		rec := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rec, req)
+		if rec.Code != tc.status || !strings.Contains(rec.Body.String(), tc.code) || strings.Contains(rec.Body.String(), "secret-detail") {
+			t.Errorf("%v: %d %s", tc.err, rec.Code, rec.Body)
+		}
+	}
+	s, _ := emailServer(t, &fakeEmails{}, principal)
+	req := httptest.NewRequest(http.MethodPost, "/v1/emails/"+id+"/cancel", nil)
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"status":"canceled"`) || !strings.Contains(rec.Body.String(), `"scheduled_at":"2026-10-22T08:00:00Z"`) {
+		t.Fatalf("cancel: %d %s", rec.Code, rec.Body)
+	}
+	readOnly := auth.Principal{ProjectID: uuid.New(), Scopes: []string{auth.ScopeEmailsRead}}
+	s, _ = emailServer(t, &fakeEmails{}, readOnly)
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/v1/emails/"+id+"/cancel", nil)
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != 403 {
+		t.Fatalf("read scope: %d", rec.Code)
+	}
+}
+
+func TestCreateEmailScheduledAt(t *testing.T) {
+	f := &fakeEmails{}
+	s, _ := emailServer(t, f, principal)
+	rec := post(t, s, `{"from":"a@example.test","to":"b@example.test","subject":"s","text":"t","scheduled_at":"2026-10-22T10:00:00+02:00"}`, nil)
+	if rec.Code != 202 || len(f.created) != 1 || f.created[0].ScheduledAt == nil ||
+		!f.created[0].ScheduledAt.Equal(time.Date(2026, 10, 22, 8, 0, 0, 0, time.UTC)) {
+		t.Fatalf("scheduled: %d %+v", rec.Code, f.created)
+	}
+	for _, v := range []string{`"tomorrow"`, `"2026-10-22"`, `1730000000`, `null`} {
+		f := &fakeEmails{}
+		s, _ := emailServer(t, f, principal)
+		rec := post(t, s, `{"from":"a@example.test","to":"b@example.test","subject":"s","text":"t","scheduled_at":`+v+`}`, nil)
+		if v == "null" {
+			if rec.Code != 202 || f.created[0].ScheduledAt != nil {
+				t.Errorf("null: %d", rec.Code)
+			}
+			continue
+		}
+		if rec.Code == 202 || len(f.created) != 0 || strings.Contains(rec.Body.String(), "tomorrow") {
+			t.Errorf("%s: %d %s", v, rec.Code, rec.Body)
+		}
+	}
 }

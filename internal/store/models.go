@@ -84,6 +84,7 @@ type Email struct {
 	ErrorCode       *string
 	TemplateID      *uuid.UUID
 	TemplateVersion *int32
+	ScheduledAt     *time.Time
 }
 
 type EmailContent struct {

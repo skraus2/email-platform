@@ -24,7 +24,7 @@ import (
 
 // Enqueuer inserts the dispatch job inside the caller's transaction.
 type Enqueuer interface {
-	EnqueueSendEmail(ctx context.Context, tx pgx.Tx, args jobs.SendEmailArgs) error
+	EnqueueSendEmail(ctx context.Context, tx pgx.Tx, args jobs.SendEmailArgs, opts jobs.SendOpts) error
 }
 
 // Email is the client-visible state of a send request.
@@ -47,6 +47,8 @@ type Email struct {
 	// send was rendered from (nil for raw sends).
 	TemplateID      *uuid.UUID
 	TemplateVersion *int
+	// ScheduledAt is the planned send time (nil: immediate).
+	ScheduledAt *time.Time
 	// Replayed is set by Create when the request repeated an earlier one
 	// with the same idempotency key: the email is that earlier one.
 	Replayed bool
@@ -56,7 +58,7 @@ func fromRow(r store.Email) Email {
 	e := Email{
 		ID: r.ID, ProjectID: r.ProjectID, Status: r.Status, From: r.Sender, To: r.Recipient,
 		Subject: r.Subject, CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt, FinishedAt: r.FinishedAt,
-		Attempts: int(r.Attempts), ErrorCode: r.ErrorCode, TemplateID: r.TemplateID,
+		Attempts: int(r.Attempts), ErrorCode: r.ErrorCode, TemplateID: r.TemplateID, ScheduledAt: r.ScheduledAt,
 	}
 	if r.TemplateVersion != nil {
 		v := int(*r.TemplateVersion)
@@ -83,7 +85,16 @@ type Service struct {
 	compiles    atomic.Int64
 	renderSlots chan struct{}
 	renderWait  time.Duration
+	// scheduleAhead bounds how far in the future a send may be planned.
+	scheduleAhead time.Duration
+	// events records cancellations (with the webhook hook of the process).
+	events *events.Recorder
 }
+
+// DefaultScheduleMaxAhead is how far ahead a send may be planned unless
+// LimitScheduleAhead sets less; content of a planned send is kept until
+// then.
+const DefaultScheduleMaxAhead = 720 * time.Hour
 
 // Template render limits per process. A compile of the largest version
 // briefly holds about 60 MiB of heap, so few run at once; the cache keeps at
@@ -104,8 +115,19 @@ func NewService(pool *pgxpool.Pool, enq Enqueuer, logger *slog.Logger, perMinute
 		listSlots: make(chan struct{}, defaultListSlots), listWait: defaultListWait, listTimeout: defaultListTimeout,
 		compiled:    newCompiledCache(compiledCacheBytes, compiledCacheEntryBytes),
 		renderSlots: make(chan struct{}, defaultRenderSlots), renderWait: defaultRenderWait,
+		scheduleAhead: DefaultScheduleMaxAhead, events: events.NewRecorder(pool, logger),
 	}
 }
+
+// LimitScheduleAhead sets how far in the future a send may be planned
+// (at most DefaultScheduleMaxAhead).
+func (s *Service) LimitScheduleAhead(d time.Duration) {
+	s.scheduleAhead = min(max(d, time.Minute), DefaultScheduleMaxAhead)
+}
+
+// Recorder returns the recorder cancellations go through (set its
+// status-change hook before the service is used).
+func (s *Service) Recorder() *events.Recorder { return s.events }
 
 // RequireVerifiedSenders makes Create refuse a from address that matches
 // no verified sender identity of the project (ErrSenderNotVerified).
@@ -128,6 +150,17 @@ func (e *RateLimitError) Error() string { return "send rate limit exceeded" }
 func (s *Service) Create(ctx context.Context, projectID uuid.UUID, in CreateInput) (Email, error) {
 	if err := in.Validate(); err != nil {
 		return Email{}, err
+	}
+	now := time.Now()
+	var scheduledAt *time.Time
+	if in.ScheduledAt != nil {
+		if in.ScheduledAt.After(now.Add(s.scheduleAhead)) {
+			return Email{}, invalid("scheduled_at", fmt.Sprintf("must be at most %s ahead", s.scheduleAhead))
+		}
+		if in.ScheduledAt.After(now) {
+			at := in.ScheduledAt.UTC().Truncate(time.Microsecond)
+			scheduledAt = &at
+		}
 	}
 	var key *store.GetIdempotencyKeyParams
 	var fingerprint []byte
@@ -207,7 +240,7 @@ func (s *Service) Create(ctx context.Context, projectID uuid.UUID, in CreateInpu
 		var err error
 		row, err = q.InsertEmail(ctx, store.InsertEmailParams{
 			ProjectID: projectID, Sender: in.From, Recipient: in.To, Subject: in.Subject,
-			TemplateID: templateID, TemplateVersion: templateVersion,
+			TemplateID: templateID, TemplateVersion: templateVersion, ScheduledAt: scheduledAt,
 		})
 		if err != nil {
 			return fmt.Errorf("insert email: %w", err)
@@ -217,7 +250,11 @@ func (s *Service) Create(ctx context.Context, projectID uuid.UUID, in CreateInpu
 		}); err != nil {
 			return fmt.Errorf("insert email content: %w", err)
 		}
-		if err := s.enq.EnqueueSendEmail(ctx, tx, jobs.SendEmailArgs{EmailID: row.ID, ProjectID: projectID}); err != nil {
+		var opts jobs.SendOpts
+		if scheduledAt != nil {
+			opts.ScheduledAt = *scheduledAt
+		}
+		if err := s.enq.EnqueueSendEmail(ctx, tx, jobs.SendEmailArgs{EmailID: row.ID, ProjectID: projectID}, opts); err != nil {
 			return err
 		}
 		if key != nil {
@@ -435,6 +472,45 @@ func (s *Service) Get(ctx context.Context, projectID, id uuid.UUID) (Email, erro
 	if err != nil {
 		return Email{}, fmt.Errorf("get email: %w", err)
 	}
+	return fromRow(row), nil
+}
+
+// ErrNotCancelable means the email is no longer queued: a worker claimed it
+// or it reached a final state.
+var ErrNotCancelable = errors.New("email can no longer be cancelled")
+
+// Cancel cancels a queued email of the project: it becomes canceled, its
+// content is deleted and a canceled event is recorded, all in one
+// transaction. The claim of a worker and Cancel exclude each other through
+// the status.
+func (s *Service) Cancel(ctx context.Context, projectID, id uuid.UUID) (Email, error) {
+	var row store.Email
+	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		q := store.New(tx)
+		var err error
+		row, err = q.CancelEmail(ctx, store.CancelEmailParams{ID: id, ProjectID: projectID})
+		if errors.Is(err, pgx.ErrNoRows) {
+			if _, err := q.GetEmail(ctx, store.GetEmailParams{ID: id, ProjectID: projectID}); err != nil {
+				if errors.Is(err, pgx.ErrNoRows) {
+					return ErrNotFound
+				}
+				return fmt.Errorf("get email: %w", err)
+			}
+			return ErrNotCancelable
+		}
+		if err != nil {
+			return fmt.Errorf("cancel email: %w", err)
+		}
+		if err := q.DeleteEmailContent(ctx, store.DeleteEmailContentParams{EmailID: id, ProjectID: projectID}); err != nil {
+			return fmt.Errorf("delete content: %w", err)
+		}
+		return s.events.Transition(ctx, tx, projectID, id, events.TypeCanceled, "", "")
+	})
+	if err != nil {
+		return Email{}, err
+	}
+	s.logger.InfoContext(ctx, "email canceled",
+		slog.String("project_id", projectID.String()), slog.String("email_id", id.String()))
 	return fromRow(row), nil
 }
 

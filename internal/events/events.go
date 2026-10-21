@@ -68,6 +68,7 @@ const (
 	TypeCaptured  = "captured"
 	TypeSubmitted = "submitted"
 	TypeFailed    = "failed"
+	TypeCanceled  = "canceled"
 )
 
 // Transition records the platform event for a status change the caller just

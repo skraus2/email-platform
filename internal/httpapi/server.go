@@ -71,6 +71,8 @@ func New(d Deps) *Server {
 	mux.HandleFunc("/v1/emails/{id}", methodNotAllowed(http.MethodGet))
 	mux.HandleFunc("GET /v1/emails/{id}/events", s.requireScope(auth.ScopeEmailsRead, s.handleListEvents))
 	mux.HandleFunc("/v1/emails/{id}/events", methodNotAllowed(http.MethodGet))
+	mux.HandleFunc("POST /v1/emails/{id}/cancel", s.requireScope(auth.ScopeEmailsSend, s.handleCancelEmail))
+	mux.HandleFunc("/v1/emails/{id}/cancel", methodNotAllowed(http.MethodPost))
 	mux.HandleFunc("POST /v1/templates", s.requireScope(auth.ScopeTemplatesWrite, s.handleCreateTemplate))
 	mux.HandleFunc("/v1/templates", methodNotAllowed(http.MethodPost))
 	mux.HandleFunc("GET /v1/templates/{id}", s.requireScope(auth.ScopeTemplatesRead, s.handleGetTemplate))
