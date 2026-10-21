@@ -435,3 +435,12 @@ func TestCreateEmailScheduledAt(t *testing.T) {
 		}
 	}
 }
+
+func TestCreateEmailScheduleLimit(t *testing.T) {
+	s, _ := emailServer(t, &fakeEmails{err: emails.ErrScheduleLimit}, principal)
+	rec := post(t, s, okBody, nil)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("code = %d, want 422", rec.Code)
+	}
+	assertErrorCode(t, rec, "schedule_limit_reached")
+}

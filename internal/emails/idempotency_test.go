@@ -200,3 +200,16 @@ func TestScheduledFingerprint(t *testing.T) {
 		}
 	}
 }
+
+func TestTemplateFingerprintIsStable(t *testing.T) {
+	// Keys stored before scheduled sends existed must keep replaying.
+	in := CreateInput{From: "a@example.test", To: "b@example.test", TemplateID: uuid.MustParse("0192f0aa-0000-7000-8000-000000000001"),
+		TemplateVersion: 3, Variables: []byte(`{"name":"Ada","n":1.50}`)}
+	fp, err := in.TemplateFingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := hex.EncodeToString(fp); got != "c99eeb1688683630fb05dfecb8b098bed20885d07e73be1f7caabd52bf351b6a" {
+		t.Fatalf("template fingerprint changed: %s", got)
+	}
+}

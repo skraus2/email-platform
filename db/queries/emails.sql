@@ -92,8 +92,9 @@ WHERE e.id = c.email_id AND e.project_id = c.project_id
   AND c.created_at < sqlc.arg(cutoff)::timestamptz AND coalesce(e.scheduled_at, e.created_at) < sqlc.arg(cutoff)::timestamptz;
 
 -- name: CancelEmail :one
--- Cancels an email that no attempt has claimed yet.
-UPDATE emails SET status = 'canceled', finished_at = now(), updated_at = now()
+-- Cancels an email that no attempt has claimed yet. A queued email may carry
+-- the error of a failed earlier attempt; a cancelled one never failed.
+UPDATE emails SET status = 'canceled', error_code = NULL, last_error = NULL, finished_at = now(), updated_at = now()
 WHERE id = $1 AND project_id = $2 AND status = 'queued'
 RETURNING *;
 
@@ -173,3 +174,7 @@ WHERE e.id = ANY (sqlc.arg(ids)::uuid[])
   AND NOT EXISTS (SELECT 1 FROM email_events ev
                   JOIN webhook_deliveries wd ON wd.event_id = ev.id AND wd.project_id = ev.project_id
                   WHERE ev.email_id = e.id AND ev.project_id = e.project_id AND wd.status = 'pending');
+
+-- name: CountOpenScheduled :one
+-- Planned emails of the project that are still waiting.
+SELECT count(*) FROM emails WHERE project_id = $1 AND status = 'queued' AND scheduled_at IS NOT NULL;

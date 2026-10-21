@@ -171,6 +171,27 @@ grep -q "\"type\":\"email.captured\",\"id\":\"[0-9a-f-]\{36\}\",\"email_id\":\"$
   fail "webhook not a valid email.captured: $(grep "$id" "$TMP/hooks.jsonl")"
 echo "receiver -> 1 email.captured webhook, signature valid"
 
+# A planned email, cancelled through the API process: never sent, and the
+# cancellation reaches the webhook endpoint.
+later=$(date -u -v+1H +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d '+1 hour' +%Y-%m-%dT%H:%M:%SZ)
+code=$(curl -sS -o "$TMP/sched.json" -w '%{http_code}' -X POST "http://$ADDR/v1/emails" \
+  -H @"$TMP/auth.header" -H 'Content-Type: application/json' \
+  -d "{\"from\":\"smoke@example.test\",\"to\":\"smoke-recipient@example.test\",\"subject\":\"planned $subject\",\"text\":\"smoke body\",\"scheduled_at\":\"$later\"}")
+[[ "$code" == 202 ]] || fail "POST /v1/emails scheduled: $code $(cat "$TMP/sched.json")"
+sched_id=$(sed -nE 's/.*"id":"([0-9a-f-]{36})".*/\1/p' "$TMP/sched.json")
+code=$(curl -sS -o "$TMP/cancel.json" -w '%{http_code}' -X POST "http://$ADDR/v1/emails/$sched_id/cancel" -H @"$TMP/auth.header")
+[[ "$code" == 200 ]] && grep -q '"status":"canceled"' "$TMP/cancel.json" || fail "POST /v1/emails/$sched_id/cancel: $code $(cat "$TMP/cancel.json")"
+hooks=0
+for _ in $(seq 1 100); do
+  hooks=$(grep -c "\"email_id\":\"$sched_id\"" "$TMP/hooks.jsonl" 2>/dev/null || true)
+  [[ "$hooks" -ge 1 ]] && break
+  sleep 0.1
+done
+[[ "$hooks" == 1 ]] || fail "receiver got $hooks webhooks for the cancelled $sched_id, want 1"
+grep -q "\"type\":\"email.canceled\",\"id\":\"[0-9a-f-]\{36\}\",\"email_id\":\"$sched_id\",\"valid\":true" "$TMP/hooks.jsonl" ||
+  fail "webhook not a valid email.canceled: $(grep "$sched_id" "$TMP/hooks.jsonl")"
+echo "scheduled email cancelled -> 1 email.canceled webhook, signature valid"
+
 # Parallel requests with one idempotency key: one email, one message.
 post_keyed() {
   curl -sS -o "$TMP/par.$1.json" -w '%{http_code}' -X POST "http://$ADDR/v1/emails" \

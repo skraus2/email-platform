@@ -87,8 +87,10 @@ type Service struct {
 	compiles    atomic.Int64
 	renderSlots chan struct{}
 	renderWait  time.Duration
-	// scheduleAhead bounds how far in the future a send may be planned.
+	// scheduleAhead bounds how far in the future a send may be planned;
+	// scheduledOpen caps a project's planned sends still waiting.
 	scheduleAhead time.Duration
+	scheduledOpen int
 	// events records cancellations (with the webhook hook of the process).
 	events *events.Recorder
 }
@@ -97,6 +99,14 @@ type Service struct {
 // LimitScheduleAhead sets less; content of a planned send is kept until
 // then.
 const DefaultScheduleMaxAhead = 720 * time.Hour
+
+// DefaultScheduleMaxOpen caps a project's waiting planned sends unless
+// LimitScheduledOpen sets another value.
+const DefaultScheduleMaxOpen = 10_000
+
+// ErrScheduleLimit means the project already has as many planned sends
+// waiting as it may.
+var ErrScheduleLimit = errors.New("scheduled send limit reached")
 
 // Template render limits per process. A compile of the largest version
 // briefly holds about 60 MiB of heap, so few run at once; the cache keeps at
@@ -117,7 +127,7 @@ func NewService(pool *pgxpool.Pool, enq Enqueuer, logger *slog.Logger, perMinute
 		listSlots: make(chan struct{}, defaultListSlots), listWait: defaultListWait, listTimeout: defaultListTimeout,
 		compiled:    newCompiledCache(compiledCacheBytes, compiledCacheEntryBytes),
 		renderSlots: make(chan struct{}, defaultRenderSlots), renderWait: defaultRenderWait,
-		scheduleAhead: DefaultScheduleMaxAhead, events: events.NewRecorder(pool, logger),
+		scheduleAhead: DefaultScheduleMaxAhead, scheduledOpen: DefaultScheduleMaxOpen, events: events.NewRecorder(pool, logger),
 	}
 }
 
@@ -126,6 +136,11 @@ func NewService(pool *pgxpool.Pool, enq Enqueuer, logger *slog.Logger, perMinute
 func (s *Service) LimitScheduleAhead(d time.Duration) {
 	s.scheduleAhead = min(max(d, time.Minute), DefaultScheduleMaxAhead)
 }
+
+// LimitScheduledOpen caps how many planned sends of a project may wait at
+// once (values below 1 are treated as 1). The count is not locked:
+// concurrent requests can overshoot by their number.
+func (s *Service) LimitScheduledOpen(n int) { s.scheduledOpen = max(n, 1) }
 
 // Recorder returns the recorder cancellations go through (set its
 // status-change hook before the service is used).
@@ -153,16 +168,13 @@ func (s *Service) Create(ctx context.Context, projectID uuid.UUID, in CreateInpu
 	if err := in.Validate(); err != nil {
 		return Email{}, err
 	}
-	now := time.Now()
+	// The horizon and the cap on waiting planned sends are checked in refuse,
+	// after the idempotency lookup, so a retry of an accepted request still
+	// replays after the limits were lowered.
 	var scheduledAt *time.Time
-	if in.ScheduledAt != nil {
-		if in.ScheduledAt.After(now.Add(s.scheduleAhead)) {
-			return Email{}, invalid("scheduled_at", fmt.Sprintf("must be at most %s ahead", s.scheduleAhead))
-		}
-		if in.ScheduledAt.After(now) {
-			at := in.ScheduledAt.UTC().Truncate(time.Microsecond)
-			scheduledAt = &at
-		}
+	if in.ScheduledAt != nil && in.ScheduledAt.After(time.Now()) {
+		at := in.ScheduledAt.UTC().Truncate(time.Microsecond)
+		scheduledAt, in.planned = &at, true
 	}
 	var key *store.GetIdempotencyKeyParams
 	var fingerprint []byte
@@ -379,7 +391,8 @@ func (s *Service) render(ctx context.Context, projectID uuid.UUID, in CreateInpu
 // the same key. Otherwise the refusal is returned unchanged.
 func winnerAfterRefusal(ctx context.Context, q *store.Queries, key *store.GetIdempotencyKeyParams, fingerprint []byte, refusal error) (uuid.UUID, error) {
 	var limited *RateLimitError
-	retrySafe := errors.Is(refusal, ErrSenderNotVerified) || errors.Is(refusal, ErrRecipientSuppressed) || errors.As(refusal, &limited)
+	retrySafe := errors.Is(refusal, ErrSenderNotVerified) || errors.Is(refusal, ErrRecipientSuppressed) || errors.As(refusal, &limited) ||
+		errors.Is(refusal, ErrScheduleLimit)
 	if key == nil || !retrySafe {
 		return uuid.Nil, refusal
 	}
@@ -393,8 +406,9 @@ func winnerAfterRefusal(ctx context.Context, q *store.Queries, key *store.GetIde
 	return uuid.Nil, refusal
 }
 
-// refuse checks the sender identity (when required), suppression and the
-// project's rate limit, in that order. With count set it counts this send
+// refuse checks the sender identity (when required), the schedule horizon
+// and the cap on waiting planned sends, suppression and the project's rate
+// limit, in that order. With count set it counts this send
 // (locking the window row until the transaction ends); otherwise it only
 // reads the committed count.
 func (s *Service) refuse(ctx context.Context, q *store.Queries, projectID uuid.UUID, in CreateInput, count bool) error {
@@ -405,6 +419,21 @@ func (s *Service) refuse(ctx context.Context, q *store.Queries, projectID uuid.U
 		}
 		if !ok {
 			return ErrSenderNotVerified
+		}
+	}
+	if in.ScheduledAt != nil && in.ScheduledAt.After(time.Now().Add(s.scheduleAhead)) {
+		return invalid("scheduled_at", fmt.Sprintf("must be at most %s ahead", s.scheduleAhead))
+	}
+	if in.planned {
+		n, err := q.CountOpenScheduled(ctx, projectID)
+		if err != nil {
+			return fmt.Errorf("count scheduled sends: %w", err)
+		}
+		if count {
+			n-- // this email, inserted just before
+		}
+		if n >= int64(s.scheduledOpen) {
+			return ErrScheduleLimit
 		}
 	}
 	suppressed, err := q.IsSuppressed(ctx, store.IsSuppressedParams{ProjectID: projectID, Recipient: in.To})

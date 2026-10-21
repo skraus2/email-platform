@@ -40,6 +40,10 @@ type CreateInput struct {
 	// ScheduledAt, when set, is the earliest send time; a time at or
 	// before now sends immediately.
 	ScheduledAt *time.Time
+
+	// planned is set by Create when ScheduledAt lies in the future, so every
+	// check of the request sees the same decision.
+	planned bool
 }
 
 // ValidationError names the invalid field. Its message never repeats the

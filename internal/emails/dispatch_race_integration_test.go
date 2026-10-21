@@ -35,6 +35,7 @@ func TestChangeBetweenLoadAndClaimStopsSend(t *testing.T) {
 	for name, change := range map[string]string{
 		"suppressed":       "INSERT INTO suppressions (project_id, recipient, reason) VALUES ($1, 'customer@example.test', 'manual')",
 		"project disabled": "UPDATE projects SET status = 'disabled' WHERE id = $1",
+		"canceled":         "UPDATE emails SET status = 'canceled', finished_at = now() WHERE project_id = $1",
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -74,6 +75,13 @@ func TestChangeBetweenLoadAndClaimStopsSend(t *testing.T) {
 			if err := pool.QueryRow(ctx, `SELECT status, error_code, EXISTS (SELECT 1 FROM email_contents WHERE email_id = $1)
 				FROM emails WHERE id = $1`, e.ID).Scan(&status, &code, &hasContent); err != nil {
 				t.Fatal(err)
+			}
+			if name == "canceled" {
+				// The cancel won: the claim finds nothing to send and changes nothing.
+				if prov.calls != 0 || status != "canceled" || code != nil {
+					t.Fatalf("calls=%d status=%s code=%v, want canceled without sending", prov.calls, status, code)
+				}
+				return
 			}
 			want := map[string]string{"suppressed": CodeSuppressed, "project disabled": CodeProjectDisabled}[name]
 			if prov.calls != 0 || status != "failed" || code == nil || *code != want || hasContent {

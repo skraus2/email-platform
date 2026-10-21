@@ -1299,8 +1299,10 @@ components:
           description: |
             Send not before this time (RFC 3339), at most 30 days ahead by
             default (`422 validation_failed` otherwise). A time at or before
-            now sends immediately (stored as `null`). Part of the
-            idempotency fingerprint when present.
+            now sends immediately (stored as `null`). A project may have at
+            most 10000 planned sends waiting by default
+            (`422 schedule_limit_reached`). Part of the idempotency
+            fingerprint when present.
     CreateEmailResponse:
       type: object
       required: [id, status]
@@ -2159,7 +2161,7 @@ components:
           schema:
             $ref: "#/components/schemas/Error"
     UnprocessableEntity:
-      description: "`validation_failed` (message names the field), `recipient_suppressed` (the recipient is on the project's suppression list), `sender_not_verified` (`from` is not a verified sender address or domain of the project), `template_not_found`, `variables_invalid`, `render_failed`, `template_invalid`, `template_limit_reached`, `version_limit_reached`, `template_storage_limit_reached`, `invalid_url`, `endpoint_limit_reached`, `contact_limit_reached`, `audience_limit_reached`, `audience_full`, `audience_not_found`, `broadcast_limit_reached` or `template_missing_unsubscribe`. Messages name fields or variables, never their values."
+      description: "`validation_failed` (message names the field), `recipient_suppressed` (the recipient is on the project's suppression list), `sender_not_verified` (`from` is not a verified sender address or domain of the project), `template_not_found`, `variables_invalid`, `render_failed`, `template_invalid`, `template_limit_reached`, `version_limit_reached`, `template_storage_limit_reached`, `invalid_url`, `endpoint_limit_reached`, `contact_limit_reached`, `audience_limit_reached`, `audience_full`, `audience_not_found`, `broadcast_limit_reached`, `template_missing_unsubscribe` or `schedule_limit_reached`. Messages name fields or variables, never their values."
       content:
         application/json:
           schema:

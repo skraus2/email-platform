@@ -169,8 +169,20 @@ func TestCancelEmail(t *testing.T) {
 	if _, err := svc.Cancel(ctx, projectID, e2.ID); !errors.Is(err, emails.ErrNotCancelable) {
 		t.Fatalf("sending: %v", err)
 	}
+	// A queued email waiting for a retry carries the last error code; a
+	// cancelled one never does.
+	e3, err := svc.Create(ctx, projectID, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, "UPDATE emails SET error_code = 'provider_unreachable', last_error = 'delivery failed: connect' WHERE id = $1", e3.ID); err != nil {
+		t.Fatal(err)
+	}
+	if c, err := svc.Cancel(ctx, projectID, e3.ID); err != nil || c.Status != "canceled" || c.ErrorCode != nil {
+		t.Fatalf("cancel after a failed attempt: %+v %v", c, err)
+	}
 	page, _, err := svc.List(ctx, projectID, emails.ListFilter{Statuses: []string{"canceled"}}, 10)
-	if err != nil || len(page) != 1 || page[0].ID != e.ID {
+	if err != nil || len(page) != 2 || page[1].ID != e.ID {
 		t.Fatalf("list canceled: %+v %v", page, err)
 	}
 }
@@ -215,5 +227,51 @@ func TestCleanupMeasuresFromDueTime(t *testing.T) {
 	if count(t, pool, "SELECT count(*) FROM email_contents WHERE email_id = '"+sched.ID.String()+"'") != 1 ||
 		count(t, pool, "SELECT count(*) FROM email_contents WHERE email_id = '"+now.ID.String()+"'") != 0 {
 		t.Fatal("content safety net ignored the due time")
+	}
+}
+
+func TestScheduledOpenCap(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	svc, projectID, n := newScheduleService(t)
+	svc.LimitScheduledOpen(2)
+	at := time.Now().Add(time.Hour)
+	in := input
+	in.ScheduledAt = &at
+	var ids []uuid.UUID
+	for range 2 {
+		e, err := svc.Create(ctx, projectID, in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, e.ID)
+	}
+	if _, err := svc.Create(ctx, projectID, in); !errors.Is(err, emails.ErrScheduleLimit) {
+		t.Fatalf("over the cap: %v", err)
+	}
+	// Immediate sends are not planned sends.
+	if _, err := svc.Create(ctx, projectID, input); err != nil {
+		t.Fatalf("immediate send at the cap: %v", err)
+	}
+	// A retry of an accepted planned send still replays at the cap.
+	keyed := in
+	keyed.IdempotencyKey = "k"
+	if _, err := svc.Cancel(ctx, projectID, ids[0]); err != nil {
+		t.Fatal(err)
+	}
+	first, err := svc.Create(ctx, projectID, keyed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again, err := svc.Create(ctx, projectID, keyed); err != nil || !again.Replayed || again.ID != first.ID {
+		t.Fatalf("replay at the cap: %+v %v", again, err)
+	}
+	// So does one after the horizon was lowered.
+	svc.LimitScheduleAhead(time.Minute)
+	if again, err := svc.Create(ctx, projectID, keyed); err != nil || !again.Replayed {
+		t.Fatalf("replay after a shorter horizon: %+v %v", again, err)
+	}
+	if n("SELECT count(*) FROM emails WHERE scheduled_at IS NOT NULL AND status = 'queued'") != 2 {
+		t.Fatal("cap not held")
 	}
 }

@@ -79,8 +79,10 @@ type Config struct {
 	AudienceMaxPerProject int
 	AudienceMaxContacts   int
 
-	// ScheduleMaxAhead bounds how far in the future a send may be planned.
+	// ScheduleMaxAhead bounds how far in the future a send may be planned;
+	// ScheduleMaxOpen caps a project's planned sends still waiting.
 	ScheduleMaxAhead time.Duration
+	ScheduleMaxOpen  int
 	// BroadcastMaxOpen caps a project's broadcasts in draft, scheduled or
 	// sending.
 	BroadcastMaxOpen int
@@ -208,7 +210,7 @@ func Load(lookup LookupFunc) (Config, error) {
 	}
 	cfg.BodyMaxAge, errs = positiveDuration(get, "BODY_MAX_AGE", "168h", errs)
 	if cfg.BodyMaxAge > maxBodyMaxAge {
-		errs = append(errs, errors.New("BODY_MAX_AGE must be at most 720h (message content is deleted by then at the latest)"))
+		errs = append(errs, errors.New("BODY_MAX_AGE must be at most 720h (content is deleted at most this long after its email was due)"))
 	}
 
 	// SES identities are account-wide, so with SES the platform itself must
@@ -280,6 +282,7 @@ func Load(lookup LookupFunc) (Config, error) {
 	cfg.AudienceMaxPerProject, errs = intInRange(get, "AUDIENCE_MAX_PER_PROJECT", "100", 1, 10_000, errs)
 	cfg.AudienceMaxContacts, errs = intInRange(get, "AUDIENCE_MAX_CONTACTS", "100000", 1, 1_000_000, errs)
 	cfg.BroadcastMaxOpen, errs = intInRange(get, "BROADCAST_MAX_OPEN", "20", 1, 1000, errs)
+	cfg.ScheduleMaxOpen, errs = intInRange(get, "SCHEDULE_MAX_OPEN", "10000", 1, 1_000_000, errs)
 	cfg.ScheduleMaxAhead, errs = positiveDuration(get, "SCHEDULE_MAX_AHEAD", "720h", errs)
 	if cfg.ScheduleMaxAhead > 720*time.Hour || (cfg.ScheduleMaxAhead > 0 && cfg.ScheduleMaxAhead < time.Minute) {
 		errs = append(errs, errors.New("SCHEDULE_MAX_AHEAD must be between 1m and 720h"))

@@ -68,6 +68,7 @@ func run() error {
 		service.RequireVerifiedSenders()
 	}
 	service.LimitScheduleAhead(cfg.ScheduleMaxAhead)
+	service.LimitScheduledOpen(cfg.ScheduleMaxOpen)
 	// Cancellations are status changes: they reach subscribed webhook
 	// endpoints like those made by the worker.
 	service.Recorder().OnStatusChange(webhooks.NewOutbox(enqueuer).OnStatusChange)

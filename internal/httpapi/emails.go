@@ -113,6 +113,10 @@ func (s *Server) handleCreateEmail(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnprocessableEntity, "sender_not_verified",
 			"from is not a verified sender address or domain of this project; nothing was sent")
 		return
+	case errors.Is(err, emails.ErrScheduleLimit):
+		writeError(w, http.StatusUnprocessableEntity, "schedule_limit_reached",
+			"the project has reached its limit of planned sends waiting; nothing was stored")
+		return
 	case errors.Is(err, emails.ErrRecipientSuppressed):
 		writeError(w, http.StatusUnprocessableEntity, "recipient_suppressed",
 			"the recipient is on this project's suppression list; nothing was sent")

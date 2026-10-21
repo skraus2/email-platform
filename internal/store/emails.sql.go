@@ -13,7 +13,7 @@ import (
 )
 
 const cancelEmail = `-- name: CancelEmail :one
-UPDATE emails SET status = 'canceled', finished_at = now(), updated_at = now()
+UPDATE emails SET status = 'canceled', error_code = NULL, last_error = NULL, finished_at = now(), updated_at = now()
 WHERE id = $1 AND project_id = $2 AND status = 'queued'
 RETURNING id, project_id, sender, recipient, subject, status, provider, provider_id, attempts, last_error, created_at, updated_at, finished_at, error_code, template_id, template_version, scheduled_at, broadcast_id, contact_id
 `
@@ -23,7 +23,8 @@ type CancelEmailParams struct {
 	ProjectID uuid.UUID
 }
 
-// Cancels an email that no attempt has claimed yet.
+// Cancels an email that no attempt has claimed yet. A queued email may carry
+// the error of a failed earlier attempt; a cancelled one never failed.
 func (q *Queries) CancelEmail(ctx context.Context, arg CancelEmailParams) (Email, error) {
 	row := q.db.QueryRow(ctx, cancelEmail, arg.ID, arg.ProjectID)
 	var i Email
@@ -49,6 +50,18 @@ func (q *Queries) CancelEmail(ctx context.Context, arg CancelEmailParams) (Email
 		&i.ContactID,
 	)
 	return i, err
+}
+
+const countOpenScheduled = `-- name: CountOpenScheduled :one
+SELECT count(*) FROM emails WHERE project_id = $1 AND status = 'queued' AND scheduled_at IS NOT NULL
+`
+
+// Planned emails of the project that are still waiting.
+func (q *Queries) CountOpenScheduled(ctx context.Context, projectID uuid.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countOpenScheduled, projectID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
 }
 
 const countProviderHandoffs = `-- name: CountProviderHandoffs :one
