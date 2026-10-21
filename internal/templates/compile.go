@@ -125,12 +125,41 @@ func (c *Compiled) PrintsTopLevel(part, name string) bool {
 			continue
 		}
 		// html/template appends escaper commands to the pipe; the first
-		// command is still the printed field.
-		if f, ok := a.Pipe.Cmds[0].Args[0].(*parse.FieldNode); ok && len(f.Ident) == 1 && f.Ident[0] == name {
+		// command is still the printed field, and the escapers show the
+		// context it ends up in.
+		if f, ok := a.Pipe.Cmds[0].Args[0].(*parse.FieldNode); ok && len(f.Ident) == 1 && f.Ident[0] == name && visible(a.Pipe.Cmds[1:]) {
 			return true
 		}
 	}
 	return false
+}
+
+// visibleEscapers are the html/template escapers of contexts where a value
+// reaches the reader: element text and attribute values (including link
+// targets). Comments, scripts, styles and attribute names are absent on
+// purpose: there a value prints as nothing or as an unusable placeholder.
+var visibleEscapers = map[string]bool{
+	"_html_template_htmlescaper":    true,
+	"_html_template_attrescaper":    true,
+	"_html_template_nospaceescaper": true,
+	"_html_template_urlfilter":      true,
+	"_html_template_urlnormalizer":  true,
+	"_html_template_urlescaper":     true,
+}
+
+// visible reports whether every command after the printed field is one of
+// the visibleEscapers (none at all for text/template parts).
+func visible(cmds []*parse.CommandNode) bool {
+	for _, c := range cmds {
+		if len(c.Args) != 1 {
+			return false
+		}
+		id, ok := c.Args[0].(*parse.IdentifierNode)
+		if !ok || !visibleEscapers[id.Ident] {
+			return false
+		}
+	}
+	return true
 }
 
 func (c *Compiled) executeHTML(w io.Writer, data any) error {

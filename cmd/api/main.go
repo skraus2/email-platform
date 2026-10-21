@@ -74,6 +74,7 @@ func run() error {
 	service.Recorder().OnStatusChange(webhooks.NewOutbox(enqueuer).OnStatusChange)
 	broadcastStore := broadcasts.NewStore(pool, enqueuer, cfg.BroadcastMaxOpen)
 	broadcastStore.LimitScheduleAhead(cfg.ScheduleMaxAhead)
+	broadcastStore.LimitCreates(cfg.BroadcastCreatesPerHour)
 	if cfg.RequireVerifiedSender {
 		broadcastStore.RequireVerifiedSenders()
 	}

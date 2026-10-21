@@ -3,6 +3,7 @@
 package httpapi_test
 
 import (
+	"context"
 	"testing"
 )
 
@@ -76,5 +77,52 @@ func TestBroadcastLifecycleOverHTTP(t *testing.T) {
 	}
 	if code, body := s.do(t, "GET", "/v1/emails?broadcast_id="+id, token, ""); code != 200 || len(body["data"].([]any)) != 0 {
 		t.Fatalf("email filter: %d %v", code, body)
+	}
+}
+
+func TestEmailsOfABroadcastOverHTTP(t *testing.T) {
+	t.Parallel()
+	s := newStack(t)
+	project, token := s.project(t, "broadcasts:write", "contacts:write", "templates:write", "emails:read", "emails:send")
+	_, other := s.project(t, "emails:read")
+	_, body := s.do(t, "POST", "/v1/audiences", token, `{"name":"news"}`)
+	audience := body["id"].(string)
+	_, body = s.do(t, "POST", "/v1/templates", token, `{"slug":"news"}`)
+	tmpl := body["id"].(string)
+	s.do(t, "POST", "/v1/templates/"+tmpl+"/versions", token, jsonBody(t, map[string]any{
+		"subject": "News", "text": "{{.unsubscribe_url}}",
+		"variables": map[string]any{"unsubscribe_url": map[string]any{"type": "string"}},
+	}))
+	create := jsonBody(t, map[string]any{"audience_id": audience, "from": "news@example.test", "template_id": tmpl,
+		"template_version": 1, "unsubscribe_url": "https://app.example.test/u?t={token}"})
+	_, b1 := s.do(t, "POST", "/v1/broadcasts", token, create)
+	_, b2 := s.do(t, "POST", "/v1/broadcasts", token, create)
+
+	insert := `INSERT INTO emails (project_id, sender, recipient, subject, broadcast_id) VALUES ($1, 'news@example.test', 'r@example.test', 's', $2) RETURNING id`
+	var mine, theirs string
+	if err := s.pool.QueryRow(context.Background(), insert, project, b1["id"]).Scan(&mine); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.pool.QueryRow(context.Background(), insert, project, b2["id"]).Scan(&theirs); err != nil {
+		t.Fatal(err)
+	}
+	s.do(t, "POST", "/v1/emails", token, `{"from":"app@example.test","to":"r@example.test","subject":"Hi","text":"x"}`)
+
+	code, body := s.do(t, "GET", "/v1/emails?broadcast_id="+b1["id"].(string), token, "")
+	data, _ := body["data"].([]any)
+	if code != 200 || len(data) != 1 || data[0].(map[string]any)["id"] != mine || data[0].(map[string]any)["broadcast_id"] != b1["id"] {
+		t.Fatalf("filter: %d %v", code, body)
+	}
+	if code, body := s.do(t, "GET", "/v1/emails/"+theirs, token, ""); code != 200 || body["broadcast_id"] != b2["id"] {
+		t.Fatalf("get: %d %v", code, body)
+	}
+	code, body = s.do(t, "GET", "/v1/emails?broadcast_id="+b1["id"].(string), other, "")
+	if data, _ := body["data"].([]any); code != 200 || len(data) != 0 {
+		t.Fatalf("other project: %d %v", code, body)
+	}
+	for _, q := range []string{"x", b1["id"].(string) + "&broadcast_id=" + b2["id"].(string)} {
+		if code, body := s.do(t, "GET", "/v1/emails?broadcast_id="+q, token, ""); code != 400 || errorCode(body) != "invalid_filter" {
+			t.Errorf("broadcast_id=%s: %d %v", q, code, body)
+		}
 	}
 }

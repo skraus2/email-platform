@@ -201,8 +201,13 @@ func (s *Server) handleScheduleBroadcast(w http.ResponseWriter, r *http.Request)
 	}
 	// The body is optional: without one the broadcast starts now.
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 4<<10))
-	if err != nil {
+	var tooBig *http.MaxBytesError
+	if errors.As(err, &tooBig) {
 		writeError(w, http.StatusRequestEntityTooLarge, "payload_too_large", "request body must be at most 4 KiB")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_json", "could not read request body")
 		return
 	}
 	var at *time.Time
@@ -265,6 +270,9 @@ func (s *Server) writeBroadcastError(w http.ResponseWriter, r *http.Request, op 
 	case errors.Is(err, broadcasts.ErrMissingUnsubscribe):
 		writeError(w, http.StatusUnprocessableEntity, "template_missing_unsubscribe",
 			"the template version must declare unsubscribe_url as a string and print {{.unsubscribe_url}} outside conditions in its text and HTML parts")
+	case errors.Is(err, broadcasts.ErrRateLimited):
+		w.Header().Set("Retry-After", "60")
+		writeError(w, http.StatusTooManyRequests, "rate_limited", "the project created as many broadcasts in the last hour as it may; retry later")
 	case errors.Is(err, broadcasts.ErrLimit):
 		writeError(w, http.StatusUnprocessableEntity, "broadcast_limit_reached", "the project has reached its limit of open broadcasts")
 	case errors.Is(err, emails.ErrSenderNotVerified):

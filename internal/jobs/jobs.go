@@ -181,7 +181,7 @@ func (e *Enqueuer) sendOpts(opts SendOpts) *river.InsertOpts {
 }
 
 // EnqueueBroadcastFanout inserts the fan-out job of a broadcast in tx, to run
-// not before at.
+// not before at (zero: now).
 func (e *Enqueuer) EnqueueBroadcastFanout(ctx context.Context, tx pgx.Tx, args BroadcastFanoutArgs, at time.Time) error {
 	if _, err := e.client.InsertTx(ctx, tx, args, &river.InsertOpts{
 		Queue: QueueBroadcasts, MaxAttempts: broadcastFanoutAttempts, ScheduledAt: at,

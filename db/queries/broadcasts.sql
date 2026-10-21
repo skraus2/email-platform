@@ -35,10 +35,18 @@ ORDER BY id DESC
 LIMIT sqlc.arg(row_limit);
 
 -- name: CountBroadcastEmails :many
--- Recipient emails of a broadcast by status.
+-- Recipient emails of a broadcast by status (callers have checked that the
+-- broadcast belongs to the project; the count uses the index alone).
 SELECT status, count(*) AS n FROM emails
-WHERE broadcast_id = $1 AND project_id = $2
+WHERE broadcast_id = $1
 GROUP BY status;
+
+-- name: CountRecentBroadcasts :one
+-- Broadcasts the project created in the last hour.
+SELECT count(*) FROM broadcasts WHERE project_id = $1 AND created_at > now() - interval '1 hour';
+
+-- name: SetBroadcastStatementTimeout :exec
+SET LOCAL statement_timeout = '5s';
 
 -- name: LockBroadcastForFanout :one
 -- The broadcast with its project's status, locked for one fan-out batch.

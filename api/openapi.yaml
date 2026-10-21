@@ -795,7 +795,8 @@ paths:
         `{token}` exactly once (at most 900 characters).
 
         A project has at most 20 broadcasts in `draft`, `scheduled` or
-        `sending` by default (`422 broadcast_limit_reached`).
+        `sending` by default (`422 broadcast_limit_reached`) and creates at
+        most 100 per hour by default (`429 rate_limited`, `Retry-After`).
       requestBody:
         required: true
         content:
@@ -821,6 +822,8 @@ paths:
           $ref: "#/components/responses/UnsupportedMediaType"
         "422":
           $ref: "#/components/responses/UnprocessableEntity"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
         "500":
           $ref: "#/components/responses/InternalError"
         "503":
@@ -2131,7 +2134,7 @@ components:
           schema:
             $ref: "#/components/schemas/Error"
     TooManyRequests:
-      description: "`rate_limited`: the project's send rate limit (or, for template writes, its template write limit) is exhausted; retry after `Retry-After` seconds."
+      description: "`rate_limited`: the project's send rate limit (or, for template writes, its template write limit; for broadcast creates, its hourly broadcast limit) is exhausted; retry after `Retry-After` seconds."
       headers:
         Retry-After:
           description: Seconds until the current rate-limit window ends (1–60).

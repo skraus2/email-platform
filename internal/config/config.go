@@ -86,6 +86,8 @@ type Config struct {
 	// BroadcastMaxOpen caps a project's broadcasts in draft, scheduled or
 	// sending.
 	BroadcastMaxOpen int
+	// BroadcastCreatesPerHour caps a project's broadcast creates per hour.
+	BroadcastCreatesPerHour int
 
 	// Admin sessions end after AdminSessionIdle without use or
 	// AdminSessionMax after login.
@@ -282,6 +284,7 @@ func Load(lookup LookupFunc) (Config, error) {
 	cfg.AudienceMaxPerProject, errs = intInRange(get, "AUDIENCE_MAX_PER_PROJECT", "100", 1, 10_000, errs)
 	cfg.AudienceMaxContacts, errs = intInRange(get, "AUDIENCE_MAX_CONTACTS", "100000", 1, 1_000_000, errs)
 	cfg.BroadcastMaxOpen, errs = intInRange(get, "BROADCAST_MAX_OPEN", "20", 1, 1000, errs)
+	cfg.BroadcastCreatesPerHour, errs = intInRange(get, "BROADCAST_CREATES_PER_HOUR", "100", 1, 100_000, errs)
 	cfg.ScheduleMaxOpen, errs = intInRange(get, "SCHEDULE_MAX_OPEN", "10000", 1, 1_000_000, errs)
 	cfg.ScheduleMaxAhead, errs = positiveDuration(get, "SCHEDULE_MAX_AHEAD", "720h", errs)
 	if cfg.ScheduleMaxAhead > 720*time.Hour || (cfg.ScheduleMaxAhead > 0 && cfg.ScheduleMaxAhead < time.Minute) {

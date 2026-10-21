@@ -18,6 +18,16 @@ func TestPrintsTopLevel(t *testing.T) {
 		{Source{Subject: "s", Text: "{{if .vip}}{{.unsubscribe_url}}{{end}}", HTML: `<p>{{.name}}</p>`}, false, false},
 		{Source{Subject: "s", Text: "{{.name}}{{/* {{.unsubscribe_url}} */}}"}, false, false},
 		{Source{Subject: "{{.unsubscribe_url}}", Text: "x"}, false, false},
+		// Printed only where html/template turns it into nothing or garbage.
+		{Source{Subject: "s", Text: "{{.unsubscribe_url}}", HTML: `<p>x</p><!-- {{.unsubscribe_url}} -->`}, true, false},
+		{Source{Subject: "s", Text: "{{.unsubscribe_url}}", HTML: `<style>p{color:{{.unsubscribe_url}}}</style>`}, true, false},
+		{Source{Subject: "s", Text: "{{.unsubscribe_url}}", HTML: `<script>/*{{.unsubscribe_url}}*/</script>`}, true, false},
+		{Source{Subject: "s", Text: "{{.unsubscribe_url}}", HTML: `<script>var u = {{.unsubscribe_url}};</script>`}, true, false},
+		{Source{Subject: "s", Text: "{{.unsubscribe_url}}", HTML: `<a {{.unsubscribe_url}}>x</a>`}, true, false},
+		{Source{Subject: "s", Text: "{{.unsubscribe_url}}", HTML: `<p>{{if .vip}}{{.unsubscribe_url}}{{end}}</p>`}, true, false},
+		// Visible text and link targets count.
+		{Source{Subject: "s", Text: "{{.unsubscribe_url}}", HTML: `<p>Unsubscribe: {{.unsubscribe_url}}</p>`}, true, true},
+		{Source{Subject: "s", Text: "{{.unsubscribe_url}}", HTML: `<a href={{.unsubscribe_url}}>x</a>`}, true, true},
 	}
 	for i, c := range cases {
 		comp, err := Compile(c.src, schema)

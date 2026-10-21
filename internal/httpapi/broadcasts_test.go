@@ -88,6 +88,7 @@ func TestBroadcastErrorMapping(t *testing.T) {
 		{broadcasts.ErrTemplateNotFound, 422, "template_not_found"},
 		{broadcasts.ErrMissingUnsubscribe, 422, "template_missing_unsubscribe"},
 		{broadcasts.ErrLimit, 422, "broadcast_limit_reached"},
+		{broadcasts.ErrRateLimited, 429, "rate_limited"},
 		{emails.ErrSenderNotVerified, 422, "sender_not_verified"},
 		{broadcasts.ErrNotDraft, 409, "broadcast_not_draft"},
 		{broadcasts.ErrNotCancelable, 409, "broadcast_not_cancelable"},

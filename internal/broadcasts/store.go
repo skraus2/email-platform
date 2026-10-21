@@ -46,8 +46,11 @@ var (
 	ErrTemplateNotFound   = errors.New("template not found")
 	ErrMissingUnsubscribe = errors.New("template version does not print the unsubscribe link")
 	ErrLimit              = errors.New("open broadcast limit reached")
-	ErrNotDraft           = errors.New("broadcast is not a draft")
-	ErrNotCancelable      = errors.New("broadcast is already canceled")
+	// ErrRateLimited: the project created as many broadcasts in the last
+	// hour as it may.
+	ErrRateLimited   = errors.New("broadcast create rate limit reached")
+	ErrNotDraft      = errors.New("broadcast is not a draft")
+	ErrNotCancelable = errors.New("broadcast is already canceled")
 	// ErrBusy: a lock wait ran out; retry later.
 	ErrBusy = errors.New("broadcasts busy")
 )
@@ -141,15 +144,23 @@ type Store struct {
 	pool          *pgxpool.Pool
 	enq           Enqueuer
 	maxOpen       int
+	perHour       int
 	requireSender bool
 	scheduleAhead time.Duration
 }
 
+// DefaultCreatesPerHour caps broadcast creates per project and hour unless
+// LimitCreates sets another value (cancelled broadcasts stay stored).
+const DefaultCreatesPerHour = 100
+
 // NewStore caps the broadcasts of a project in draft, scheduled or sending
 // at maxOpen.
 func NewStore(pool *pgxpool.Pool, enq Enqueuer, maxOpen int) *Store {
-	return &Store{pool: pool, enq: enq, maxOpen: max(maxOpen, 1), scheduleAhead: DefaultScheduleMaxAhead}
+	return &Store{pool: pool, enq: enq, maxOpen: max(maxOpen, 1), perHour: DefaultCreatesPerHour, scheduleAhead: DefaultScheduleMaxAhead}
 }
+
+// LimitCreates caps how many broadcasts a project may create per hour.
+func (s *Store) LimitCreates(perHour int) { s.perHour = max(perHour, 1) }
 
 // RequireVerifiedSenders makes Create and Schedule refuse a from address
 // without a verified sender identity of the project.
@@ -170,7 +181,7 @@ func ValidateURLTemplate(u string) error {
 	case strings.Count(u, TokenPlaceholder) != 1:
 		return invalid("unsubscribe_url", "must contain {token} exactly once")
 	}
-	sample := strings.Replace(u, TokenPlaceholder, strings.Repeat("A", 43), 1)
+	sample := strings.Replace(u, TokenPlaceholder, strings.Repeat("A", tokenLength), 1)
 	if err := delivery.ValidateListUnsubscribeURL(sample); err != nil {
 		return invalid("unsubscribe_url", "must be an absolute https URL without user information, spaces, commas, quotes or angle brackets")
 	}
@@ -216,8 +227,9 @@ func sharedVariables(schema templates.Schema, raw json.RawMessage) ([]byte, erro
 }
 
 // checkVersion requires the version to declare unsubscribe_url as a string
-// and to print it outside conditions in its text and (if any) HTML part.
-func checkVersion(v templates.Version) error {
+// long enough for the URL with a token, and to print it outside conditions,
+// visibly, in its text and (if any) HTML part.
+func checkVersion(v templates.Version, urlTemplate string) error {
 	c, err := v.Compile()
 	if err != nil {
 		return fmt.Errorf("compile template version: %w", err)
@@ -227,8 +239,18 @@ func checkVersion(v templates.Version) error {
 		(c.HasHTML() && !c.PrintsTopLevel("html", contacts.ReservedAttribute)) {
 		return ErrMissingUnsubscribe
 	}
+	limit := spec.MaxLength
+	if limit == 0 {
+		limit = templates.DefaultMaxLength
+	}
+	if utf8.RuneCountInString(urlTemplate)-len(TokenPlaceholder)+tokenLength > limit {
+		return invalid("unsubscribe_url", "is longer with its token than max_length of the template's unsubscribe_url")
+	}
 	return nil
 }
+
+// tokenLength is the length of a contact's unsubscribe token.
+const tokenLength = 43
 
 // Create validates the input and stores a draft.
 func (s *Store) Create(ctx context.Context, projectID uuid.UUID, in CreateInput) (Broadcast, error) {
@@ -255,7 +277,7 @@ func (s *Store) Create(ctx context.Context, projectID uuid.UUID, in CreateInput)
 	if err != nil {
 		return Broadcast{}, fmt.Errorf("resolve template: %w", err)
 	}
-	if err := checkVersion(v); err != nil {
+	if err := checkVersion(v, in.UnsubscribeURL); err != nil {
 		return Broadcast{}, err
 	}
 	schema, err := templates.ParseSchema(v.Schema)
@@ -288,6 +310,13 @@ func (s *Store) Create(ctx context.Context, projectID uuid.UUID, in CreateInput)
 		}
 		if n >= int64(s.maxOpen) {
 			return ErrLimit
+		}
+		recent, err := q.CountRecentBroadcasts(ctx, projectID)
+		if err != nil {
+			return fmt.Errorf("count recent broadcasts: %w", err)
+		}
+		if recent >= int64(s.perHour) {
+			return ErrRateLimited
 		}
 		row, err = q.InsertBroadcast(ctx, store.InsertBroadcastParams{
 			ProjectID: projectID, Name: in.Name, AudienceID: in.AudienceID, Sender: in.From,
@@ -329,9 +358,19 @@ func (s *Store) Get(ctx context.Context, projectID, id uuid.UUID) (Broadcast, er
 	if err != nil {
 		return Broadcast{}, fmt.Errorf("get broadcast: %w", err)
 	}
-	rows, err := q.CountBroadcastEmails(ctx, store.CountBroadcastEmailsParams{BroadcastID: &id, ProjectID: projectID})
+	// A large broadcast's counts read many index entries: bounded in time.
+	var rows []store.CountBroadcastEmailsRow
+	err = pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+		tq := store.New(tx)
+		if err := tq.SetBroadcastStatementTimeout(ctx); err != nil {
+			return fmt.Errorf("statement timeout: %w", err)
+		}
+		var err error
+		rows, err = tq.CountBroadcastEmails(ctx, &id)
+		return err
+	})
 	if err != nil {
-		return Broadcast{}, fmt.Errorf("count broadcast emails: %w", err)
+		return Broadcast{}, busy(fmt.Errorf("count broadcast emails: %w", err))
 	}
 	c := &Counts{
 		Recipients: int(row.Recipients), SkippedUnsubscribed: int(row.SkippedUnsubscribed),
@@ -415,7 +454,11 @@ func (s *Store) Schedule(ctx context.Context, projectID, id uuid.UUID, at *time.
 		if err != nil {
 			return fmt.Errorf("schedule broadcast: %w", err)
 		}
-		return s.enq.EnqueueBroadcastFanout(ctx, tx, jobs.BroadcastFanoutArgs{BroadcastID: id, ProjectID: projectID}, start)
+		runAt := start
+		if !start.After(now) {
+			runAt = time.Time{} // available at once, not after a scheduler pass
+		}
+		return s.enq.EnqueueBroadcastFanout(ctx, tx, jobs.BroadcastFanoutArgs{BroadcastID: id, ProjectID: projectID}, runAt)
 	})
 	if err != nil {
 		return Broadcast{}, busy(err)

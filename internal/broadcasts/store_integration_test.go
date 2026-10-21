@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/skraus2/email-platform/internal/auth"
@@ -358,5 +359,114 @@ func TestBroadcastCountsAndList(t *testing.T) {
 	}
 	if page, _, _ := f.store.List(f.ctx, f.project, broadcasts.StatusScheduled, uuid.Nil, 10); len(page) != 0 {
 		t.Fatal("status filter")
+	}
+}
+
+func TestBroadcastCreateRateAndVersionChecks(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t, 20)
+	f.store.LimitCreates(2)
+	for range 2 {
+		if _, err := f.store.Create(f.ctx, f.project, f.input()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := f.store.Create(f.ctx, f.project, f.input()); !errors.Is(err, broadcasts.ErrRateLimited) {
+		t.Fatalf("third create in an hour: %v", err)
+	}
+	// Cancelled broadcasts still count: create/cancel loops are limited.
+	page, _, _ := f.store.List(f.ctx, f.project, "", uuid.Nil, 10)
+	for _, b := range page {
+		if _, err := f.store.Cancel(f.ctx, f.project, b.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := f.store.Create(f.ctx, f.project, f.input()); !errors.Is(err, broadcasts.ErrRateLimited) {
+		t.Fatalf("after cancelling: %v", err)
+	}
+
+	g := newFixture(t, 20)
+	// A max_length too short for the URL with its token.
+	tmpl, err := g.templates.Create(g.ctx, g.project, "short", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.templates.Publish(g.ctx, g.project, tmpl.ID, templates.Source{Subject: "s", Text: "{{.unsubscribe_url}}"},
+		[]byte(`{"unsubscribe_url":{"type":"string","max_length":60}}`)); err != nil {
+		t.Fatal(err)
+	}
+	in := g.input()
+	in.TemplateID, in.Variables = tmpl.ID, nil
+	var ve *broadcasts.Error
+	if _, err := g.store.Create(g.ctx, g.project, in); !errors.As(err, &ve) || ve.Field != "unsubscribe_url" {
+		t.Fatalf("short max_length: %v", err)
+	}
+	// A template of another project is the same as an unknown one.
+	ts := templates.NewStore(g.pool, 100, 100, 50<<20, 1_000_000)
+	foreign, err := ts.Create(g.ctx, g.other, "theirs", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ts.Publish(g.ctx, g.other, foreign.ID, goodSource, []byte(goodSchema)); err != nil {
+		t.Fatal(err)
+	}
+	in = g.input()
+	in.TemplateID = foreign.ID
+	if _, err := g.store.Create(g.ctx, g.project, in); !errors.Is(err, broadcasts.ErrTemplateNotFound) {
+		t.Fatalf("foreign template: %v", err)
+	}
+	in.TemplateVersion = 1
+	if _, err := g.store.Create(g.ctx, g.project, in); !errors.Is(err, broadcasts.ErrTemplateNotFound) {
+		t.Fatalf("foreign template version: %v", err)
+	}
+}
+
+func TestScheduleRechecksSender(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t, 20)
+	b, err := f.store.Create(f.ctx, f.project, f.input())
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.store.RequireVerifiedSenders()
+	if _, err := f.store.Schedule(f.ctx, f.project, b.ID, nil); !errors.Is(err, emails.ErrSenderNotVerified) {
+		t.Fatalf("unverified sender: %v", err)
+	}
+	got, _ := f.store.Get(f.ctx, f.project, b.ID)
+	if got.Status != broadcasts.StatusDraft || f.count(t, "SELECT count(*) FROM river_job WHERE kind = 'broadcast_fanout'") != 0 {
+		t.Fatalf("refused schedule left %s and a job", got.Status)
+	}
+	if _, err := f.pool.Exec(f.ctx, "INSERT INTO sender_identities (project_id, kind, value, status, verified_at) VALUES ($1, 'domain', 'example.test', 'verified', now())", f.project); err != nil {
+		t.Fatal(err)
+	}
+	s, err := f.store.Schedule(f.ctx, f.project, b.ID, nil)
+	if err != nil || s.Status != broadcasts.StatusScheduled {
+		t.Fatalf("verified sender: %+v %v", s, err)
+	}
+	// Starting now: the fan-out job is available at once.
+	if n := f.count(t, "SELECT count(*) FROM river_job WHERE kind = 'broadcast_fanout' AND state = 'available'"); n != 1 {
+		t.Fatalf("available fan-out jobs: %d", n)
+	}
+}
+
+func TestOneEmailPerContactAndBroadcast(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t, 20)
+	b, err := f.store.Create(f.ctx, f.project, f.input())
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := "x"
+	c, err := contacts.NewStore(f.pool, 10).Create(f.ctx, f.project, contacts.CreateInput{Email: "a@example.test", Status: "subscribed", ConsentSource: &src})
+	if err != nil {
+		t.Fatal(err)
+	}
+	insert := `INSERT INTO emails (project_id, sender, recipient, subject, broadcast_id, contact_id) VALUES ($1, 'n@example.test', 'a@example.test', 's', $2, $3)`
+	if _, err := f.pool.Exec(f.ctx, insert, f.project, b.ID, c.ID); err != nil {
+		t.Fatal(err)
+	}
+	_, err = f.pool.Exec(f.ctx, insert, f.project, b.ID, c.ID)
+	if pgErr := (*pgconn.PgError)(nil); !errors.As(err, &pgErr) || pgErr.Code != "23505" {
+		t.Fatalf("second email for the same contact: %v", err)
 	}
 }

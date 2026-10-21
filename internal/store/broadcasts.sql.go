@@ -92,23 +92,19 @@ func (q *Queries) CancelBroadcast(ctx context.Context, arg CancelBroadcastParams
 
 const countBroadcastEmails = `-- name: CountBroadcastEmails :many
 SELECT status, count(*) AS n FROM emails
-WHERE broadcast_id = $1 AND project_id = $2
+WHERE broadcast_id = $1
 GROUP BY status
 `
-
-type CountBroadcastEmailsParams struct {
-	BroadcastID *uuid.UUID
-	ProjectID   uuid.UUID
-}
 
 type CountBroadcastEmailsRow struct {
 	Status string
 	N      int64
 }
 
-// Recipient emails of a broadcast by status.
-func (q *Queries) CountBroadcastEmails(ctx context.Context, arg CountBroadcastEmailsParams) ([]CountBroadcastEmailsRow, error) {
-	rows, err := q.db.Query(ctx, countBroadcastEmails, arg.BroadcastID, arg.ProjectID)
+// Recipient emails of a broadcast by status (callers have checked that the
+// broadcast belongs to the project; the count uses the index alone).
+func (q *Queries) CountBroadcastEmails(ctx context.Context, broadcastID *uuid.UUID) ([]CountBroadcastEmailsRow, error) {
+	rows, err := q.db.Query(ctx, countBroadcastEmails, broadcastID)
 	if err != nil {
 		return nil, err
 	}
@@ -133,6 +129,18 @@ SELECT count(*) FROM broadcasts WHERE project_id = $1 AND status IN ('draft', 's
 
 func (q *Queries) CountOpenBroadcasts(ctx context.Context, projectID uuid.UUID) (int64, error) {
 	row := q.db.QueryRow(ctx, countOpenBroadcasts, projectID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countRecentBroadcasts = `-- name: CountRecentBroadcasts :one
+SELECT count(*) FROM broadcasts WHERE project_id = $1 AND created_at > now() - interval '1 hour'
+`
+
+// Broadcasts the project created in the last hour.
+func (q *Queries) CountRecentBroadcasts(ctx context.Context, projectID uuid.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countRecentBroadcasts, projectID)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
@@ -560,6 +568,15 @@ func (q *Queries) ScheduleBroadcast(ctx context.Context, arg ScheduleBroadcastPa
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const setBroadcastStatementTimeout = `-- name: SetBroadcastStatementTimeout :exec
+SET LOCAL statement_timeout = '5s'
+`
+
+func (q *Queries) SetBroadcastStatementTimeout(ctx context.Context) error {
+	_, err := q.db.Exec(ctx, setBroadcastStatementTimeout)
+	return err
 }
 
 const startBroadcast = `-- name: StartBroadcast :exec
