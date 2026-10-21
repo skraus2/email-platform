@@ -59,7 +59,8 @@ paths:
         Checks run in this order: validation, idempotency replay, sender
         verification (`422 sender_not_verified`, only where verified senders
         are required — always when sending through a real provider),
-        suppression (`422 recipient_suppressed`), project rate limit
+        schedule horizon and cap on planned sends (`422 validation_failed`,
+        `422 schedule_limit_reached`), suppression (`422 recipient_suppressed`), project rate limit
         (`429 rate_limited`).
         Rejected requests store nothing; neither they nor idempotent replays
         count towards the rate limit.
