@@ -742,8 +742,8 @@ paths:
         forwards the token here. The contact becomes `unsubscribed`: no
         broadcast reaches it any more, including emails already queued.
         Transactional sends to the address are not affected. Reports are
-        idempotent and never rate-limited. Unknown, malformed and foreign
-        tokens give the same `404`.
+        idempotent and never rate-limited. Unknown, malformed, missing and
+        foreign tokens give the same `404`.
       requestBody:
         required: true
         content:

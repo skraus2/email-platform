@@ -206,6 +206,10 @@ func TestBuildMessageListUnsubscribe(t *testing.T) {
 		"non-ASCII":   "https://app.example.test/ü",
 		"NUL":         "https://app.example.test/u\x00",
 		"control DEL": "https://app.example.test/u\x7f",
+		"comma":       "https://app.example.test/u?x=,https://evil.test/",
+		"backslash":   `https://app.example.test\@evil.test/`,
+		"brace":       "https://app.example.test/u?t={token}",
+		"backtick":    "https://app.example.test/u`",
 	} {
 		msg := sample()
 		msg.ListUnsubscribeURL = bad

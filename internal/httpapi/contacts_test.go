@@ -207,15 +207,14 @@ func TestUnsubscribeRequest(t *testing.T) {
 	if rec, _ := contactCall(t, &fakeContacts{}, []string{auth.ScopeContactsRead}, "POST", "/v1/unsubscribes", `{"token":"x"}`); rec.Code != 403 {
 		t.Fatalf("read scope: %d", rec.Code)
 	}
-	for _, body := range []string{`{}`, `{"token":1}`, `{"token":"a","x":1}`} {
+	// A missing token is an unknown one: the store decides (404).
+	f = &fakeContacts{token: "sentinel"}
+	if rec, _ := contactCall(t, f, []string{auth.ScopeContactsWrite}, "POST", "/v1/unsubscribes", `{}`); rec.Code != 200 || f.token != "" {
+		t.Errorf("missing token: %d, store saw %q", rec.Code, f.token)
+	}
+	for _, body := range []string{`{"token":1}`, `{"token":"a","x":1}`} {
 		f := &fakeContacts{}
 		rec, _ := contactCall(t, f, []string{auth.ScopeContactsWrite}, "POST", "/v1/unsubscribes", body)
-		if body == `{}` {
-			if rec.Code != 200 || f.token != "" {
-				t.Errorf("%s: %d (an empty token reaches the store, which answers 404)", body, rec.Code)
-			}
-			continue
-		}
 		if rec.Code != 400 {
 			t.Errorf("%s: %d", body, rec.Code)
 		}

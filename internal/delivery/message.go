@@ -98,16 +98,17 @@ func buildMessage(msg Message, now time.Time) ([]byte, error) {
 const MaxListUnsubscribeURL = 998 - len("List-Unsubscribe: <>")
 
 // ValidateListUnsubscribeURL accepts an absolute https URL with a host, no
-// userinfo, of printable ASCII without space, quotes and angle brackets, at
-// most MaxListUnsubscribeURL bytes — safe to place between < and > in a
-// header line.
+// userinfo, of printable ASCII without space, quotes, angle brackets, commas
+// (the header is a comma-separated list) and other characters URLs must
+// encode, at most MaxListUnsubscribeURL bytes — one unambiguous URL between
+// < and > in a header line.
 func ValidateListUnsubscribeURL(v string) error {
 	if len(v) > MaxListUnsubscribeURL {
 		return fmt.Errorf("unsubscribe URL must be at most %d bytes", MaxListUnsubscribeURL)
 	}
 	for i := range len(v) {
-		if c := v[i]; c <= 0x20 || c >= 0x7f || c == '<' || c == '>' || c == '"' {
-			return errors.New("unsubscribe URL must be printable ASCII without spaces, quotes or angle brackets")
+		if c := v[i]; c <= 0x20 || c >= 0x7f || strings.IndexByte(`<>",\{}|^`+"`", c) >= 0 {
+			return errors.New("unsubscribe URL must be printable ASCII without spaces, commas, quotes, angle brackets or characters URLs must encode")
 		}
 	}
 	u, err := url.Parse(v)
