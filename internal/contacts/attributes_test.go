@@ -13,6 +13,7 @@ func TestValidateAttributes(t *testing.T) {
 		{`{}`, `{}`},
 		{` {"b": true, "a": "x"} `, `{"a":"x","b":true}`},
 		{`{"n": 1.50}`, `{"n":1.50}`},
+		{`{"n": -12.5e-3, "m": 1E+20}`, `{"m":1E+20,"n":-12.5e-3}`},
 		{`{"plan": "<pro>&"}`, `{"plan":"<pro>&"}`},
 		{`{"s": "` + strings.Repeat("ü", 1000) + `"}`, `{"s":"` + strings.Repeat("ü", 1000) + `"}`},
 	}
@@ -46,6 +47,13 @@ func TestValidateAttributes(t *testing.T) {
 		{"string too long", `{"a": "` + strings.Repeat("x", 1001) + `"}`, "attributes.a"},
 		{"NUL", `{"a": "x\u0000y"}`, "attributes.a"},
 		{"huge number", `{"a": 1e400}`, "attributes.a"},
+		// PostgreSQL stores numbers as numeric and prints them written out:
+		// short literals must not expand past the size limit.
+		{"underflow", `{"a": 1e-800}`, "attributes.a"},
+		{"large exponent", `{"a": 1e308}`, "attributes.a"},
+		{"tiny exponent", `{"a": 1e-16000}`, "attributes.a"},
+		{"zero with exponent", `{"a": 0e-10000}`, "attributes.a"},
+		{"long fraction", `{"a": 0.` + strings.Repeat("1", 64) + `}`, "attributes.a"},
 		{"too many", `{` + strings.Join(many, ",") + `}`, "attributes"},
 		{"too big", `{` + strings.Join(big, ",") + `}`, "attributes"},
 	}

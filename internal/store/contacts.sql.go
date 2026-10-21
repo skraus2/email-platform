@@ -239,6 +239,16 @@ func (q *Queries) SetContactLockTimeout(ctx context.Context) error {
 	return err
 }
 
+const setContactStatementTimeout = `-- name: SetContactStatementTimeout :exec
+SET LOCAL statement_timeout = '5s'
+`
+
+// Bounds each statement (the cap count) while the project row is locked.
+func (q *Queries) SetContactStatementTimeout(ctx context.Context) error {
+	_, err := q.db.Exec(ctx, setContactStatementTimeout)
+	return err
+}
+
 const updateContact = `-- name: UpdateContact :one
 UPDATE contacts
 SET status            = coalesce($1::text, status),

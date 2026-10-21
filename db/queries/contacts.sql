@@ -2,6 +2,10 @@
 -- Bounds the wait for the project row lock in this transaction.
 SET LOCAL lock_timeout = '3s';
 
+-- name: SetContactStatementTimeout :exec
+-- Bounds each statement (the cap count) while the project row is locked.
+SET LOCAL statement_timeout = '5s';
+
 -- name: LockProjectForContacts :one
 -- Serialises contact creation per project so the contact cap holds. NO KEY
 -- UPDATE does not block the KEY SHARE locks of other inserts.

@@ -5,7 +5,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"strconv"
 	"time"
 
 	"github.com/google/uuid"
@@ -76,25 +75,9 @@ func parseListQuery(query url.Values) (f emails.ListFilter, limit, status int, c
 	bad := func(code, msg string) (emails.ListFilter, int, int, string, string) {
 		return emails.ListFilter{}, 0, http.StatusBadRequest, code, msg
 	}
-	for k := range query {
-		if !listQueryParams[k] {
-			return bad("invalid_filter", "unknown query parameter")
-		}
-	}
-	limit = defaultEmailPage
-	if v, ok := query["limit"]; ok {
-		n, err := strconv.Atoi(v[0])
-		if len(v) != 1 || err != nil || n < 1 || n > emails.MaxEmailPage {
-			return bad("invalid_limit", "limit must be a single integer between 1 and 100")
-		}
-		limit = n
-	}
-	if v, ok := query["cursor"]; ok {
-		c, valid := decodeCursor(v[0])
-		if len(v) != 1 || !valid {
-			return bad("invalid_cursor", "cursor must be the next_cursor of a previous page")
-		}
-		f.After = c
+	limit, f.After, status, code, msg = parsePage(query, listQueryParams)
+	if status != 0 {
+		return emails.ListFilter{}, 0, status, code, msg
 	}
 	if v, ok := query["status"]; ok {
 		if len(v) > maxStatusFilters {

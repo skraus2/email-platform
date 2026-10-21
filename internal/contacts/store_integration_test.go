@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 
@@ -117,6 +118,22 @@ func TestCreateContactValidation(t *testing.T) {
 		if !errors.As(err, &e) || e.Field != c.field {
 			t.Errorf("%s: %v (want field %s)", c.name, err, c.field)
 		}
+	}
+	// Numbers are stored written out; what passes validation stays small.
+	nums := make([]string, 20)
+	for i := range nums {
+		nums[i] = `"n` + string(rune('a'+i)) + `": 1.` + strings.Repeat("9", 40) + `e-20`
+	}
+	c, err := s.Create(ctx, a, contacts.CreateInput{Email: "n@example.test", Status: "unsubscribed", Attributes: json.RawMessage(`{` + strings.Join(nums, ",") + `}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stored int
+	if err := pool.QueryRow(ctx, "SELECT octet_length(attributes::text) FROM contacts WHERE id = $1", c.ID).Scan(&stored); err != nil || stored > contacts.MaxAttributesSize {
+		t.Fatalf("stored attributes take %d bytes (%v)", stored, err)
+	}
+	if err := s.Delete(ctx, a, c.ID); err != nil {
+		t.Fatal(err)
 	}
 	// Unsubscribed contacts need no source.
 	if _, err := s.Create(ctx, a, contacts.CreateInput{Email: "u@example.test", Status: "unsubscribed"}); err != nil {

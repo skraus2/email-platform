@@ -23,6 +23,10 @@ const (
 	MaxAttributesSize      = 8 << 10
 	MaxConsentSourceLength = 100
 	maxNumberLiteral       = 64
+	// maxNumberDigits bounds a number written out without exponent: the
+	// database stores numbers exactly and prints them that way, so 1e-800
+	// would take 800 bytes.
+	maxNumberDigits = 64
 )
 
 // ReservedAttribute is filled in by the platform when a broadcast renders.
@@ -84,8 +88,8 @@ func ValidateAttributes(raw []byte) ([]byte, error) {
 				return nil, invalid(field, "must not contain NUL")
 			}
 		case json.Number:
-			if len(v) > maxNumberLiteral {
-				return nil, invalid(field, "must be a finite number")
+			if len(v) > maxNumberLiteral || writtenOutDigits(string(v)) > maxNumberDigits {
+				return nil, invalid(field, "must be a number of at most %d digits written out", maxNumberDigits)
 			}
 			if _, err := strconv.ParseFloat(string(v), 64); err != nil {
 				return nil, invalid(field, "must be a finite number")
@@ -113,6 +117,22 @@ func ValidateAttributes(raw []byte) ([]byte, error) {
 		return nil, invalid("attributes", "must be at most %d bytes as compact JSON", MaxAttributesSize)
 	}
 	return out, nil
+}
+
+// writtenOutDigits is an upper bound of the digits of a JSON number literal
+// written out without exponent: its mantissa digits plus the exponent's
+// magnitude.
+func writtenOutDigits(n string) int {
+	mantissa, exp, hasExp := strings.Cut(strings.ToLower(n), "e")
+	digits := len(strings.TrimPrefix(strings.Replace(mantissa, ".", "", 1), "-"))
+	if !hasExp {
+		return digits
+	}
+	e, err := strconv.Atoi(strings.TrimPrefix(exp, "+"))
+	if err != nil || e > maxNumberDigits || e < -maxNumberDigits {
+		return maxNumberDigits + 1
+	}
+	return digits + max(e, -e)
 }
 
 // canonical encodes values as compact JSON, names sorted, numbers in their

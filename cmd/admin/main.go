@@ -5,7 +5,7 @@
 //	admin project list
 //	admin project disable -id <uuid>
 //	admin project enable -id <uuid>
-//	admin key create -project <uuid> [-scopes emails:send,emails:read,templates:read,templates:write,webhooks:write]
+//	admin key create -project <uuid> [-scopes emails:send,emails:read,templates:read,templates:write,webhooks:write,contacts:read,contacts:write]
 //	admin key list -project <uuid>
 //	admin key revoke -prefix <prefix>
 //	admin email list -project <uuid> [-status failed] [-limit 50]
@@ -59,7 +59,7 @@ const usage = `usage:
   admin project list
   admin project disable -id <uuid>
   admin project enable -id <uuid>
-  admin key create -project <uuid> [-scopes emails:send,emails:read,templates:read,templates:write,webhooks:write]
+  admin key create -project <uuid> [-scopes emails:send,emails:read,templates:read,templates:write,webhooks:write,contacts:read,contacts:write]
   admin key list -project <uuid>
   admin key revoke -prefix <prefix>
   admin email list -project <uuid> [-status failed] [-limit 50]

@@ -162,6 +162,10 @@ func TestListContactsQuery(t *testing.T) {
 	if rec.Code != 200 || f.filter.Email != "A@example.test" || f.filter.Status != "unsubscribed" || f.limit != 7 || f.filter.After != cursor {
 		t.Fatalf("query: %d %+v %d", rec.Code, f.filter, f.limit)
 	}
+	f = &fakeContacts{}
+	if rec, _ := contactCall(t, f, contactScopes, "GET", "/v1/contacts", ""); rec.Code != 200 || f.limit != 50 || f.filter != (contacts.ListFilter{}) {
+		t.Fatalf("defaults: %d %+v %d", rec.Code, f.filter, f.limit)
+	}
 	if rec.Body.String() != "{\"data\":[],\"next_cursor\":null}\n" {
 		t.Fatalf("empty page: %s", rec.Body)
 	}
@@ -169,6 +173,7 @@ func TestListContactsQuery(t *testing.T) {
 		"?other=1": "invalid_filter", "?email=x": "invalid_filter", "?email=a@example.test&email=b@example.test": "invalid_filter",
 		"?status=pending": "invalid_filter", "?status=subscribed&status=unsubscribed": "invalid_filter",
 		"?limit=0": "invalid_limit", "?limit=101": "invalid_limit", "?cursor=zz": "invalid_cursor",
+		"?limit=1&limit=2": "invalid_limit", "?cursor=" + encodeCursor(cursor) + "&cursor=" + encodeCursor(cursor): "invalid_cursor",
 	} {
 		rec, _ := contactCall(t, &fakeContacts{}, contactScopes, "GET", "/v1/contacts"+q, "")
 		if rec.Code != 400 || !strings.Contains(rec.Body.String(), code) || strings.Contains(rec.Body.String(), "pending") {

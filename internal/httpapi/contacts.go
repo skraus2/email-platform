@@ -211,7 +211,7 @@ func parsePage(query url.Values, allowed map[string]bool) (limit int, after uuid
 	limit = defaultEmailPage
 	if v, ok := query["limit"]; ok {
 		n, err := strconv.Atoi(v[0])
-		if len(v) != 1 || err != nil || n < 1 || n > 100 {
+		if len(v) != 1 || err != nil || n < 1 || n > emails.MaxEmailPage {
 			return 0, uuid.Nil, http.StatusBadRequest, "invalid_limit", "limit must be a single integer between 1 and 100"
 		}
 		limit = n

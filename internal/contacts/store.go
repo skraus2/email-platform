@@ -122,7 +122,11 @@ func validateConsent(status string, source *string) error {
 // Create adds a contact. Validation errors are *Error.
 func (s *Store) Create(ctx context.Context, projectID uuid.UUID, in CreateInput) (Contact, error) {
 	if err := emails.ValidateAddress(in.Email); err != nil {
-		return Contact{}, invalid("email", "must be a single plain ASCII email address")
+		var ve *emails.ValidationError
+		if errors.As(err, &ve) {
+			return Contact{}, invalid("email", "%s", ve.Reason)
+		}
+		return Contact{}, err
 	}
 	if err := validateConsent(in.Status, in.ConsentSource); err != nil {
 		return Contact{}, err
@@ -140,6 +144,9 @@ func (s *Store) Create(ctx context.Context, projectID uuid.UUID, in CreateInput)
 		q := store.New(tx)
 		if err := q.SetContactLockTimeout(ctx); err != nil {
 			return fmt.Errorf("lock timeout: %w", err)
+		}
+		if err := q.SetContactStatementTimeout(ctx); err != nil {
+			return fmt.Errorf("statement timeout: %w", err)
 		}
 		if _, err := q.LockProjectForContacts(ctx, projectID); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
@@ -161,7 +168,7 @@ func (s *Store) Create(ctx context.Context, projectID uuid.UUID, in CreateInput)
 		if isCode(err, "23505") {
 			return ErrExists
 		}
-		if err != nil {
+		if err := rejected(err); err != nil {
 			return fmt.Errorf("insert contact: %w", err)
 		}
 		return nil
@@ -212,7 +219,7 @@ func (s *Store) Update(ctx context.Context, projectID, id uuid.UUID, in UpdateIn
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Contact{}, ErrNotFound
 	}
-	if err != nil {
+	if err := rejected(err); err != nil {
 		return Contact{}, fmt.Errorf("update contact: %w", err)
 	}
 	return fromRow(row)
@@ -280,10 +287,22 @@ func isCode(err error, code string) bool {
 	return errors.As(err, &pgErr) && pgErr.Code == code
 }
 
-// busy turns a lock timeout into ErrBusy.
+// busy turns a lock or statement timeout into ErrBusy.
 func busy(err error) error {
-	if isCode(err, "55P03") {
+	if isCode(err, "55P03") || isCode(err, "57014") {
 		return ErrBusy
+	}
+	return err
+}
+
+// rejected turns a value the database refused (a CHECK backstop, a number
+// out of range) into a validation error; validation above should have
+// caught it, so this only keeps such a gap from becoming a server error.
+func rejected(err error) error {
+	for _, code := range []string{"23514", "22003", "22P02"} {
+		if isCode(err, code) {
+			return &Error{Field: "attributes", Reason: "were refused by the database (too large or out of range)"}
+		}
 	}
 	return err
 }
