@@ -469,8 +469,9 @@ paths:
       summary: Change a contact's consent status, consent source or attributes
       description: |
         Requires scope `contacts:write`. Fields not sent stay unchanged;
-        `attributes` replaces all attributes. A change to `subscribed`
-        needs `consent_source` in the same request. `status_changed_at`
+        `attributes` replaces all attributes. A request setting `status`
+        to `subscribed` needs `consent_source` too; `null` values give
+        `422 validation_failed`. `status_changed_at`
         moves only when the status changes.
       parameters:
         - $ref: "#/components/parameters/ResourceID"
@@ -1749,7 +1750,7 @@ components:
           type: string
           minLength: 1
           maxLength: 100
-          description: Required together with a change to `subscribed`.
+          description: Required whenever `status` is `subscribed` in the same request.
         attributes:
           $ref: "#/components/schemas/ContactAttributes"
     Contact:

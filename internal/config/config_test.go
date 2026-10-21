@@ -112,6 +112,7 @@ func TestLoadRejectsInvalid(t *testing.T) {
 		{"admin max below idle", map[string]string{"DATABASE_URL": devURL, "ADMIN_SESSION_IDLE": "2h", "ADMIN_SESSION_MAX": "1h"}, "ADMIN_SESSION_MAX"},
 		{"admin max above a week", map[string]string{"DATABASE_URL": devURL, "ADMIN_SESSION_MAX": "169h"}, "ADMIN_SESSION_MAX"},
 		{"template writes zero", map[string]string{"DATABASE_URL": devURL, "TEMPLATE_WRITES_PER_MINUTE": "0"}, "TEMPLATE_WRITES_PER_MINUTE"},
+		{"contact cap zero", map[string]string{"DATABASE_URL": devURL, "CONTACT_MAX_PER_PROJECT": "0"}, "CONTACT_MAX_PER_PROJECT"},
 		{"template storage not a number", map[string]string{"DATABASE_URL": devURL, "TEMPLATE_MAX_STORAGE_BYTES": "50MiB"}, "TEMPLATE_MAX_STORAGE_BYTES"},
 		{"max delay above a day", map[string]string{"DATABASE_URL": devURL, "RETRY_MAX_DELAY": "25h"}, "RETRY_MAX_DELAY"},
 		{"retries outlive content", map[string]string{"DATABASE_URL": devURL, "SEND_MAX_ATTEMPTS": "25", "RETRY_BASE_DELAY": "1h", "RETRY_MAX_DELAY": "24h", "BODY_MAX_AGE": "48h"}, "BODY_MAX_AGE"},
@@ -204,6 +205,9 @@ func TestLoadRetryDefaults(t *testing.T) {
 	if cfg.TemplateMaxPerProject != 200 || cfg.TemplateMaxVersions != 500 || cfg.TemplateMaxStorageBytes != 50<<20 || cfg.TemplateWritesPerMinute != 60 ||
 		cfg.AdminSessionIdle != 30*time.Minute || cfg.AdminSessionMax != 12*time.Hour {
 		t.Errorf("template caps = %d %d %d %d", cfg.TemplateMaxPerProject, cfg.TemplateMaxVersions, cfg.TemplateMaxStorageBytes, cfg.TemplateWritesPerMinute)
+	}
+	if cfg.ContactMaxPerProject != 250_000 {
+		t.Errorf("ContactMaxPerProject = %d, want 250000", cfg.ContactMaxPerProject)
 	}
 	if cfg.EventRetention != 90*24*time.Hour || cfg.WebhookDeliveryRetention != 30*24*time.Hour || cfg.EmailRetention != 0 {
 		t.Errorf("retention = %v %v %v; want 2160h 720h off", cfg.EventRetention, cfg.WebhookDeliveryRetention, cfg.EmailRetention)

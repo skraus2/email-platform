@@ -19,6 +19,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/skraus2/email-platform/internal/auth"
+	"github.com/skraus2/email-platform/internal/contacts"
 	"github.com/skraus2/email-platform/internal/emails"
 	"github.com/skraus2/email-platform/internal/httpapi"
 	"github.com/skraus2/email-platform/internal/jobs"
@@ -63,6 +64,7 @@ func newStackWith(t *testing.T, perMinute int, requireSender bool) *stack {
 		Logger:    logger,
 		Emails:    svc,
 		Templates: templates.NewStore(pool, 200, 500, 50<<20, 1_000_000),
+		Contacts:  contacts.NewStore(pool, 1000),
 		Authenticate: func(ctx context.Context, token string) (auth.Principal, error) {
 			return auth.Authenticate(ctx, q.GetActiveKeyByPrefix, token)
 		},

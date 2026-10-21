@@ -35,6 +35,7 @@ type Deps struct {
 	// Webhooks registers webhook endpoints; nil turns the route into
 	// 503 webhook_registration_disabled.
 	Webhooks WebhookRegistrar
+	Contacts ContactService
 }
 
 // Server holds the HTTP handler and readiness state.
@@ -45,13 +46,14 @@ type Server struct {
 	emails       EmailService
 	templates    TemplateService
 	webhooks     WebhookRegistrar
+	contacts     ContactService
 	draining     atomic.Bool
 	handler      http.Handler
 }
 
 // New builds the API handler.
 func New(d Deps) *Server {
-	s := &Server{logger: d.Logger, checks: d.Checks, authenticate: d.Authenticate, emails: d.Emails, templates: d.Templates, webhooks: d.Webhooks}
+	s := &Server{logger: d.Logger, checks: d.Checks, authenticate: d.Authenticate, emails: d.Emails, templates: d.Templates, webhooks: d.Webhooks, contacts: d.Contacts}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
@@ -77,6 +79,13 @@ func New(d Deps) *Server {
 	mux.HandleFunc("/v1/templates/{id}/versions/{version}", methodNotAllowed(http.MethodGet))
 	mux.HandleFunc("POST /v1/webhook-endpoints", s.requireScope(auth.ScopeWebhooksWrite, s.handleCreateWebhookEndpoint))
 	mux.HandleFunc("/v1/webhook-endpoints", methodNotAllowed(http.MethodPost))
+	mux.HandleFunc("POST /v1/contacts", s.requireScope(auth.ScopeContactsWrite, s.handleCreateContact))
+	mux.HandleFunc("GET /v1/contacts", s.requireScope(auth.ScopeContactsRead, s.handleListContacts))
+	mux.HandleFunc("/v1/contacts", methodNotAllowed(http.MethodGet+", "+http.MethodPost))
+	mux.HandleFunc("GET /v1/contacts/{id}", s.requireScope(auth.ScopeContactsRead, s.handleGetContact))
+	mux.HandleFunc("PATCH /v1/contacts/{id}", s.requireScope(auth.ScopeContactsWrite, s.handleUpdateContact))
+	mux.HandleFunc("DELETE /v1/contacts/{id}", s.requireScope(auth.ScopeContactsWrite, s.handleDeleteContact))
+	mux.HandleFunc("/v1/contacts/{id}", methodNotAllowed(http.MethodGet+", "+http.MethodPatch+", "+http.MethodDelete))
 	mux.HandleFunc("/", handleNotFound)
 
 	s.handler = requestLogger(s.logger, mux)

@@ -27,6 +27,7 @@ sql:
       - db/migrations/00021_admin_accounts.sql
       - db/migrations/00022_email_provider_id_index.sql
       - db/migrations/00023_operator_search_indexes.sql
+      - db/migrations/00027_contacts.sql
     queries: db/queries
     gen:
       go:

@@ -40,6 +40,19 @@ type ApiKey struct {
 	RevokedAt  *time.Time
 }
 
+type Contact struct {
+	ID               uuid.UUID
+	ProjectID        uuid.UUID
+	Email            string
+	Status           string
+	ConsentSource    *string
+	StatusChangedAt  time.Time
+	Attributes       []byte
+	UnsubscribeToken string
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+}
+
 type Email struct {
 	ID              uuid.UUID
 	ProjectID       uuid.UUID

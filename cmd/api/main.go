@@ -17,6 +17,7 @@ import (
 	"github.com/skraus2/email-platform/internal/admin"
 	"github.com/skraus2/email-platform/internal/auth"
 	"github.com/skraus2/email-platform/internal/config"
+	"github.com/skraus2/email-platform/internal/contacts"
 	"github.com/skraus2/email-platform/internal/database"
 	"github.com/skraus2/email-platform/internal/emails"
 	"github.com/skraus2/email-platform/internal/httpapi"
@@ -77,6 +78,7 @@ func run() error {
 		Emails:    service,
 		Webhooks:  registrar,
 		Templates: templates.NewStore(pool, cfg.TemplateMaxPerProject, cfg.TemplateMaxVersions, int64(cfg.TemplateMaxStorageBytes), cfg.TemplateWritesPerMinute),
+		Contacts:  contacts.NewStore(pool, cfg.ContactMaxPerProject),
 		Authenticate: func(ctx context.Context, token string) (auth.Principal, error) {
 			return auth.Authenticate(ctx, queries.GetActiveKeyByPrefix, token)
 		},

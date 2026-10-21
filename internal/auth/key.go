@@ -34,10 +34,15 @@ const (
 	ScopeTemplatesRead  = "templates:read"
 	ScopeTemplatesWrite = "templates:write"
 	ScopeWebhooksWrite  = "webhooks:write"
+	ScopeContactsRead   = "contacts:read"
+	ScopeContactsWrite  = "contacts:write"
 )
 
 // KnownScopes lists every scope a key may carry.
-var KnownScopes = []string{ScopeEmailsSend, ScopeEmailsRead, ScopeTemplatesRead, ScopeTemplatesWrite, ScopeWebhooksWrite}
+var KnownScopes = []string{
+	ScopeEmailsSend, ScopeEmailsRead, ScopeTemplatesRead, ScopeTemplatesWrite, ScopeWebhooksWrite,
+	ScopeContactsRead, ScopeContactsWrite,
+}
 
 // DefaultScopes is what a new key gets unless the admin narrows it.
 var DefaultScopes = []string{ScopeEmailsSend, ScopeEmailsRead}
