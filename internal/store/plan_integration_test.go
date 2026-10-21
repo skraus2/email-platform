@@ -68,7 +68,8 @@ func TestEmailListQueriesPlanWithActualValues(t *testing.T) {
 	project := seedPlanData(t, pool)
 	ctx := context.Background()
 	var after *time.Time
-	var noTemplate *uuid.UUID
+	var noTemplate, noBroadcast *uuid.UUID
+	someBroadcast := uuid.New()
 	tmpl := seedTemplateSends(t, pool, project)
 	for name, tc := range map[string]struct {
 		query string
@@ -76,13 +77,16 @@ func TestEmailListQueriesPlanWithActualValues(t *testing.T) {
 		want  []string
 	}{
 		"first page": {listProjectEmails,
-			[]any{project, uuid.Max, uuid.Nil, []string{}, after, after, noTemplate, int32(51)},
+			[]any{project, uuid.Max, uuid.Nil, []string{}, after, after, noTemplate, noBroadcast, int32(51)},
 			[]string{"emails_project_id_idx", "(project_id = "}},
 		"by template": {listProjectEmails,
-			[]any{project, uuid.Max, uuid.Nil, []string{}, after, after, &tmpl, int32(51)},
+			[]any{project, uuid.Max, uuid.Nil, []string{}, after, after, &tmpl, noBroadcast, int32(51)},
 			[]string{"emails_project_template_idx", "(template_id = "}},
+		"by broadcast": {listProjectEmails,
+			[]any{project, uuid.Max, uuid.Nil, []string{}, after, after, noTemplate, &someBroadcast, int32(51)},
+			[]string{"emails_broadcast_idx", "(broadcast_id = "}},
 		"by recipient": {listProjectEmailsByRecipient,
-			[]any{project, "USER7@example.test", uuid.Max, uuid.Nil, []string{}, after, after, noTemplate, int32(51)},
+			[]any{project, "USER7@example.test", uuid.Max, uuid.Nil, []string{}, after, after, noTemplate, noBroadcast, int32(51)},
 			[]string{"emails_project_recipient_idx", "lower(recipient)"}},
 	} {
 		rows, err := pool.Query(ctx, "EXPLAIN "+tc.query, append([]any{pgx.QueryExecModeDescribeExec}, tc.args...)...)
