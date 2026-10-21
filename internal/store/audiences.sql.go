@@ -7,6 +7,7 @@ package store
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -35,16 +36,13 @@ func (q *Queries) AddAudienceMembers(ctx context.Context, arg AddAudienceMembers
 }
 
 const countAudienceMembers = `-- name: CountAudienceMembers :one
-SELECT count(*) FROM audience_members WHERE audience_id = $1 AND project_id = $2
+SELECT count(*) FROM audience_members WHERE audience_id = $1
 `
 
-type CountAudienceMembersParams struct {
-	AudienceID uuid.UUID
-	ProjectID  uuid.UUID
-}
-
-func (q *Queries) CountAudienceMembers(ctx context.Context, arg CountAudienceMembersParams) (int64, error) {
-	row := q.db.QueryRow(ctx, countAudienceMembers, arg.AudienceID, arg.ProjectID)
+// Callers have checked that the audience belongs to the project; the count
+// uses the primary key index alone.
+func (q *Queries) CountAudienceMembers(ctx context.Context, audienceID uuid.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countAudienceMembers, audienceID)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
@@ -52,18 +50,18 @@ func (q *Queries) CountAudienceMembers(ctx context.Context, arg CountAudienceMem
 
 const countAudienceMembersIn = `-- name: CountAudienceMembersIn :one
 SELECT count(*) FROM audience_members
-WHERE audience_id = $1 AND project_id = $2 AND contact_id = ANY ($3::uuid[])
+WHERE audience_id = $1 AND contact_id = ANY ($2::uuid[])
 `
 
 type CountAudienceMembersInParams struct {
 	AudienceID uuid.UUID
-	ProjectID  uuid.UUID
 	Ids        []uuid.UUID
 }
 
-// How many of the ids already are members of the audience.
+// How many of the ids already are members of the audience (callers have
+// checked that the audience belongs to the project).
 func (q *Queries) CountAudienceMembersIn(ctx context.Context, arg CountAudienceMembersInParams) (int64, error) {
-	row := q.db.QueryRow(ctx, countAudienceMembersIn, arg.AudienceID, arg.ProjectID, arg.Ids)
+	row := q.db.QueryRow(ctx, countAudienceMembersIn, arg.AudienceID, arg.Ids)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
@@ -140,7 +138,8 @@ func (q *Queries) InsertAudience(ctx context.Context, arg InsertAudienceParams) 
 }
 
 const listAudienceContacts = `-- name: ListAudienceContacts :many
-SELECT c.id, c.project_id, c.email, c.status, c.consent_source, c.status_changed_at, c.attributes, c.unsubscribe_token, c.created_at, c.updated_at FROM audience_members m
+SELECT c.id, c.project_id, c.email, c.status, c.consent_source, c.status_changed_at, c.attributes, c.created_at, c.updated_at
+FROM audience_members m
 JOIN contacts c ON c.id = m.contact_id AND c.project_id = m.project_id
 WHERE m.audience_id = $1 AND m.project_id = $2
   AND m.contact_id > $3::uuid
@@ -155,9 +154,21 @@ type ListAudienceContactsParams struct {
 	RowLimit   int32
 }
 
+type ListAudienceContactsRow struct {
+	ID              uuid.UUID
+	ProjectID       uuid.UUID
+	Email           string
+	Status          string
+	ConsentSource   *string
+	StatusChangedAt time.Time
+	Attributes      []byte
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+}
+
 // One page of an audience's member contacts by contact id; after_id is the
 // cursor (the nil UUID for the first page).
-func (q *Queries) ListAudienceContacts(ctx context.Context, arg ListAudienceContactsParams) ([]Contact, error) {
+func (q *Queries) ListAudienceContacts(ctx context.Context, arg ListAudienceContactsParams) ([]ListAudienceContactsRow, error) {
 	rows, err := q.db.Query(ctx, listAudienceContacts,
 		arg.AudienceID,
 		arg.ProjectID,
@@ -168,9 +179,9 @@ func (q *Queries) ListAudienceContacts(ctx context.Context, arg ListAudienceCont
 		return nil, err
 	}
 	defer rows.Close()
-	items := []Contact{}
+	items := []ListAudienceContactsRow{}
 	for rows.Next() {
-		var i Contact
+		var i ListAudienceContactsRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.ProjectID,
@@ -179,7 +190,6 @@ func (q *Queries) ListAudienceContacts(ctx context.Context, arg ListAudienceCont
 			&i.ConsentSource,
 			&i.StatusChangedAt,
 			&i.Attributes,
-			&i.UnsubscribeToken,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 		); err != nil {

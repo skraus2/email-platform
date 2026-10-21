@@ -119,6 +119,10 @@ func (s *Server) handleAddAudienceContacts(w http.ResponseWriter, r *http.Reques
 		writeError(w, status, code, msg)
 		return
 	}
+	if n := len(req.ContactIDs); n == 0 || n > contacts.MaxAddBatch {
+		s.writeContactError(w, r, "add audience contacts", &contacts.Error{Field: "contact_ids", Reason: "must hold 1 to 1000 ids"})
+		return
+	}
 	ids := make([]uuid.UUID, 0, len(req.ContactIDs))
 	for _, v := range req.ContactIDs {
 		cid, err := uuid.Parse(v)

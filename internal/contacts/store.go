@@ -54,7 +54,21 @@ type Contact struct {
 	UpdatedAt  time.Time
 }
 
-func fromRow(r store.Contact) (Contact, error) {
+// contactRow is the token-free column set every API contact query selects;
+// the generated row types of those queries convert to it.
+type contactRow struct {
+	ID              uuid.UUID
+	ProjectID       uuid.UUID
+	Email           string
+	Status          string
+	ConsentSource   *string
+	StatusChangedAt time.Time
+	Attributes      []byte
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+}
+
+func fromRow(r contactRow) (Contact, error) {
 	attrs, err := fromStored(r.Attributes)
 	if err != nil {
 		return Contact{}, fmt.Errorf("stored attributes of contact %s: %w", r.ID, err)
@@ -139,7 +153,7 @@ func (s *Store) Create(ctx context.Context, projectID uuid.UUID, in CreateInput)
 	if err != nil {
 		return Contact{}, err
 	}
-	var row store.Contact
+	var row store.InsertContactRow
 	err = pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		q := store.New(tx)
 		if err := q.SetContactLockTimeout(ctx); err != nil {
@@ -176,7 +190,7 @@ func (s *Store) Create(ctx context.Context, projectID uuid.UUID, in CreateInput)
 	if err != nil {
 		return Contact{}, busy(err)
 	}
-	return fromRow(row)
+	return fromRow(contactRow(row))
 }
 
 // Get returns a contact of the project.
@@ -188,7 +202,7 @@ func (s *Store) Get(ctx context.Context, projectID, id uuid.UUID) (Contact, erro
 	if err != nil {
 		return Contact{}, fmt.Errorf("get contact: %w", err)
 	}
-	return fromRow(row)
+	return fromRow(contactRow(row))
 }
 
 // Update changes a contact of the project. A status of subscribed needs a
@@ -222,7 +236,7 @@ func (s *Store) Update(ctx context.Context, projectID, id uuid.UUID, in UpdateIn
 	if err := rejected(err); err != nil {
 		return Contact{}, fmt.Errorf("update contact: %w", err)
 	}
-	return fromRow(row)
+	return fromRow(contactRow(row))
 }
 
 // Delete erases a contact of the project with its memberships.
@@ -250,19 +264,27 @@ func (s *Store) List(ctx context.Context, projectID uuid.UUID, f ListFilter, lim
 		status = &f.Status
 	}
 	q := store.New(s.pool)
-	var rows []store.Contact
-	var err error
+	var rows []contactRow
 	if f.Email != "" {
-		rows, err = q.ListContactsByEmail(ctx, store.ListContactsByEmailParams{
+		r, err := q.ListContactsByEmail(ctx, store.ListContactsByEmailParams{
 			ProjectID: projectID, Email: f.Email, BeforeID: before, Status: status, RowLimit: int32(limit + 1), //nolint:gosec // limit ≤ MaxPage
 		})
+		if err != nil {
+			return nil, false, fmt.Errorf("list contacts: %w", err)
+		}
+		for _, x := range r {
+			rows = append(rows, contactRow(x))
+		}
 	} else {
-		rows, err = q.ListContacts(ctx, store.ListContactsParams{
+		r, err := q.ListContacts(ctx, store.ListContactsParams{
 			ProjectID: projectID, BeforeID: before, Status: status, RowLimit: int32(limit + 1), //nolint:gosec // limit ≤ MaxPage
 		})
-	}
-	if err != nil {
-		return nil, false, fmt.Errorf("list contacts: %w", err)
+		if err != nil {
+			return nil, false, fmt.Errorf("list contacts: %w", err)
+		}
+		for _, x := range r {
+			rows = append(rows, contactRow(x))
+		}
 	}
 	more := len(rows) > limit
 	if more {

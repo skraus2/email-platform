@@ -111,6 +111,13 @@ func TestAudienceRequests(t *testing.T) {
 			t.Errorf("%s: %d", body, rec.Code)
 		}
 	}
+	many := `{"contact_ids":[` + strings.Repeat(`"`+cid+`",`, 1000) + `"` + cid + `"]}`
+	for _, body := range []string{`{"contact_ids":[]}`, many} {
+		f := &fakeAudiences{}
+		if rec := audienceCall(t, f, contactScopes, "POST", "/v1/audiences/"+id+"/contacts", body); rec.Code != 422 || f.ids != nil {
+			t.Errorf("%d ids: %d (reached the store: %v)", strings.Count(body, cid), rec.Code, f.ids != nil)
+		}
+	}
 	if rec := audienceCall(t, &fakeAudiences{}, contactScopes, "POST", "/v1/audiences/"+id+"/contacts", `{"ids":[]}`); rec.Code != 400 {
 		t.Errorf("unknown field: %d", rec.Code)
 	}

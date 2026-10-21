@@ -21,16 +21,19 @@ LIMIT sqlc.arg(row_limit);
 SELECT id FROM audiences WHERE id = $1 AND project_id = $2 FOR NO KEY UPDATE;
 
 -- name: CountAudienceMembers :one
-SELECT count(*) FROM audience_members WHERE audience_id = $1 AND project_id = $2;
+-- Callers have checked that the audience belongs to the project; the count
+-- uses the primary key index alone.
+SELECT count(*) FROM audience_members WHERE audience_id = $1;
 
 -- name: CountProjectContactsIn :one
 -- How many of the ids are contacts of the project.
 SELECT count(*) FROM contacts WHERE project_id = $1 AND id = ANY (sqlc.arg(ids)::uuid[]);
 
 -- name: CountAudienceMembersIn :one
--- How many of the ids already are members of the audience.
+-- How many of the ids already are members of the audience (callers have
+-- checked that the audience belongs to the project).
 SELECT count(*) FROM audience_members
-WHERE audience_id = $1 AND project_id = $2 AND contact_id = ANY (sqlc.arg(ids)::uuid[]);
+WHERE audience_id = $1 AND contact_id = ANY (sqlc.arg(ids)::uuid[]);
 
 -- name: AddAudienceMembers :execrows
 -- Adds the contacts of the project among ids; existing members stay.
@@ -46,7 +49,8 @@ DELETE FROM audience_members WHERE audience_id = $1 AND contact_id = $2 AND proj
 -- name: ListAudienceContacts :many
 -- One page of an audience's member contacts by contact id; after_id is the
 -- cursor (the nil UUID for the first page).
-SELECT c.* FROM audience_members m
+SELECT c.id, c.project_id, c.email, c.status, c.consent_source, c.status_changed_at, c.attributes, c.created_at, c.updated_at
+FROM audience_members m
 JOIN contacts c ON c.id = m.contact_id AND c.project_id = m.project_id
 WHERE m.audience_id = sqlc.arg(audience_id) AND m.project_id = sqlc.arg(project_id)
   AND m.contact_id > sqlc.arg(after_id)::uuid

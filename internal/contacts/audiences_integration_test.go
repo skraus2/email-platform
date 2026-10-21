@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/skraus2/email-platform/internal/contacts"
 )
@@ -192,8 +193,9 @@ func TestAudienceMembership(t *testing.T) {
 		t.Fatalf("members after contact delete: %d", n)
 	}
 	// Composite keys: a membership across projects is impossible.
-	if _, err := pool.Exec(ctx, "INSERT INTO audience_members (project_id, audience_id, contact_id) VALUES ($1, $2, $3)", a, au.ID, foreign.ID); err == nil {
-		t.Fatal("cross-project membership stored")
+	_, err = pool.Exec(ctx, "INSERT INTO audience_members (project_id, audience_id, contact_id) VALUES ($1, $2, $3)", a, au.ID, foreign.ID)
+	if pgErr := (*pgconn.PgError)(nil); !errors.As(err, &pgErr) || pgErr.Code != "23503" {
+		t.Fatalf("cross-project membership: %v, want a foreign key violation", err)
 	}
 }
 
@@ -216,10 +218,25 @@ func TestAudienceCapConcurrent(t *testing.T) {
 		ids = append(ids, c.ID)
 	}
 	var wg sync.WaitGroup
+	errs := make([]error, len(ids))
 	for i := range ids {
-		wg.Go(func() { _ = s.AddOne(ctx, a, au.ID, ids[i]) })
+		wg.Go(func() { errs[i] = s.AddOne(ctx, a, au.ID, ids[i]) })
 	}
 	wg.Wait()
+	ok, full := 0, 0
+	for _, err := range errs {
+		switch {
+		case err == nil:
+			ok++
+		case errors.Is(err, contacts.ErrAudienceFull):
+			full++
+		default:
+			t.Errorf("unexpected: %v", err)
+		}
+	}
+	if ok != 4 || full != 6 {
+		t.Fatalf("%d added, %d full; want 4 and 6", ok, full)
+	}
 	if _, n, err := s.Get(ctx, a, au.ID); err != nil || n != 4 {
 		t.Fatalf("members after concurrent adds: %d %v", n, err)
 	}

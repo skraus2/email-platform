@@ -137,7 +137,7 @@ func (s *Audiences) Get(ctx context.Context, projectID, id uuid.UUID) (Audience,
 	if err != nil {
 		return Audience{}, 0, fmt.Errorf("get audience: %w", err)
 	}
-	n, err := q.CountAudienceMembers(ctx, store.CountAudienceMembersParams{AudienceID: id, ProjectID: projectID})
+	n, err := q.CountAudienceMembers(ctx, id)
 	if err != nil {
 		return Audience{}, 0, fmt.Errorf("count members: %w", err)
 	}
@@ -195,11 +195,11 @@ func (s *Audiences) Add(ctx context.Context, projectID, audienceID uuid.UUID, id
 		if err != nil {
 			return fmt.Errorf("count contacts: %w", err)
 		}
-		already, err := q.CountAudienceMembersIn(ctx, store.CountAudienceMembersInParams{AudienceID: audienceID, ProjectID: projectID, Ids: ids})
+		members, err := q.CountAudienceMembers(ctx, audienceID)
 		if err != nil {
 			return fmt.Errorf("count members: %w", err)
 		}
-		members, err := q.CountAudienceMembers(ctx, store.CountAudienceMembersParams{AudienceID: audienceID, ProjectID: projectID})
+		already, err := q.CountAudienceMembersIn(ctx, store.CountAudienceMembersInParams{AudienceID: audienceID, Ids: ids})
 		if err != nil {
 			return fmt.Errorf("count members: %w", err)
 		}
@@ -210,7 +210,21 @@ func (s *Audiences) Add(ctx context.Context, projectID, audienceID uuid.UUID, id
 		if err != nil {
 			return fmt.Errorf("add members: %w", err)
 		}
-		res = AddResult{Added: int(added), AlreadyMembers: int(already), NotFound: len(ids) - int(found)}
+		// Removals do not take the audience lock and may run between the
+		// counts above (re-adding a member just removed); the cap is checked
+		// again on the result, so it holds whatever they did.
+		if added > 0 {
+			after, err := q.CountAudienceMembers(ctx, audienceID)
+			if err != nil {
+				return fmt.Errorf("count members: %w", err)
+			}
+			if after > int64(s.maxContacts) {
+				return ErrAudienceFull
+			}
+		}
+		// Derived from what was inserted, so the three counts always add up
+		// to len(ids) even when a removal ran in between.
+		res = AddResult{Added: int(added), AlreadyMembers: int(found - added), NotFound: len(ids) - int(found)}
 		return nil
 	})
 	if isCode(err, "23503") {
@@ -275,7 +289,7 @@ func (s *Audiences) Members(ctx context.Context, projectID, audienceID, after uu
 	}
 	out := make([]Contact, 0, len(rows))
 	for _, r := range rows {
-		c, err := fromRow(r)
+		c, err := fromRow(contactRow(r))
 		if err != nil {
 			return nil, false, err
 		}

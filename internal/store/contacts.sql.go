@@ -7,9 +7,26 @@ package store
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 )
+
+const contactIDByToken = `-- name: ContactIDByToken :one
+SELECT id FROM contacts WHERE project_id = $1 AND unsubscribe_token = $2
+`
+
+type ContactIDByTokenParams struct {
+	ProjectID        uuid.UUID
+	UnsubscribeToken string
+}
+
+func (q *Queries) ContactIDByToken(ctx context.Context, arg ContactIDByTokenParams) (uuid.UUID, error) {
+	row := q.db.QueryRow(ctx, contactIDByToken, arg.ProjectID, arg.UnsubscribeToken)
+	var id uuid.UUID
+	err := row.Scan(&id)
+	return id, err
+}
 
 const countContacts = `-- name: CountContacts :one
 SELECT count(*) FROM contacts WHERE project_id = $1
@@ -40,7 +57,7 @@ func (q *Queries) DeleteContact(ctx context.Context, arg DeleteContactParams) (i
 }
 
 const getContact = `-- name: GetContact :one
-SELECT id, project_id, email, status, consent_source, status_changed_at, attributes, unsubscribe_token, created_at, updated_at FROM contacts WHERE id = $1 AND project_id = $2
+SELECT id, project_id, email, status, consent_source, status_changed_at, attributes, created_at, updated_at FROM contacts WHERE id = $1 AND project_id = $2
 `
 
 type GetContactParams struct {
@@ -48,9 +65,22 @@ type GetContactParams struct {
 	ProjectID uuid.UUID
 }
 
-func (q *Queries) GetContact(ctx context.Context, arg GetContactParams) (Contact, error) {
+type GetContactRow struct {
+	ID              uuid.UUID
+	ProjectID       uuid.UUID
+	Email           string
+	Status          string
+	ConsentSource   *string
+	StatusChangedAt time.Time
+	Attributes      []byte
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+}
+
+// Contact queries of the API never read the unsubscribe token.
+func (q *Queries) GetContact(ctx context.Context, arg GetContactParams) (GetContactRow, error) {
 	row := q.db.QueryRow(ctx, getContact, arg.ID, arg.ProjectID)
-	var i Contact
+	var i GetContactRow
 	err := row.Scan(
 		&i.ID,
 		&i.ProjectID,
@@ -59,7 +89,6 @@ func (q *Queries) GetContact(ctx context.Context, arg GetContactParams) (Contact
 		&i.ConsentSource,
 		&i.StatusChangedAt,
 		&i.Attributes,
-		&i.UnsubscribeToken,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -69,7 +98,7 @@ func (q *Queries) GetContact(ctx context.Context, arg GetContactParams) (Contact
 const insertContact = `-- name: InsertContact :one
 INSERT INTO contacts (project_id, email, status, consent_source, attributes, unsubscribe_token)
 VALUES ($1, $2, $3, $4, $5, $6)
-RETURNING id, project_id, email, status, consent_source, status_changed_at, attributes, unsubscribe_token, created_at, updated_at
+RETURNING id, project_id, email, status, consent_source, status_changed_at, attributes, created_at, updated_at
 `
 
 type InsertContactParams struct {
@@ -81,7 +110,19 @@ type InsertContactParams struct {
 	UnsubscribeToken string
 }
 
-func (q *Queries) InsertContact(ctx context.Context, arg InsertContactParams) (Contact, error) {
+type InsertContactRow struct {
+	ID              uuid.UUID
+	ProjectID       uuid.UUID
+	Email           string
+	Status          string
+	ConsentSource   *string
+	StatusChangedAt time.Time
+	Attributes      []byte
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+}
+
+func (q *Queries) InsertContact(ctx context.Context, arg InsertContactParams) (InsertContactRow, error) {
 	row := q.db.QueryRow(ctx, insertContact,
 		arg.ProjectID,
 		arg.Email,
@@ -90,7 +131,7 @@ func (q *Queries) InsertContact(ctx context.Context, arg InsertContactParams) (C
 		arg.Attributes,
 		arg.UnsubscribeToken,
 	)
-	var i Contact
+	var i InsertContactRow
 	err := row.Scan(
 		&i.ID,
 		&i.ProjectID,
@@ -99,7 +140,6 @@ func (q *Queries) InsertContact(ctx context.Context, arg InsertContactParams) (C
 		&i.ConsentSource,
 		&i.StatusChangedAt,
 		&i.Attributes,
-		&i.UnsubscribeToken,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -107,7 +147,7 @@ func (q *Queries) InsertContact(ctx context.Context, arg InsertContactParams) (C
 }
 
 const listContacts = `-- name: ListContacts :many
-SELECT id, project_id, email, status, consent_source, status_changed_at, attributes, unsubscribe_token, created_at, updated_at FROM contacts
+SELECT id, project_id, email, status, consent_source, status_changed_at, attributes, created_at, updated_at FROM contacts
 WHERE project_id = $1
   AND id < $2::uuid
   AND ($3::text IS NULL OR status = $3::text)
@@ -122,9 +162,21 @@ type ListContactsParams struct {
 	RowLimit  int32
 }
 
+type ListContactsRow struct {
+	ID              uuid.UUID
+	ProjectID       uuid.UUID
+	Email           string
+	Status          string
+	ConsentSource   *string
+	StatusChangedAt time.Time
+	Attributes      []byte
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+}
+
 // One page of a project's contacts, newest first (ids are UUIDv7);
 // before_id is the cursor (the maximal UUID for the first page).
-func (q *Queries) ListContacts(ctx context.Context, arg ListContactsParams) ([]Contact, error) {
+func (q *Queries) ListContacts(ctx context.Context, arg ListContactsParams) ([]ListContactsRow, error) {
 	rows, err := q.db.Query(ctx, listContacts,
 		arg.ProjectID,
 		arg.BeforeID,
@@ -135,9 +187,9 @@ func (q *Queries) ListContacts(ctx context.Context, arg ListContactsParams) ([]C
 		return nil, err
 	}
 	defer rows.Close()
-	items := []Contact{}
+	items := []ListContactsRow{}
 	for rows.Next() {
-		var i Contact
+		var i ListContactsRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.ProjectID,
@@ -146,7 +198,6 @@ func (q *Queries) ListContacts(ctx context.Context, arg ListContactsParams) ([]C
 			&i.ConsentSource,
 			&i.StatusChangedAt,
 			&i.Attributes,
-			&i.UnsubscribeToken,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 		); err != nil {
@@ -161,7 +212,7 @@ func (q *Queries) ListContacts(ctx context.Context, arg ListContactsParams) ([]C
 }
 
 const listContactsByEmail = `-- name: ListContactsByEmail :many
-SELECT id, project_id, email, status, consent_source, status_changed_at, attributes, unsubscribe_token, created_at, updated_at FROM contacts
+SELECT id, project_id, email, status, consent_source, status_changed_at, attributes, created_at, updated_at FROM contacts
 WHERE project_id = $1
   AND lower(email) = lower($2::text)
   AND id < $3::uuid
@@ -178,8 +229,20 @@ type ListContactsByEmailParams struct {
 	RowLimit  int32
 }
 
+type ListContactsByEmailRow struct {
+	ID              uuid.UUID
+	ProjectID       uuid.UUID
+	Email           string
+	Status          string
+	ConsentSource   *string
+	StatusChangedAt time.Time
+	Attributes      []byte
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+}
+
 // ListContacts for one address (case-insensitive): at most one row.
-func (q *Queries) ListContactsByEmail(ctx context.Context, arg ListContactsByEmailParams) ([]Contact, error) {
+func (q *Queries) ListContactsByEmail(ctx context.Context, arg ListContactsByEmailParams) ([]ListContactsByEmailRow, error) {
 	rows, err := q.db.Query(ctx, listContactsByEmail,
 		arg.ProjectID,
 		arg.Email,
@@ -191,9 +254,9 @@ func (q *Queries) ListContactsByEmail(ctx context.Context, arg ListContactsByEma
 		return nil, err
 	}
 	defer rows.Close()
-	items := []Contact{}
+	items := []ListContactsByEmailRow{}
 	for rows.Next() {
-		var i Contact
+		var i ListContactsByEmailRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.ProjectID,
@@ -202,7 +265,6 @@ func (q *Queries) ListContactsByEmail(ctx context.Context, arg ListContactsByEma
 			&i.ConsentSource,
 			&i.StatusChangedAt,
 			&i.Attributes,
-			&i.UnsubscribeToken,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 		); err != nil {
@@ -249,6 +311,27 @@ func (q *Queries) SetContactStatementTimeout(ctx context.Context) error {
 	return err
 }
 
+const unsubscribeByToken = `-- name: UnsubscribeByToken :one
+UPDATE contacts
+SET status = 'unsubscribed', status_changed_at = now(), updated_at = now()
+WHERE project_id = $1 AND unsubscribe_token = $2 AND status <> 'unsubscribed'
+RETURNING id
+`
+
+type UnsubscribeByTokenParams struct {
+	ProjectID        uuid.UUID
+	UnsubscribeToken string
+}
+
+// Marks the contact with this unsubscribe token unsubscribed; no row when
+// the token is unknown in the project or the contact already unsubscribed.
+func (q *Queries) UnsubscribeByToken(ctx context.Context, arg UnsubscribeByTokenParams) (uuid.UUID, error) {
+	row := q.db.QueryRow(ctx, unsubscribeByToken, arg.ProjectID, arg.UnsubscribeToken)
+	var id uuid.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
 const updateContact = `-- name: UpdateContact :one
 UPDATE contacts
 SET status            = coalesce($1::text, status),
@@ -258,7 +341,7 @@ SET status            = coalesce($1::text, status),
                              THEN now() ELSE status_changed_at END,
     updated_at        = now()
 WHERE id = $4 AND project_id = $5
-RETURNING id, project_id, email, status, consent_source, status_changed_at, attributes, unsubscribe_token, created_at, updated_at
+RETURNING id, project_id, email, status, consent_source, status_changed_at, attributes, created_at, updated_at
 `
 
 type UpdateContactParams struct {
@@ -269,9 +352,21 @@ type UpdateContactParams struct {
 	ProjectID     uuid.UUID
 }
 
+type UpdateContactRow struct {
+	ID              uuid.UUID
+	ProjectID       uuid.UUID
+	Email           string
+	Status          string
+	ConsentSource   *string
+	StatusChangedAt time.Time
+	Attributes      []byte
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+}
+
 // Null arguments keep the stored value. status_changed_at moves only when
 // the status actually changes.
-func (q *Queries) UpdateContact(ctx context.Context, arg UpdateContactParams) (Contact, error) {
+func (q *Queries) UpdateContact(ctx context.Context, arg UpdateContactParams) (UpdateContactRow, error) {
 	row := q.db.QueryRow(ctx, updateContact,
 		arg.Status,
 		arg.ConsentSource,
@@ -279,7 +374,7 @@ func (q *Queries) UpdateContact(ctx context.Context, arg UpdateContactParams) (C
 		arg.ID,
 		arg.ProjectID,
 	)
-	var i Contact
+	var i UpdateContactRow
 	err := row.Scan(
 		&i.ID,
 		&i.ProjectID,
@@ -288,7 +383,6 @@ func (q *Queries) UpdateContact(ctx context.Context, arg UpdateContactParams) (C
 		&i.ConsentSource,
 		&i.StatusChangedAt,
 		&i.Attributes,
-		&i.UnsubscribeToken,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
