@@ -34,8 +34,9 @@ type Deps struct {
 	Templates    TemplateService
 	// Webhooks registers webhook endpoints; nil turns the route into
 	// 503 webhook_registration_disabled.
-	Webhooks WebhookRegistrar
-	Contacts ContactService
+	Webhooks  WebhookRegistrar
+	Contacts  ContactService
+	Audiences AudienceService
 }
 
 // Server holds the HTTP handler and readiness state.
@@ -47,13 +48,14 @@ type Server struct {
 	templates    TemplateService
 	webhooks     WebhookRegistrar
 	contacts     ContactService
+	audiences    AudienceService
 	draining     atomic.Bool
 	handler      http.Handler
 }
 
 // New builds the API handler.
 func New(d Deps) *Server {
-	s := &Server{logger: d.Logger, checks: d.Checks, authenticate: d.Authenticate, emails: d.Emails, templates: d.Templates, webhooks: d.Webhooks, contacts: d.Contacts}
+	s := &Server{logger: d.Logger, checks: d.Checks, authenticate: d.Authenticate, emails: d.Emails, templates: d.Templates, webhooks: d.Webhooks, contacts: d.Contacts, audiences: d.Audiences}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
@@ -86,6 +88,17 @@ func New(d Deps) *Server {
 	mux.HandleFunc("PATCH /v1/contacts/{id}", s.requireScope(auth.ScopeContactsWrite, s.handleUpdateContact))
 	mux.HandleFunc("DELETE /v1/contacts/{id}", s.requireScope(auth.ScopeContactsWrite, s.handleDeleteContact))
 	mux.HandleFunc("/v1/contacts/{id}", methodNotAllowed(http.MethodGet+", "+http.MethodPatch+", "+http.MethodDelete))
+	mux.HandleFunc("POST /v1/audiences", s.requireScope(auth.ScopeContactsWrite, s.handleCreateAudience))
+	mux.HandleFunc("GET /v1/audiences", s.requireScope(auth.ScopeContactsRead, s.handleListAudiences))
+	mux.HandleFunc("/v1/audiences", methodNotAllowed(http.MethodGet+", "+http.MethodPost))
+	mux.HandleFunc("GET /v1/audiences/{id}", s.requireScope(auth.ScopeContactsRead, s.handleGetAudience))
+	mux.HandleFunc("/v1/audiences/{id}", methodNotAllowed(http.MethodGet))
+	mux.HandleFunc("POST /v1/audiences/{id}/contacts", s.requireScope(auth.ScopeContactsWrite, s.handleAddAudienceContacts))
+	mux.HandleFunc("GET /v1/audiences/{id}/contacts", s.requireScope(auth.ScopeContactsRead, s.handleListAudienceContacts))
+	mux.HandleFunc("/v1/audiences/{id}/contacts", methodNotAllowed(http.MethodGet+", "+http.MethodPost))
+	mux.HandleFunc("PUT /v1/audiences/{id}/contacts/{contact_id}", s.requireScope(auth.ScopeContactsWrite, s.handleAddAudienceContact))
+	mux.HandleFunc("DELETE /v1/audiences/{id}/contacts/{contact_id}", s.requireScope(auth.ScopeContactsWrite, s.handleRemoveAudienceContact))
+	mux.HandleFunc("/v1/audiences/{id}/contacts/{contact_id}", methodNotAllowed(http.MethodPut+", "+http.MethodDelete))
 	mux.HandleFunc("/", handleNotFound)
 
 	s.handler = requestLogger(s.logger, mux)

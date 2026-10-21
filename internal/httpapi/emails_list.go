@@ -75,7 +75,7 @@ func parseListQuery(query url.Values) (f emails.ListFilter, limit, status int, c
 	bad := func(code, msg string) (emails.ListFilter, int, int, string, string) {
 		return emails.ListFilter{}, 0, http.StatusBadRequest, code, msg
 	}
-	limit, f.After, status, code, msg = parsePage(query, listQueryParams)
+	limit, f.After, status, code, msg = parsePage(query, listQueryParams, defaultEmailPage, emails.MaxEmailPage)
 	if status != 0 {
 		return emails.ListFilter{}, 0, status, code, msg
 	}

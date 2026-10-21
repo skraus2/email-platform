@@ -40,6 +40,20 @@ type ApiKey struct {
 	RevokedAt  *time.Time
 }
 
+type Audience struct {
+	ID        uuid.UUID
+	ProjectID uuid.UUID
+	Name      string
+	CreatedAt time.Time
+}
+
+type AudienceMember struct {
+	ProjectID  uuid.UUID
+	AudienceID uuid.UUID
+	ContactID  uuid.UUID
+	CreatedAt  time.Time
+}
+
 type Contact struct {
 	ID               uuid.UUID
 	ProjectID        uuid.UUID

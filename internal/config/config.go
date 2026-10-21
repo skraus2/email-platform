@@ -74,6 +74,10 @@ type Config struct {
 
 	// ContactMaxPerProject caps the contacts of one project.
 	ContactMaxPerProject int
+	// AudienceMaxPerProject caps the audiences of a project,
+	// AudienceMaxContacts the contacts of one audience.
+	AudienceMaxPerProject int
+	AudienceMaxContacts   int
 
 	// Admin sessions end after AdminSessionIdle without use or
 	// AdminSessionMax after login.
@@ -267,6 +271,8 @@ func Load(lookup LookupFunc) (Config, error) {
 	cfg.TemplateMaxStorageBytes, errs = intInRange(get, "TEMPLATE_MAX_STORAGE_BYTES", "52428800", 1<<20, 10<<30, errs)
 	cfg.TemplateWritesPerMinute, errs = intInRange(get, "TEMPLATE_WRITES_PER_MINUTE", "60", 1, 100_000, errs)
 	cfg.ContactMaxPerProject, errs = intInRange(get, "CONTACT_MAX_PER_PROJECT", "250000", 1, 10_000_000, errs)
+	cfg.AudienceMaxPerProject, errs = intInRange(get, "AUDIENCE_MAX_PER_PROJECT", "100", 1, 10_000, errs)
+	cfg.AudienceMaxContacts, errs = intInRange(get, "AUDIENCE_MAX_CONTACTS", "100000", 1, 10_000_000, errs)
 	if addr := get("ADMIN_HTTP_ADDR", "127.0.0.1:8081"); addr != "off" {
 		if err := validAdminAddr(addr, cfg.Env == EnvProduction); err != nil {
 			errs = append(errs, fmt.Errorf("ADMIN_HTTP_ADDR: %w", err))

@@ -150,6 +150,9 @@ func (s *Server) handleDeleteContact(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// defaultPage is the page size of list endpoints without a limit.
+const defaultPage = 50
+
 // contactListParams are the query parameters GET /v1/contacts understands.
 var contactListParams = map[string]bool{"email": true, "status": true, "limit": true, "cursor": true}
 
@@ -160,7 +163,7 @@ func (s *Server) handleListContacts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var f contacts.ListFilter
-	limit, after, status, code, msg := parsePage(query, contactListParams)
+	limit, after, status, code, msg := parsePage(query, contactListParams, defaultPage, contacts.MaxPage)
 	if status == 0 {
 		f.After = after
 		if v, ok := query["email"]; ok {
@@ -200,19 +203,20 @@ func (s *Server) handleListContacts(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// parsePage checks the parameter names against allowed and reads limit and
-// cursor. Messages name the parameter, never its value.
-func parsePage(query url.Values, allowed map[string]bool) (limit int, after uuid.UUID, status int, code, msg string) {
+// parsePage checks the parameter names against allowed and reads limit
+// (def when absent, 1–maxLimit) and cursor. Messages name the parameter,
+// never its value.
+func parsePage(query url.Values, allowed map[string]bool, def, maxLimit int) (limit int, after uuid.UUID, status int, code, msg string) {
 	for k := range query {
 		if !allowed[k] {
 			return 0, uuid.Nil, http.StatusBadRequest, "invalid_filter", "unknown query parameter"
 		}
 	}
-	limit = defaultEmailPage
+	limit = def
 	if v, ok := query["limit"]; ok {
 		n, err := strconv.Atoi(v[0])
-		if len(v) != 1 || err != nil || n < 1 || n > emails.MaxEmailPage {
-			return 0, uuid.Nil, http.StatusBadRequest, "invalid_limit", "limit must be a single integer between 1 and 100"
+		if len(v) != 1 || err != nil || n < 1 || n > maxLimit {
+			return 0, uuid.Nil, http.StatusBadRequest, "invalid_limit", "limit must be a single integer between 1 and " + strconv.Itoa(maxLimit)
 		}
 		limit = n
 	}
@@ -226,7 +230,7 @@ func parsePage(query url.Values, allowed map[string]bool) (limit int, after uuid
 	return limit, after, 0, "", ""
 }
 
-// writeContactError maps contact errors to the contract. Client errors carry
+// writeContactError maps contact and audience errors to the contract. Client errors carry
 // no submitted values; anything else is logged without content.
 func (s *Server) writeContactError(w http.ResponseWriter, r *http.Request, op string, err error) {
 	var ce *contacts.Error
@@ -239,6 +243,12 @@ func (s *Server) writeContactError(w http.ResponseWriter, r *http.Request, op st
 		writeError(w, http.StatusConflict, "contact_exists", "this project already has a contact with this address")
 	case errors.Is(err, contacts.ErrLimit):
 		writeError(w, http.StatusUnprocessableEntity, "contact_limit_reached", "the project has reached its contact limit")
+	case errors.Is(err, contacts.ErrAudienceExists):
+		writeError(w, http.StatusConflict, "audience_exists", "this project already has an audience with this name")
+	case errors.Is(err, contacts.ErrAudienceLimit):
+		writeError(w, http.StatusUnprocessableEntity, "audience_limit_reached", "the project has reached its audience limit")
+	case errors.Is(err, contacts.ErrAudienceFull):
+		writeError(w, http.StatusUnprocessableEntity, "audience_full", "the audience would exceed its contact limit; nothing was added")
 	case errors.Is(err, contacts.ErrBusy):
 		writeUnavailable(w)
 	case errors.Is(err, context.Canceled) && r.Context().Err() != nil:
