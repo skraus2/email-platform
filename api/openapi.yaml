@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Email Platform API
-  version: 0.4.0
+  version: 0.5.0
   description: |
     Internal email sending API. Every request is authenticated with a
     project API key and only ever sees data of that project.
@@ -22,9 +22,18 @@ info:
     one at that moment) and supplies variables, which are rendered with
     contextual HTML escaping and never stored.
 
+    Emails can be scheduled (`scheduled_at`) and cancelled while queued.
+
+    Contacts (with consent status and source) are grouped into audiences;
+    a broadcast sends one template version to every subscribed,
+    non-suppressed member of an audience, one email per recipient, with an
+    unsubscribe link to the app's own page. The app reports unsubscribes
+    with `POST /v1/unsubscribes`.
+
     Key scopes: `emails:send`, `emails:read`, `templates:read`,
-    `templates:write`, `webhooks:write`. A key only has the scopes it was
-    created with.
+    `templates:write`, `webhooks:write`, `contacts:read`,
+    `contacts:write`, `broadcasts:read`, `broadcasts:write`. A key only has
+    the scopes it was created with.
 servers:
   - url: http://127.0.0.1:8080
     description: Local development
@@ -182,6 +191,13 @@ paths:
           schema:
             type: string
             format: uuid
+        - name: broadcast_id
+          in: query
+          required: false
+          description: Only recipient emails of this broadcast.
+          schema:
+            type: string
+            format: uuid
         - name: created_after
           in: query
           required: false
@@ -307,6 +323,632 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /v1/emails/{id}/cancel:
+    post:
+      operationId: cancelEmail
+      summary: Cancel a queued (typically scheduled) email
+      description: |
+        Requires scope `emails:send`. Only an email in status `queued` can be
+        cancelled; it becomes `canceled` (terminal, content deleted, an
+        `email.canceled` event is recorded and sent to subscribed webhook
+        endpoints). Any other status gives `409 email_not_cancelable` — for
+        example when a worker claimed the email a moment earlier. Unknown,
+        malformed and foreign ids give the same `404`. No request body.
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      responses:
+        "200":
+          description: The cancelled email.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Email"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /v1/contacts:
+    post:
+      operationId: createContact
+      summary: Create a contact of the authenticated project
+      description: |
+        Requires scope `contacts:write`. The address is unique per project,
+        case-insensitively (`409 contact_exists`). `status` is required:
+        the app states whether the person consented to broadcasts; a
+        `subscribed` contact needs a `consent_source` (where the consent
+        came from, e.g. `signup-form`). A project holds at most 250000
+        contacts by default (`422 contact_limit_reached`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateContactRequest"
+      responses:
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Contact"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+    get:
+      operationId: listContacts
+      summary: List contacts of the authenticated project, newest first
+      description: |
+        Requires scope `contacts:read`. Unknown or repeated parameters and
+        malformed values give `400` (`invalid_filter`, `invalid_limit`,
+        `invalid_cursor`).
+      parameters:
+        - name: email
+          in: query
+          required: false
+          description: Exact address, case-insensitive.
+          schema:
+            type: string
+            maxLength: 254
+        - name: status
+          in: query
+          required: false
+          schema:
+            $ref: "#/components/schemas/ContactStatus"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: One page of contacts.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContactList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /v1/contacts/{id}:
+    get:
+      operationId: getContact
+      summary: Get a contact
+      description: Requires scope `contacts:read`. Unknown, malformed and foreign ids give the same `404`.
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      responses:
+        "200":
+          description: The contact.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Contact"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+    patch:
+      operationId: updateContact
+      summary: Change a contact's consent status, consent source or attributes
+      description: |
+        Requires scope `contacts:write`. Fields not sent stay unchanged;
+        `attributes` replaces all attributes. A change to `subscribed`
+        needs `consent_source` in the same request. `status_changed_at`
+        moves only when the status changes.
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateContactRequest"
+      responses:
+        "200":
+          description: The updated contact.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Contact"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+    delete:
+      operationId: deleteContact
+      summary: Delete a contact (erasure)
+      description: |
+        Requires scope `contacts:write`. Removes the contact and its audience
+        memberships. Emails already created keep their recipient address
+        (email retention applies); queued broadcast emails to the contact
+        are not sent (`failed` with `contact_deleted`).
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      responses:
+        "204":
+          description: Deleted.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /v1/audiences:
+    post:
+      operationId: createAudience
+      summary: Create an audience (a named list of contacts)
+      description: |
+        Requires scope `contacts:write`. Names are unique per project,
+        case-insensitively (`409 audience_exists`). A project holds at most
+        100 audiences by default (`422 audience_limit_reached`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateAudienceRequest"
+      responses:
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Audience"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+    get:
+      operationId: listAudiences
+      summary: List audiences of the authenticated project, newest first
+      description: Requires scope `contacts:read`. Without member counts (see `GET /v1/audiences/{id}`).
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: One page of audiences.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AudienceList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /v1/audiences/{id}:
+    get:
+      operationId: getAudience
+      summary: Get an audience with its member count
+      description: Requires scope `contacts:read`.
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      responses:
+        "200":
+          description: The audience.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AudienceWithCount"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /v1/audiences/{id}/contacts:
+    post:
+      operationId: addAudienceContacts
+      summary: Add up to 1000 contacts to an audience
+      description: |
+        Requires scope `contacts:write`. Ids that are not contacts of the
+        project count as `not_found`. An audience holds at most 100000
+        contacts by default; an add that would exceed it adds nothing
+        (`422 audience_full`).
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AddAudienceContactsRequest"
+      responses:
+        "200":
+          description: Counts of the outcome.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AddAudienceContactsResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+    get:
+      operationId: listAudienceContacts
+      summary: List the contacts of an audience
+      description: Requires scope `contacts:read`. Ordered by contact id.
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: One page of member contacts.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContactList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /v1/audiences/{id}/contacts/{contact_id}:
+    put:
+      operationId: addAudienceContact
+      summary: Add one contact to an audience (idempotent)
+      description: Requires scope `contacts:write`. `422 audience_full` when the audience is at its limit.
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+        - $ref: "#/components/parameters/ContactID"
+      responses:
+        "204":
+          description: The contact is a member.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+    delete:
+      operationId: removeAudienceContact
+      summary: Remove one contact from an audience (idempotent)
+      description: Requires scope `contacts:write`.
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+        - $ref: "#/components/parameters/ContactID"
+      responses:
+        "204":
+          description: The contact is not a member (any more).
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /v1/unsubscribes:
+    post:
+      operationId: reportUnsubscribe
+      summary: Report an unsubscribe received on the app's unsubscribe page
+      description: |
+        Requires scope `contacts:write`. Broadcast emails link to the app's
+        own unsubscribe page (the broadcast's `unsubscribe_url` with
+        `{token}` replaced by the contact's token) and carry
+        `List-Unsubscribe` + `List-Unsubscribe-Post: List-Unsubscribe=One-Click`
+        (RFC 8058) with the same URL; the page must also accept that
+        one-click `POST` (body `List-Unsubscribe=One-Click`). The app
+        forwards the token here. The contact becomes `unsubscribed`: no
+        broadcast reaches it any more, including emails already queued.
+        Transactional sends to the address are not affected. Reports are
+        idempotent and never rate-limited. Unknown, malformed and foreign
+        tokens give the same `404`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UnsubscribeRequest"
+      responses:
+        "200":
+          description: The contact is unsubscribed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UnsubscribeResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /v1/broadcasts:
+    post:
+      operationId: createBroadcast
+      summary: Create a broadcast draft
+      description: |
+        Requires scope `broadcasts:write`. A broadcast sends one template
+        version to every `subscribed` member of an audience whose address is
+        not suppressed — one email per recipient. Creating it only stores a
+        draft (a retried create leaves another draft, nothing is sent);
+        `POST /v1/broadcasts/{id}/schedule` starts it.
+
+        The version is resolved now (`"published"` = highest version). Its
+        schema must declare `unsubscribe_url` (string) and its text part —
+        and html part, if any — must print `{{.unsubscribe_url}}` outside
+        any condition (`422 template_missing_unsubscribe`). Per recipient,
+        the variables are the shared `variables`, overlaid by the contact's
+        attributes whose names the schema declares, plus `unsubscribe_url`.
+        `unsubscribe_url` is an absolute `https` URL of the app's page with
+        `{token}` exactly once (at most 900 characters).
+
+        A project has at most 20 broadcasts in `draft`, `scheduled` or
+        `sending` by default (`422 broadcast_limit_reached`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateBroadcastRequest"
+      responses:
+        "201":
+          description: The draft.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Broadcast"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+    get:
+      operationId: listBroadcasts
+      summary: List broadcasts of the authenticated project, newest first
+      description: Requires scope `broadcasts:read`. Without counts (see `GET /v1/broadcasts/{id}`).
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema:
+            $ref: "#/components/schemas/BroadcastStatus"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: One page of broadcasts.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BroadcastList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /v1/broadcasts/{id}:
+    get:
+      operationId: getBroadcast
+      summary: Get a broadcast with its progress
+      description: Requires scope `broadcasts:read`.
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      responses:
+        "200":
+          description: The broadcast with counts.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BroadcastWithCounts"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /v1/broadcasts/{id}/schedule:
+    post:
+      operationId: scheduleBroadcast
+      summary: Start a draft now or at a planned time
+      description: |
+        Requires scope `broadcasts:write`. Moves `draft` → `scheduled`; at
+        `scheduled_at` (default: now; at most 30 days ahead) the platform
+        creates the recipient emails in batches (`sending`) and finally
+        `completed` — every recipient email exists, which says nothing about
+        delivery. Any other status gives `409 broadcast_not_draft`: after a
+        lost response, a retry answers `409` and `GET` shows the state. The
+        sender is checked again (`422 sender_not_verified`).
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ScheduleBroadcastRequest"
+      responses:
+        "200":
+          description: The scheduled broadcast.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Broadcast"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /v1/broadcasts/{id}/cancel:
+    post:
+      operationId: cancelBroadcast
+      summary: Cancel a broadcast
+      description: |
+        Requires scope `broadcasts:write`. Moves `draft`, `scheduled`,
+        `sending` or `completed` → `canceled`: no further recipient emails
+        are created, and queued ones become `canceled` instead of being sent
+        (as their jobs run; an email already handed to the provider is not
+        recalled). An already cancelled broadcast gives
+        `409 broadcast_not_cancelable`. No request body.
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      responses:
+        "200":
+          description: The cancelled broadcast.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Broadcast"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
         "500":
           $ref: "#/components/responses/InternalError"
         "503":
@@ -592,7 +1234,7 @@ components:
     projectKey:
       type: http
       scheme: bearer
-      description: "Project API key, format `ep_<prefix>_<secret>`. Shown once at creation. Scopes: `emails:send`, `emails:read`, `templates:read`, `templates:write`, `webhooks:write`."
+      description: "Project API key, format `ep_<prefix>_<secret>`. Shown once at creation. Scopes: `emails:send`, `emails:read`, `templates:read`, `templates:write`, `webhooks:write`, `contacts:read`, `contacts:write`, `broadcasts:read`, `broadcasts:write`."
   schemas:
     CreateEmailRequest:
       type: object
@@ -650,6 +1292,14 @@ components:
             `422 variables_invalid`. Variables are not stored.
           additionalProperties:
             type: [string, number, boolean]
+        scheduled_at:
+          type: string
+          format: date-time
+          description: |
+            Send not before this time (RFC 3339), at most 30 days ahead by
+            default (`422 validation_failed` otherwise). A time at or before
+            now sends immediately (stored as `null`). Part of the
+            idempotency fingerprint when present.
     CreateEmailResponse:
       type: object
       required: [id, status]
@@ -664,7 +1314,9 @@ components:
       type: string
       description: |
         `queued` → `sending` → `captured` (local test sink), `submitted`
-        (real provider) or `failed`. After `submitted`, provider events move
+        (real provider) or `failed`; a `queued` email can be cancelled
+        (`canceled`, terminal, never handed to a provider). A scheduled
+        email stays `queued` until it is due. After `submitted`, provider events move
         the status to `delivered`, `bounced` or `complained`; a later event
         never moves it back (`complained` > `bounced` > `delivered` >
         `submitted`).
@@ -678,6 +1330,7 @@ components:
           bounced,
           complained,
           failed,
+          canceled,
         ]
     ErrorCode:
       type: string
@@ -688,7 +1341,11 @@ components:
         `provider_throttled`, `internal_error`. Permanent codes (no further
         attempts): `provider_rejected`, `provider_auth_failed`,
         `sender_not_verified`, `message_invalid`, `unsafe_target`,
-        `suppressed`, `project_disabled`, `content_missing`, `expired`.
+        `suppressed`, `project_disabled`, `content_missing`, `expired`,
+        and for broadcast emails `unsubscribed` (the contact unsubscribed
+        before the send), `contact_deleted`, `broadcast_canceled` (the
+        broadcast was cancelled after an attempt with unknown outcome),
+        `render_failed` (the contact's attributes no longer render).
 
         `provider_timeout` and `provider_protocol_error` mean the outcome of
         that attempt is unknown: a `failed` email with one of these codes may
@@ -712,6 +1369,10 @@ components:
         - project_disabled
         - content_missing
         - expired
+        - unsubscribed
+        - contact_deleted
+        - broadcast_canceled
+        - render_failed
         - internal_error
     Email:
       type: object
@@ -729,6 +1390,8 @@ components:
           finished_at,
           template_id,
           template_version,
+          scheduled_at,
+          broadcast_id,
         ]
       properties:
         id:
@@ -773,6 +1436,14 @@ components:
           type: [integer, "null"]
           minimum: 1
           description: The resolved version number (also when `"published"` was requested).
+        scheduled_at:
+          type: [string, "null"]
+          format: date-time
+          description: Planned send time; `null` for immediate sends.
+        broadcast_id:
+          type: [string, "null"]
+          format: uuid
+          description: The broadcast this email belongs to; `null` otherwise.
     EmailList:
       type: object
       required: [data, next_cursor]
@@ -900,6 +1571,7 @@ components:
           email.delivered,
           email.bounced,
           email.complained,
+          email.canceled,
         ]
     CreateWebhookEndpointRequest:
       type: object
@@ -948,7 +1620,7 @@ components:
         type:
           type: string
           description: |
-            Platform events: `captured`, `submitted`, `failed`. Provider
+            Platform events: `captured`, `submitted`, `failed`, `canceled`. Provider
             events: `send`, `delivered`, `bounced`, `complained`, `rejected`,
             `delivery_delayed`. Engagement (open/click) is not tracked.
           enum:
@@ -956,6 +1628,7 @@ components:
               captured,
               submitted,
               failed,
+              canceled,
               send,
               delivered,
               bounced,
@@ -1013,6 +1686,7 @@ components:
               email.delivered,
               email.bounced,
               email.complained,
+              email.canceled,
             ]
         created_at:
           type: string
@@ -1028,6 +1702,352 @@ components:
             project_id:
               type: string
               format: uuid
+    ContactStatus:
+      type: string
+      description: "`subscribed`: the person consented to broadcasts. `unsubscribed`: no broadcast is sent to the contact."
+      enum: [subscribed, unsubscribed]
+    ContactAttributes:
+      type: object
+      description: |
+        Values for personalising broadcasts: at most 20 entries, names
+        `^[a-z][a-z0-9_]{0,39}$` (not `unsubscribe_url`), values strings (at
+        most 1000 characters), finite numbers or booleans; at most 8 KiB as
+        compact JSON. Attributes are matched by name to a template's
+        declared variables; undeclared ones are ignored. Never logged.
+      maxProperties: 20
+      propertyNames:
+        pattern: "^[a-z][a-z0-9_]{0,39}$"
+      additionalProperties:
+        type: [string, number, boolean]
+    CreateContactRequest:
+      type: object
+      additionalProperties: false
+      required: [email, status]
+      properties:
+        email:
+          type: string
+          format: email
+          maxLength: 254
+          description: Bare address, ASCII only (as for `to`).
+        status:
+          $ref: "#/components/schemas/ContactStatus"
+        consent_source:
+          type: string
+          minLength: 1
+          maxLength: 100
+          description: Where the consent came from (printable characters). Required when `status` is `subscribed`.
+        attributes:
+          $ref: "#/components/schemas/ContactAttributes"
+    UpdateContactRequest:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        status:
+          $ref: "#/components/schemas/ContactStatus"
+        consent_source:
+          type: string
+          minLength: 1
+          maxLength: 100
+          description: Required together with a change to `subscribed`.
+        attributes:
+          $ref: "#/components/schemas/ContactAttributes"
+    Contact:
+      type: object
+      required:
+        [
+          id,
+          email,
+          status,
+          consent_source,
+          status_changed_at,
+          attributes,
+          created_at,
+          updated_at,
+        ]
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+        status:
+          $ref: "#/components/schemas/ContactStatus"
+        consent_source:
+          type: [string, "null"]
+        status_changed_at:
+          type: string
+          format: date-time
+        attributes:
+          $ref: "#/components/schemas/ContactAttributes"
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    ContactList:
+      type: object
+      required: [data, next_cursor]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Contact"
+        next_cursor:
+          type: [string, "null"]
+          description: Pass as `cursor` for the next page; `null` on the last page.
+    CreateAudienceRequest:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+    Audience:
+      type: object
+      required: [id, name, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+    AudienceWithCount:
+      allOf:
+        - $ref: "#/components/schemas/Audience"
+        - type: object
+          required: [contact_count]
+          properties:
+            contact_count:
+              type: integer
+              minimum: 0
+    AudienceList:
+      type: object
+      required: [data, next_cursor]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Audience"
+        next_cursor:
+          type: [string, "null"]
+    AddAudienceContactsRequest:
+      type: object
+      additionalProperties: false
+      required: [contact_ids]
+      properties:
+        contact_ids:
+          type: array
+          minItems: 1
+          maxItems: 1000
+          uniqueItems: true
+          items:
+            type: string
+            format: uuid
+    AddAudienceContactsResult:
+      type: object
+      required: [added, already_members, not_found]
+      properties:
+        added:
+          type: integer
+          minimum: 0
+        already_members:
+          type: integer
+          minimum: 0
+        not_found:
+          type: integer
+          minimum: 0
+    UnsubscribeRequest:
+      type: object
+      additionalProperties: false
+      required: [token]
+      properties:
+        token:
+          type: string
+          description: The token from the unsubscribe URL (43 characters, base64url).
+    UnsubscribeResult:
+      type: object
+      required: [contact_id, status]
+      properties:
+        contact_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          const: unsubscribed
+    BroadcastStatus:
+      type: string
+      description: |
+        `draft` → `scheduled` → `sending` (recipient emails are being
+        created) → `completed` (all recipient emails exist; delivery is
+        tracked per email). `canceled` from any other status.
+      enum: [draft, scheduled, sending, completed, canceled]
+    CreateBroadcastRequest:
+      type: object
+      additionalProperties: false
+      required:
+        [audience_id, from, template_id, template_version, unsubscribe_url]
+      properties:
+        name:
+          type: string
+          maxLength: 200
+        audience_id:
+          type: string
+          format: uuid
+        from:
+          type: string
+          format: email
+          maxLength: 254
+        template_id:
+          type: string
+          format: uuid
+        template_version:
+          oneOf:
+            - type: integer
+              minimum: 1
+            - type: string
+              const: published
+        variables:
+          type: object
+          description: Shared values for declared variables (at most 16 KiB); contact attributes override them. Not echoed.
+          additionalProperties:
+            type: [string, number, boolean]
+        unsubscribe_url:
+          type: string
+          maxLength: 900
+          description: "Absolute `https` URL of the app's unsubscribe page containing `{token}` exactly once, e.g. `https://app.example.test/unsubscribe?t={token}`."
+    ScheduleBroadcastRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        scheduled_at:
+          type: string
+          format: date-time
+          description: Start time (RFC 3339), at most 30 days ahead by default; omitted or past = now.
+    Broadcast:
+      type: object
+      required:
+        [
+          id,
+          name,
+          status,
+          audience_id,
+          from,
+          template_id,
+          template_version,
+          unsubscribe_url,
+          scheduled_at,
+          started_at,
+          finished_at,
+          created_at,
+        ]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        status:
+          $ref: "#/components/schemas/BroadcastStatus"
+        audience_id:
+          type: string
+          format: uuid
+        from:
+          type: string
+        template_id:
+          type: string
+          format: uuid
+        template_version:
+          type: integer
+          minimum: 1
+        unsubscribe_url:
+          type: string
+        scheduled_at:
+          type: [string, "null"]
+          format: date-time
+        started_at:
+          type: [string, "null"]
+          format: date-time
+        finished_at:
+          type: [string, "null"]
+          format: date-time
+          description: When the last recipient email was created, or when the broadcast was cancelled.
+        created_at:
+          type: string
+          format: date-time
+    BroadcastWithCounts:
+      allOf:
+        - $ref: "#/components/schemas/Broadcast"
+        - type: object
+          required: [counts]
+          properties:
+            counts:
+              type: object
+              required:
+                [
+                  recipients,
+                  skipped_unsubscribed,
+                  skipped_suppressed,
+                  skipped_invalid,
+                  by_status,
+                ]
+              properties:
+                recipients:
+                  type: integer
+                  minimum: 0
+                  description: Recipient emails created.
+                skipped_unsubscribed:
+                  type: integer
+                  minimum: 0
+                skipped_suppressed:
+                  type: integer
+                  minimum: 0
+                skipped_invalid:
+                  type: integer
+                  minimum: 0
+                  description: Members whose attributes did not render with the version.
+                by_status:
+                  type: object
+                  description: Current status of the recipient emails (emails deleted by retention are no longer counted).
+                  additionalProperties: false
+                  required:
+                    [
+                      queued,
+                      sending,
+                      captured,
+                      submitted,
+                      delivered,
+                      bounced,
+                      complained,
+                      failed,
+                      canceled,
+                    ]
+                  properties:
+                    queued: { type: integer, minimum: 0 }
+                    sending: { type: integer, minimum: 0 }
+                    captured: { type: integer, minimum: 0 }
+                    submitted: { type: integer, minimum: 0 }
+                    delivered: { type: integer, minimum: 0 }
+                    bounced: { type: integer, minimum: 0 }
+                    complained: { type: integer, minimum: 0 }
+                    failed: { type: integer, minimum: 0 }
+                    canceled: { type: integer, minimum: 0 }
+    BroadcastList:
+      type: object
+      required: [data, next_cursor]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Broadcast"
+        next_cursor:
+          type: [string, "null"]
     Error:
       type: object
       required: [error]
@@ -1043,6 +2063,37 @@ components:
               type: string
               description: Human-readable explanation; never contains internals.
   parameters:
+    ResourceID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    ContactID:
+      name: contact_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    Limit:
+      name: limit
+      in: query
+      required: false
+      description: Page size; values outside 1–100 give `400 invalid_limit`.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 50
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      description: Opaque `next_cursor` of the previous page; invalid values give `400 invalid_cursor`.
+      schema:
+        type: string
     TemplateID:
       name: id
       in: path
@@ -1070,7 +2121,7 @@ components:
           schema:
             $ref: "#/components/schemas/Error"
     Conflict:
-      description: "`idempotency_key_reused` (the key was already used with a different payload) or `slug_taken` (the project already has a template with this slug)."
+      description: "`idempotency_key_reused` (the key was already used with a different payload), `slug_taken` (the project already has a template with this slug), `contact_exists`, `audience_exists`, `email_not_cancelable`, `broadcast_not_draft` or `broadcast_not_cancelable`."
       content:
         application/json:
           schema:
@@ -1107,7 +2158,7 @@ components:
           schema:
             $ref: "#/components/schemas/Error"
     UnprocessableEntity:
-      description: "`validation_failed` (message names the field), `recipient_suppressed` (the recipient is on the project's suppression list), `sender_not_verified` (`from` is not a verified sender address or domain of the project), `template_not_found`, `variables_invalid`, `render_failed`, `template_invalid`, `template_limit_reached`, `version_limit_reached`, `template_storage_limit_reached`, `invalid_url` or `endpoint_limit_reached`. Messages name fields or variables, never their values."
+      description: "`validation_failed` (message names the field), `recipient_suppressed` (the recipient is on the project's suppression list), `sender_not_verified` (`from` is not a verified sender address or domain of the project), `template_not_found`, `variables_invalid`, `render_failed`, `template_invalid`, `template_limit_reached`, `version_limit_reached`, `template_storage_limit_reached`, `invalid_url`, `endpoint_limit_reached`, `contact_limit_reached`, `audience_limit_reached`, `audience_full`, `audience_not_found`, `broadcast_limit_reached` or `template_missing_unsubscribe`. Messages name fields or variables, never their values."
       content:
         application/json:
           schema:
