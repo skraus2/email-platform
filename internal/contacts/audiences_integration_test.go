@@ -30,7 +30,7 @@ func TestCreateAndGetAudience(t *testing.T) {
 	if _, err := s.Create(ctx, b, "Newsletter"); err != nil {
 		t.Fatalf("same name elsewhere: %v", err)
 	}
-	for _, bad := range []string{"", strings.Repeat("n", 201), "a\nb", "rtl‮"} {
+	for _, bad := range []string{"", strings.Repeat("n", 201), "a\nb", "rtl\u202e"} {
 		var e *contacts.Error
 		if _, err := s.Create(ctx, a, bad); !errors.As(err, &e) || e.Field != "name" {
 			t.Errorf("name %q: %v", bad, err)
