@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -195,4 +196,39 @@ func (l *limitWriter) Write(p []byte) (int, error) {
 		return 0, errTooLarge
 	}
 	return l.buf.Write(p)
+}
+
+// MergeVariables builds the variables of one broadcast email: the shared
+// values, overlaid by those attributes whose names the schema declares,
+// overlaid by the platform's own values (such as the unsubscribe URL).
+// Undeclared attributes are ignored, so contacts can carry attributes for
+// other templates. The result still has to pass Render's validation.
+func MergeVariables(schema Schema, shared, attributes []byte, platform map[string]string) ([]byte, error) {
+	merged := map[string]any{}
+	for _, raw := range [][]byte{shared, attributes} {
+		if len(bytes.TrimSpace(raw)) == 0 {
+			continue
+		}
+		dec := json.NewDecoder(bytes.NewReader(raw))
+		dec.UseNumber()
+		var m map[string]any
+		if err := dec.Decode(&m); err != nil || m == nil {
+			return nil, errors.New("variables must be a JSON object")
+		}
+		for k, v := range m {
+			if _, declared := schema[k]; declared {
+				merged[k] = v
+			}
+		}
+	}
+	for k, v := range platform {
+		merged[k] = v
+	}
+	var b bytes.Buffer
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(merged); err != nil {
+		return nil, fmt.Errorf("encode variables: %w", err)
+	}
+	return bytes.TrimSuffix(b.Bytes(), []byte("\n")), nil
 }

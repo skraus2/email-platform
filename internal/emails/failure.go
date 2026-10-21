@@ -25,6 +25,11 @@ const (
 	CodeContentMissing        = "content_missing"
 	CodeExpired               = "expired"
 	CodeInternalError         = "internal_error"
+	// Broadcast emails only.
+	CodeUnsubscribed      = "unsubscribed"
+	CodeContactDeleted    = "contact_deleted"
+	CodeBroadcastCanceled = "broadcast_canceled"
+	CodeRenderFailed      = "render_failed"
 )
 
 // FailureCodes lists every failure code.
@@ -33,6 +38,7 @@ var FailureCodes = []string{
 	CodeProviderThrottled, CodeProviderRejected, CodeProviderAuthFailed, CodeSenderNotVerified,
 	CodeMessageInvalid, CodeUnsafeTarget, CodeSuppressed, CodeProjectDisabled,
 	CodeContentMissing, CodeExpired, CodeInternalError,
+	CodeUnsubscribed, CodeContactDeleted, CodeBroadcastCanceled, CodeRenderFailed,
 }
 
 var retryableCodes = []string{

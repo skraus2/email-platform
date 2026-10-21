@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/skraus2/email-platform/internal/broadcasts"
 	"github.com/skraus2/email-platform/internal/config"
 	"github.com/skraus2/email-platform/internal/database"
 	"github.com/skraus2/email-platform/internal/delivery"
@@ -22,6 +23,7 @@ import (
 	"github.com/skraus2/email-platform/internal/jobs"
 	"github.com/skraus2/email-platform/internal/logging"
 	"github.com/skraus2/email-platform/internal/retention"
+	"github.com/skraus2/email-platform/internal/templates"
 	"github.com/skraus2/email-platform/internal/webhooks"
 )
 
@@ -98,12 +100,14 @@ func run() error {
 		Pool: pool, Logger: logger, EventRetention: cfg.EventRetention,
 		DeliveryRetention: cfg.WebhookDeliveryRetention, EmailRetention: cfg.EmailRetention,
 	}
+	fanout := broadcasts.NewFanout(pool, enqueuer, logger, templates.NewCache(emails.CompiledCacheBytes, emails.CompiledCacheEntryBytes))
 	worker, err := jobs.NewWorker(jobs.WorkerConfig{
 		Pool:   pool,
 		Logger: logger,
 		Handlers: jobs.Handlers{
-			SendEmail:      dispatcher.SendEmail,
-			DeliverWebhook: deliverer.Deliver,
+			SendEmail:       dispatcher.SendEmail,
+			DeliverWebhook:  deliverer.Deliver,
+			BroadcastFanout: fanout.Run,
 			Cleanup: func(ctx context.Context) error {
 				// Expiry first, so retention sees the final states.
 				return errors.Join(dispatcher.Cleanup(ctx), deliverer.Cleanup(ctx), pruner.Run(ctx))

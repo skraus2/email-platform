@@ -201,6 +201,10 @@ func (q *Queries) GetEmail(ctx context.Context, arg GetEmailParams) (Email, erro
 const getEmailForDispatch = `-- name: GetEmailForDispatch :one
 SELECT e.id, e.project_id, e.sender, e.recipient, e.subject, e.status,
        c.text_body, c.html_body, (c.email_id IS NOT NULL)::boolean AS has_content,
+       e.broadcast_id, e.template_id, e.template_version,
+       b.status AS broadcast_status, b.variables AS broadcast_variables, b.unsubscribe_url AS broadcast_unsubscribe_url,
+       (ct.id IS NOT NULL)::boolean AS contact_exists, ct.status AS contact_status,
+       ct.attributes AS contact_attributes, ct.unsubscribe_token AS contact_token,
        p.status AS project_status,
        EXISTS (SELECT 1 FROM suppressions s
                WHERE s.project_id = e.project_id AND lower(s.recipient) = lower(e.recipient))::boolean AS suppressed,
@@ -211,6 +215,8 @@ SELECT e.id, e.project_id, e.sender, e.recipient, e.subject, e.status,
 FROM emails e
 JOIN projects p ON p.id = e.project_id
 LEFT JOIN email_contents c ON c.email_id = e.id AND c.project_id = e.project_id
+LEFT JOIN broadcasts b ON b.id = e.broadcast_id AND b.project_id = e.project_id
+LEFT JOIN contacts ct ON ct.id = e.contact_id AND ct.project_id = e.project_id
 WHERE e.id = $1 AND e.project_id = $2
 `
 
@@ -220,21 +226,34 @@ type GetEmailForDispatchParams struct {
 }
 
 type GetEmailForDispatchRow struct {
-	ID             uuid.UUID
-	ProjectID      uuid.UUID
-	Sender         string
-	Recipient      string
-	Subject        string
-	Status         string
-	TextBody       *string
-	HtmlBody       *string
-	HasContent     bool
-	ProjectStatus  string
-	Suppressed     bool
-	SenderVerified bool
+	ID                      uuid.UUID
+	ProjectID               uuid.UUID
+	Sender                  string
+	Recipient               string
+	Subject                 string
+	Status                  string
+	TextBody                *string
+	HtmlBody                *string
+	HasContent              bool
+	BroadcastID             *uuid.UUID
+	TemplateID              *uuid.UUID
+	TemplateVersion         *int32
+	BroadcastStatus         *string
+	BroadcastVariables      []byte
+	BroadcastUnsubscribeUrl *string
+	ContactExists           bool
+	ContactStatus           *string
+	ContactAttributes       []byte
+	ContactToken            *string
+	ProjectStatus           string
+	Suppressed              bool
+	SenderVerified          bool
 }
 
-// Content columns are NULL once the content has been deleted.
+// Content columns are NULL once the content has been deleted. A broadcast
+// email has no content: it carries its broadcast's template, shared
+// variables and unsubscribe URL, and its contact's current state (with the
+// unsubscribe token for the link).
 func (q *Queries) GetEmailForDispatch(ctx context.Context, arg GetEmailForDispatchParams) (GetEmailForDispatchRow, error) {
 	row := q.db.QueryRow(ctx, getEmailForDispatch, arg.ID, arg.ProjectID)
 	var i GetEmailForDispatchRow
@@ -248,6 +267,16 @@ func (q *Queries) GetEmailForDispatch(ctx context.Context, arg GetEmailForDispat
 		&i.TextBody,
 		&i.HtmlBody,
 		&i.HasContent,
+		&i.BroadcastID,
+		&i.TemplateID,
+		&i.TemplateVersion,
+		&i.BroadcastStatus,
+		&i.BroadcastVariables,
+		&i.BroadcastUnsubscribeUrl,
+		&i.ContactExists,
+		&i.ContactStatus,
+		&i.ContactAttributes,
+		&i.ContactToken,
 		&i.ProjectStatus,
 		&i.Suppressed,
 		&i.SenderVerified,
@@ -696,6 +725,13 @@ WHERE emails.id = $1 AND emails.project_id = $2 AND emails.status IN ('queued', 
                   WHERE si.project_id = emails.project_id AND si.status = 'verified'
                     AND ((si.kind = 'address' AND si.value = lower(emails.sender))
                          OR (si.kind = 'domain' AND si.value = lower(substring(emails.sender FROM '@([^@]+)$'))))))
+  -- A broadcast email: its broadcast is not cancelled and its contact still
+  -- exists and is subscribed.
+  AND (emails.broadcast_id IS NULL
+       OR (EXISTS (SELECT 1 FROM broadcasts b
+                   WHERE b.id = emails.broadcast_id AND b.project_id = emails.project_id AND b.status <> 'canceled')
+           AND EXISTS (SELECT 1 FROM contacts ct
+                       WHERE ct.id = emails.contact_id AND ct.project_id = emails.project_id AND ct.status = 'subscribed')))
 `
 
 type MarkSendingParams struct {
@@ -704,10 +740,11 @@ type MarkSendingParams struct {
 	RequireVerifiedSender bool
 }
 
-// Claims the email for a send attempt. Project status, suppression and (when
+// Claims the email for a send attempt. Project status, suppression, (when
 // required) a verified sender identity of the project for the exact address
-// or its exact domain are checked as part of the claim, so a change made
-// before this point is always honoured.
+// or its exact domain, and for broadcast emails the broadcast and contact
+// state are checked as part of the claim, so a change made before this
+// point is always honoured.
 func (q *Queries) MarkSending(ctx context.Context, arg MarkSendingParams) (int64, error) {
 	result, err := q.db.Exec(ctx, markSending, arg.ID, arg.ProjectID, arg.RequireVerifiedSender)
 	if err != nil {

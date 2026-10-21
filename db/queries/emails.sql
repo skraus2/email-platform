@@ -11,9 +11,16 @@ VALUES ($1, $2, $3, $4);
 SELECT * FROM emails WHERE id = $1 AND project_id = $2;
 
 -- name: GetEmailForDispatch :one
--- Content columns are NULL once the content has been deleted.
+-- Content columns are NULL once the content has been deleted. A broadcast
+-- email has no content: it carries its broadcast's template, shared
+-- variables and unsubscribe URL, and its contact's current state (with the
+-- unsubscribe token for the link).
 SELECT e.id, e.project_id, e.sender, e.recipient, e.subject, e.status,
        c.text_body, c.html_body, (c.email_id IS NOT NULL)::boolean AS has_content,
+       e.broadcast_id, e.template_id, e.template_version,
+       b.status AS broadcast_status, b.variables AS broadcast_variables, b.unsubscribe_url AS broadcast_unsubscribe_url,
+       (ct.id IS NOT NULL)::boolean AS contact_exists, ct.status AS contact_status,
+       ct.attributes AS contact_attributes, ct.unsubscribe_token AS contact_token,
        p.status AS project_status,
        EXISTS (SELECT 1 FROM suppressions s
                WHERE s.project_id = e.project_id AND lower(s.recipient) = lower(e.recipient))::boolean AS suppressed,
@@ -24,13 +31,16 @@ SELECT e.id, e.project_id, e.sender, e.recipient, e.subject, e.status,
 FROM emails e
 JOIN projects p ON p.id = e.project_id
 LEFT JOIN email_contents c ON c.email_id = e.id AND c.project_id = e.project_id
+LEFT JOIN broadcasts b ON b.id = e.broadcast_id AND b.project_id = e.project_id
+LEFT JOIN contacts ct ON ct.id = e.contact_id AND ct.project_id = e.project_id
 WHERE e.id = $1 AND e.project_id = $2;
 
 -- name: MarkSending :execrows
--- Claims the email for a send attempt. Project status, suppression and (when
+-- Claims the email for a send attempt. Project status, suppression, (when
 -- required) a verified sender identity of the project for the exact address
--- or its exact domain are checked as part of the claim, so a change made
--- before this point is always honoured.
+-- or its exact domain, and for broadcast emails the broadcast and contact
+-- state are checked as part of the claim, so a change made before this
+-- point is always honoured.
 UPDATE emails SET status = 'sending', attempts = attempts + 1, updated_at = now()
 WHERE emails.id = sqlc.arg(id) AND emails.project_id = sqlc.arg(project_id) AND emails.status IN ('queued', 'sending')
   AND EXISTS (SELECT 1 FROM projects p WHERE p.id = emails.project_id AND p.status = 'active')
@@ -40,7 +50,14 @@ WHERE emails.id = sqlc.arg(id) AND emails.project_id = sqlc.arg(project_id) AND 
        OR EXISTS (SELECT 1 FROM sender_identities si
                   WHERE si.project_id = emails.project_id AND si.status = 'verified'
                     AND ((si.kind = 'address' AND si.value = lower(emails.sender))
-                         OR (si.kind = 'domain' AND si.value = lower(substring(emails.sender FROM '@([^@]+)$'))))));
+                         OR (si.kind = 'domain' AND si.value = lower(substring(emails.sender FROM '@([^@]+)$'))))))
+  -- A broadcast email: its broadcast is not cancelled and its contact still
+  -- exists and is subscribed.
+  AND (emails.broadcast_id IS NULL
+       OR (EXISTS (SELECT 1 FROM broadcasts b
+                   WHERE b.id = emails.broadcast_id AND b.project_id = emails.project_id AND b.status <> 'canceled')
+           AND EXISTS (SELECT 1 FROM contacts ct
+                       WHERE ct.id = emails.contact_id AND ct.project_id = emails.project_id AND ct.status = 'subscribed')));
 
 -- name: MarkDispatched :execrows
 UPDATE emails

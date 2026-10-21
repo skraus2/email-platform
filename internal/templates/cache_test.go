@@ -1,4 +1,4 @@
-package emails
+package templates
 
 import (
 	"testing"
@@ -6,9 +6,9 @@ import (
 	"github.com/google/uuid"
 )
 
-func TestCompiledCacheIsBoundedByBytes(t *testing.T) {
-	c := newCompiledCache(100, 40)
-	key := func(v int) compiledKey { return compiledKey{project: uuid.Nil, template: uuid.Nil, version: v} }
+func TestCacheIsBoundedByBytes(t *testing.T) {
+	c := NewCache(100, 40)
+	key := func(v int) cacheKey { return cacheKey{project: uuid.Nil, template: uuid.Nil, version: v} }
 	c.put(key(1), nil, 41) // too large to cache
 	if _, ok := c.items[key(1)]; ok {
 		t.Fatal("oversized entry cached")

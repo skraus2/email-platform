@@ -61,8 +61,8 @@ func TestFailureCodesRetryable(t *testing.T) {
 			t.Errorf("Retryable(%q) = %v, want %v", c, got, want)
 		}
 	}
-	if len(FailureCodes) != 15 {
-		t.Errorf("FailureCodes has %d entries, want the 15 documented codes", len(FailureCodes))
+	if len(FailureCodes) != 19 {
+		t.Errorf("FailureCodes has %d entries, want the 19 documented codes", len(FailureCodes))
 	}
 }
 

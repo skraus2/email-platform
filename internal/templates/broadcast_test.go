@@ -53,3 +53,40 @@ func TestValidateSharedVariables(t *testing.T) {
 		}
 	}
 }
+
+func TestMergeVariables(t *testing.T) {
+	schema, err := ParseSchema([]byte(`{"unsubscribe_url":{"type":"string","required":true},"name":{"type":"string","required":true},"plan":{"type":"string"},"n":{"type":"number"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := MergeVariables(schema, []byte(`{"plan":"basic","name":"Default"}`), []byte(`{"name":"Ada","n":2.50,"other":"x","unsubscribe_url":"evil"}`),
+		map[string]string{"unsubscribe_url": "https://a.test/u?t=tok"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != `{"n":2.50,"name":"Ada","plan":"basic","unsubscribe_url":"https://a.test/u?t=tok"}` {
+		t.Fatalf("merged %s", got)
+	}
+	src := Source{Subject: "Hi {{.name}}", Text: "{{.plan}} {{.n}} {{.unsubscribe_url}}"}
+	c, err := Compile(src, schema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := c.Render(got)
+	if err != nil || r.Subject != "Hi Ada" || r.Text != "basic 2.50 https://a.test/u?t=tok" {
+		t.Fatalf("render: %+v %v", r, err)
+	}
+	// A contact without the required name and no shared default fails.
+	vars, err := MergeVariables(schema, nil, []byte(`{}`), map[string]string{"unsubscribe_url": "u"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Render(vars); err == nil {
+		t.Fatal("missing required variable rendered")
+	}
+	for _, bad := range [][2]string{{`[1]`, `{}`}, {`{}`, `nope`}} {
+		if _, err := MergeVariables(schema, []byte(bad[0]), []byte(bad[1]), nil); err == nil {
+			t.Errorf("%v accepted", bad)
+		}
+	}
+}

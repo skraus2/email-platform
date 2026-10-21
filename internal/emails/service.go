@@ -83,7 +83,7 @@ type Service struct {
 	listTimeout time.Duration
 	// Template sends: compiled versions are cached; at most renderSlots
 	// compile/render at once per process, waiting at most renderWait.
-	compiled    *compiledCache
+	compiled    *templates.Cache
 	compiles    atomic.Int64
 	renderSlots chan struct{}
 	renderWait  time.Duration
@@ -113,8 +113,8 @@ var ErrScheduleLimit = errors.New("scheduled send limit reached")
 // most 1 MiB of source (about 60 MiB of heap) and skips versions over
 // 64 KiB.
 const (
-	compiledCacheBytes      = 1 << 20
-	compiledCacheEntryBytes = 64 << 10
+	CompiledCacheBytes      = 1 << 20
+	CompiledCacheEntryBytes = 64 << 10
 	defaultRenderSlots      = 2
 	defaultRenderWait       = time.Second
 )
@@ -125,7 +125,7 @@ func NewService(pool *pgxpool.Pool, enq Enqueuer, logger *slog.Logger, perMinute
 	return &Service{
 		pool: pool, enq: enq, logger: logger, perMinute: max(perMinute, 1),
 		listSlots: make(chan struct{}, defaultListSlots), listWait: defaultListWait, listTimeout: defaultListTimeout,
-		compiled:    newCompiledCache(compiledCacheBytes, compiledCacheEntryBytes),
+		compiled:    templates.NewCache(CompiledCacheBytes, CompiledCacheEntryBytes),
 		renderSlots: make(chan struct{}, defaultRenderSlots), renderWait: defaultRenderWait,
 		scheduleAhead: DefaultScheduleMaxAhead, scheduledOpen: DefaultScheduleMaxOpen, events: events.NewRecorder(pool, logger),
 	}
@@ -366,14 +366,12 @@ func (s *Service) render(ctx context.Context, projectID uuid.UUID, in CreateInpu
 	case <-ctx.Done():
 		return templates.Rendered{}, 0, fmt.Errorf("render template: %w", ctx.Err())
 	}
-	key := compiledKey{project: projectID, template: v.TemplateID, version: v.Version}
-	c := s.compiled.get(key)
-	if c == nil {
+	c, compiled, err := s.compiled.Compiled(v)
+	if compiled {
 		s.compiles.Add(1)
-		if c, err = v.Compile(); err != nil {
-			return templates.Rendered{}, 0, fmt.Errorf("%v", err) //nolint:errorlint // deliberately not wrapped: a stored version is server state
-		}
-		s.compiled.put(key, c, len(v.Source.Subject)+len(v.Source.Text)+len(v.Source.HTML))
+	}
+	if err != nil {
+		return templates.Rendered{}, 0, fmt.Errorf("%v", err) //nolint:errorlint // deliberately not wrapped: a stored version is server state
 	}
 	r, err := c.Render(in.Variables)
 	if err != nil {

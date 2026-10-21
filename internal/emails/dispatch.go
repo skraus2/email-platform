@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"math"
 	"math/rand/v2"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -17,6 +18,7 @@ import (
 	"github.com/skraus2/email-platform/internal/jobs"
 	"github.com/skraus2/email-platform/internal/logging"
 	"github.com/skraus2/email-platform/internal/store"
+	"github.com/skraus2/email-platform/internal/templates"
 )
 
 // Dispatcher sends queued emails through the provider. It runs in the worker.
@@ -35,6 +37,8 @@ type Dispatcher struct {
 	logger     *slog.Logger
 	timeout    time.Duration
 	bodyMaxAge time.Duration
+	// compiled caches template versions broadcast emails are rendered from.
+	compiled *templates.Cache
 }
 
 // NewDispatcher builds a Dispatcher. timeout bounds one provider call;
@@ -42,7 +46,7 @@ type Dispatcher struct {
 func NewDispatcher(pool *pgxpool.Pool, p delivery.Provider, logger *slog.Logger, timeout, bodyMaxAge time.Duration) *Dispatcher {
 	return &Dispatcher{
 		pool: pool, provider: p, logger: logger, timeout: timeout, bodyMaxAge: bodyMaxAge,
-		events: events.NewRecorder(pool, logger),
+		events: events.NewRecorder(pool, logger), compiled: templates.NewCache(CompiledCacheBytes, CompiledCacheEntryBytes),
 	}
 }
 
@@ -85,17 +89,22 @@ func (d *Dispatcher) LimitDailyHandoffs(provider string, limit int) error {
 
 // dailyWait returns how long to wait for a free slot under the daily cap
 // (0: send now).
-func (d *Dispatcher) dailyWait(ctx context.Context) (time.Duration, error) {
+func (d *Dispatcher) dailyWait(ctx context.Context, bulk bool) (time.Duration, error) {
 	if d.daily.limit == 0 {
 		return 0, nil
 	}
+	limit := d.daily.limit
+	if bulk {
+		// Broadcast emails leave a share of the cap to transactional mail.
+		limit -= max(limit/dailyReserveDivisor, 1)
+	}
 	q := store.New(d.pool)
 	n, err := q.CountProviderHandoffs(ctx, &d.daily.provider)
-	if err != nil || n < d.daily.limit {
+	if err != nil || n < limit {
 		return 0, err
 	}
 	secs, err := q.HandoffLeavesWindowIn(ctx, store.HandoffLeavesWindowInParams{
-		Provider: &d.daily.provider, Offset: int32(min(n-d.daily.limit, math.MaxInt32)), //nolint:gosec // bounded by min
+		Provider: &d.daily.provider, Offset: int32(min(n-limit, math.MaxInt32)), //nolint:gosec // bounded by min
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return time.Second, nil // the window moved meanwhile; look again soon
@@ -105,6 +114,9 @@ func (d *Dispatcher) dailyWait(ctx context.Context) (time.Duration, error) {
 	}
 	return max(time.Duration(secs*float64(time.Second)), time.Second), nil
 }
+
+// dailyReserveDivisor: broadcast emails stop at 90 % of the daily cap.
+const dailyReserveDivisor = 10
 
 // maxDailyJitter spreads jobs waiting for the same daily slot.
 const maxDailyJitter = time.Minute
@@ -141,7 +153,12 @@ func (d *Dispatcher) SendEmail(ctx context.Context, args jobs.SendEmailArgs, at 
 	if e.ProjectStatus != "active" {
 		return d.fail(ctx, log, key, CodeProjectDisabled, CodeProjectDisabled)
 	}
-	if !e.HasContent {
+	bulk := e.BroadcastID != nil
+	if bulk {
+		if outcome := broadcastRefusal(e.BroadcastStatus, e.ContactExists, e.ContactStatus); outcome != "" {
+			return d.refuseBroadcast(ctx, log, key, e.Status, outcome)
+		}
+	} else if !e.HasContent {
 		return d.fail(ctx, log, key, CodeContentMissing, CodeContentMissing)
 	}
 	if e.Suppressed {
@@ -153,7 +170,7 @@ func (d *Dispatcher) SendEmail(ctx context.Context, args jobs.SendEmailArgs, at 
 		return d.fail(ctx, log, key, CodeSenderNotVerified, CodeSenderNotVerified)
 	}
 
-	wait, err := d.dailyWait(ctx)
+	wait, err := d.dailyWait(ctx, bulk)
 	if err != nil {
 		return d.internalError(ctx, log, key, at, fmt.Errorf("daily hand-off count: %w", err))
 	}
@@ -178,6 +195,23 @@ func (d *Dispatcher) SendEmail(ctx context.Context, args jobs.SendEmailArgs, at 
 		}
 	}
 
+	// A broadcast email is rendered now, from its immutable template
+	// version and its contact's current attributes; the stored subject (from
+	// fan-out) is sent. Rendering comes after the waits, so a backlog that
+	// snoozes never renders twice.
+	text, html, unsubscribeURL := deref(e.TextBody), deref(e.HtmlBody), ""
+	if bulk {
+		r, url, err := d.renderBroadcast(ctx, e)
+		var te *templates.Error
+		if errors.As(err, &te) {
+			return d.fail(ctx, log, key, CodeRenderFailed, CodeRenderFailed)
+		}
+		if err != nil {
+			return d.internalError(ctx, log, key, at, fmt.Errorf("render broadcast email: %w", err))
+		}
+		text, html, unsubscribeURL = r.Text, r.HTML, url
+	}
+
 	n, err := store.New(d.pool).MarkSending(ctx, store.MarkSendingParams{ID: key.ID, ProjectID: key.ProjectID, RequireVerifiedSender: d.verified})
 	if err != nil {
 		return d.internalError(ctx, log, key, at, fmt.Errorf("mark sending: %w", err))
@@ -196,6 +230,8 @@ func (d *Dispatcher) SendEmail(ctx context.Context, args jobs.SendEmailArgs, at 
 			return nil
 		case now.ProjectStatus != "active":
 			return d.fail(ctx, log, key, CodeProjectDisabled, CodeProjectDisabled)
+		case now.BroadcastID != nil && broadcastRefusal(now.BroadcastStatus, now.ContactExists, now.ContactStatus) != "":
+			return d.refuseBroadcast(ctx, log, key, now.Status, broadcastRefusal(now.BroadcastStatus, now.ContactExists, now.ContactStatus))
 		case now.Suppressed:
 			return d.fail(ctx, log, key, CodeSuppressed, CodeSuppressed)
 		case d.verified && !now.SenderVerified:
@@ -212,7 +248,7 @@ func (d *Dispatcher) SendEmail(ctx context.Context, args jobs.SendEmailArgs, at 
 	sendCtx, cancel := context.WithTimeout(ctx, d.timeout)
 	res, sendErr := d.provider.Send(sendCtx, delivery.Message{
 		ID: e.ID, ProjectID: e.ProjectID, From: e.Sender, To: e.Recipient, Subject: e.Subject,
-		Text: deref(e.TextBody), HTML: deref(e.HtmlBody),
+		Text: text, HTML: html, ListUnsubscribeURL: unsubscribeURL,
 	})
 	cancel()
 
@@ -241,6 +277,82 @@ func (d *Dispatcher) SendEmail(ctx context.Context, args jobs.SendEmailArgs, at 
 	}
 	log.WarnContext(ctx, "send attempt failed; will retry", slog.String("reason", detail), slog.String("error_code", code))
 	return errors.New(detail)
+}
+
+// broadcastCanceled is the refusal outcome of an email whose broadcast was
+// cancelled (the other outcomes are failure codes).
+const broadcastCanceled = "canceled"
+
+// broadcastRefusal says why a broadcast email must not be sent: its
+// broadcast was cancelled, its contact deleted or unsubscribed ("" = send).
+func broadcastRefusal(broadcastStatus *string, contactExists bool, contactStatus *string) string {
+	switch {
+	case broadcastStatus != nil && *broadcastStatus == "canceled":
+		return broadcastCanceled
+	case !contactExists:
+		return CodeContactDeleted
+	case contactStatus == nil || *contactStatus != "subscribed":
+		return CodeUnsubscribed
+	}
+	return ""
+}
+
+// refuseBroadcast ends a broadcast email that must not be sent. A queued
+// email of a cancelled broadcast becomes canceled (it was never handed to
+// a provider); one an earlier attempt left "sending" may already be out, so
+// it fails with broadcast_canceled instead. Everything else fails with the
+// outcome as its code.
+func (d *Dispatcher) refuseBroadcast(ctx context.Context, log *slog.Logger, key store.GetEmailForDispatchParams, status, outcome string) error {
+	if outcome != broadcastCanceled {
+		return d.fail(ctx, log, key, outcome, outcome)
+	}
+	if status == "sending" {
+		return d.fail(ctx, log, key, CodeBroadcastCanceled, CodeBroadcastCanceled)
+	}
+	dctx, cancel := detached(ctx)
+	defer cancel()
+	err := pgx.BeginFunc(dctx, d.pool, func(tx pgx.Tx) error {
+		q := store.New(tx)
+		if _, err := q.CancelEmail(dctx, store.CancelEmailParams(key)); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil // claimed or finalized meanwhile; its next run decides
+			}
+			return err
+		}
+		return d.events.Transition(dctx, tx, key.ProjectID, key.ID, events.TypeCanceled, "", "")
+	})
+	if err != nil {
+		return fmt.Errorf("cancel broadcast email: %w", err)
+	}
+	return nil
+}
+
+// renderBroadcast renders a broadcast email for its contact and returns the
+// unsubscribe URL with the contact's token. The URL and the variables are
+// personal data and are never logged. Variable and output problems are
+// *templates.Error.
+func (d *Dispatcher) renderBroadcast(ctx context.Context, e store.GetEmailForDispatchRow) (templates.Rendered, string, error) {
+	if e.TemplateID == nil || e.TemplateVersion == nil || e.BroadcastUnsubscribeUrl == nil || e.ContactToken == nil {
+		return templates.Rendered{}, "", errors.New("broadcast email without template or contact data")
+	}
+	v, err := templates.Resolve(ctx, store.New(d.pool), e.ProjectID, *e.TemplateID, int(*e.TemplateVersion))
+	if err != nil {
+		return templates.Rendered{}, "", fmt.Errorf("load template version: %w", err)
+	}
+	c, _, err := d.compiled.Compiled(v)
+	if err != nil {
+		return templates.Rendered{}, "", fmt.Errorf("compile template version: %v", err) //nolint:errorlint // a stored version is server state, never a client error
+	}
+	url := strings.Replace(*e.BroadcastUnsubscribeUrl, "{token}", *e.ContactToken, 1)
+	vars, err := templates.MergeVariables(c.Schema(), e.BroadcastVariables, e.ContactAttributes, map[string]string{"unsubscribe_url": url})
+	if err != nil {
+		return templates.Rendered{}, "", fmt.Errorf("merge variables: %w", err)
+	}
+	r, err := c.Render(vars)
+	if err != nil {
+		return templates.Rendered{}, "", err
+	}
+	return r, url, nil
 }
 
 // internalError handles a failure outside the provider call (typically the

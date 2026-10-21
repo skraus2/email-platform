@@ -108,6 +108,9 @@ type Handlers struct {
 	DeliverWebhook func(ctx context.Context, args DeliverWebhookArgs, a Attempt) error
 	// Cleanup runs periodically (and once on start).
 	Cleanup func(ctx context.Context) error
+	// BroadcastFanout creates the recipient emails of one broadcast batch
+	// (nil: the process runs no broadcast queue).
+	BroadcastFanout func(ctx context.Context, args BroadcastFanoutArgs, a Attempt) error
 }
 
 // Enqueuer inserts jobs. The API process uses it insert-only.
@@ -148,6 +151,22 @@ const (
 // visible to workers when tx commits, and disappears if it rolls back.
 func (e *Enqueuer) EnqueueSendEmail(ctx context.Context, tx pgx.Tx, args SendEmailArgs, opts SendOpts) error {
 	if _, err := e.client.InsertTx(ctx, tx, args, e.sendOpts(opts)); err != nil {
+		return fmt.Errorf("enqueue send_email: %w", err)
+	}
+	return nil
+}
+
+// EnqueueSendEmails inserts one dispatch job per email in tx, all with the
+// same options.
+func (e *Enqueuer) EnqueueSendEmails(ctx context.Context, tx pgx.Tx, args []SendEmailArgs, opts SendOpts) error {
+	if len(args) == 0 {
+		return nil
+	}
+	params := make([]river.InsertManyParams, 0, len(args))
+	for _, a := range args {
+		params = append(params, river.InsertManyParams{Args: a, InsertOpts: e.sendOpts(opts)})
+	}
+	if _, err := e.client.InsertManyTx(ctx, tx, params); err != nil {
 		return fmt.Errorf("enqueue send_email: %w", err)
 	}
 	return nil
@@ -223,6 +242,12 @@ func NewWorker(cfg WorkerConfig) (*Worker, error) {
 	river.AddWorker(workers, &sendEmailWorker{fn: cfg.Handlers.SendEmail, retry: cfg.Retry})
 	river.AddWorker(workers, &cleanupWorker{fn: cfg.Handlers.Cleanup})
 	queues := map[string]river.QueueConfig{river.QueueDefault: {MaxWorkers: max(cfg.Concurrency, 1)}}
+	if cfg.Handlers.BroadcastFanout != nil {
+		river.AddWorker(workers, &broadcastFanoutWorker{fn: cfg.Handlers.BroadcastFanout, retry: cfg.Retry})
+		// One fan-out at a time per process: batches are database-heavy and
+		// each broadcast is processed in order anyway.
+		queues[QueueBroadcasts] = river.QueueConfig{MaxWorkers: 1}
+	}
 	if cfg.Handlers.DeliverWebhook != nil {
 		river.AddWorker(workers, &deliverWebhookWorker{
 			fn: cfg.Handlers.DeliverWebhook, retry: cfg.Retry, timeout: max(cfg.WebhookTimeout, time.Second) + webhookDBMargin,
@@ -305,6 +330,26 @@ func (w *cleanupWorker) Work(ctx context.Context, _ *river.Job[cleanupArgs]) err
 // Timeout gives cleanup its own budget: it can touch many rows and must not
 // inherit the short per-email job timeout.
 func (w *cleanupWorker) Timeout(*river.Job[cleanupArgs]) time.Duration { return 5 * time.Minute }
+
+type broadcastFanoutWorker struct {
+	river.WorkerDefaults[BroadcastFanoutArgs]
+	fn    func(context.Context, BroadcastFanoutArgs, Attempt) error
+	retry RetryPolicy
+}
+
+// NextRetry spaces retries after internal errors (continuation snoozes).
+func (w *broadcastFanoutWorker) NextRetry(job *river.Job[BroadcastFanoutArgs]) time.Time {
+	return time.Now().Add(w.retry.Delay(len(job.Errors)+1, rand.Float64))
+}
+
+func (w *broadcastFanoutWorker) Work(ctx context.Context, job *river.Job[BroadcastFanoutArgs]) error {
+	err := w.fn(ctx, job.Args, Attempt{JobID: job.ID, Number: job.Attempt, MaxAttempts: job.MaxAttempts})
+	var snooze *snoozeError
+	if errors.As(err, &snooze) {
+		return river.JobSnooze(snoozeFor(snooze.d))
+	}
+	return err
+}
 
 // webhookDBMargin is the time a delivery job may spend on database work
 // besides the HTTP request.

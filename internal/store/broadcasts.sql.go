@@ -12,6 +12,45 @@ import (
 	"github.com/google/uuid"
 )
 
+const advanceBroadcast = `-- name: AdvanceBroadcast :exec
+UPDATE broadcasts
+SET cursor_contact_id = $1,
+    recipients = recipients + $2,
+    skipped_unsubscribed = skipped_unsubscribed + $3,
+    skipped_suppressed = skipped_suppressed + $4,
+    skipped_invalid = skipped_invalid + $5,
+    status = CASE WHEN $6::boolean THEN 'completed' ELSE status END,
+    finished_at = CASE WHEN $6::boolean THEN now() ELSE finished_at END,
+    updated_at = now()
+WHERE id = $7 AND project_id = $8 AND status = 'sending'
+`
+
+type AdvanceBroadcastParams struct {
+	CursorContactID     *uuid.UUID
+	Recipients          int32
+	SkippedUnsubscribed int32
+	SkippedSuppressed   int32
+	SkippedInvalid      int32
+	Done                bool
+	ID                  uuid.UUID
+	ProjectID           uuid.UUID
+}
+
+// Records one fan-out batch; a short batch completes the broadcast.
+func (q *Queries) AdvanceBroadcast(ctx context.Context, arg AdvanceBroadcastParams) error {
+	_, err := q.db.Exec(ctx, advanceBroadcast,
+		arg.CursorContactID,
+		arg.Recipients,
+		arg.SkippedUnsubscribed,
+		arg.SkippedSuppressed,
+		arg.SkippedInvalid,
+		arg.Done,
+		arg.ID,
+		arg.ProjectID,
+	)
+	return err
+}
+
 const cancelBroadcast = `-- name: CancelBroadcast :one
 UPDATE broadcasts SET status = 'canceled', finished_at = now(), updated_at = now()
 WHERE id = $1 AND project_id = $2 AND status <> 'canceled'
@@ -97,6 +136,69 @@ func (q *Queries) CountOpenBroadcasts(ctx context.Context, projectID uuid.UUID) 
 	var count int64
 	err := row.Scan(&count)
 	return count, err
+}
+
+const fanoutBatch = `-- name: FanoutBatch :many
+SELECT c.id, c.email, c.status, c.attributes, c.unsubscribe_token,
+       EXISTS (SELECT 1 FROM suppressions s
+               WHERE s.project_id = c.project_id AND lower(s.recipient) = lower(c.email))::boolean AS suppressed
+FROM audience_members m
+JOIN contacts c ON c.id = m.contact_id AND c.project_id = m.project_id
+WHERE m.audience_id = $1 AND m.project_id = $2
+  AND m.contact_id > $3::uuid
+ORDER BY m.contact_id
+LIMIT $4
+`
+
+type FanoutBatchParams struct {
+	AudienceID uuid.UUID
+	ProjectID  uuid.UUID
+	AfterID    uuid.UUID
+	RowLimit   int32
+}
+
+type FanoutBatchRow struct {
+	ID               uuid.UUID
+	Email            string
+	Status           string
+	Attributes       []byte
+	UnsubscribeToken string
+	Suppressed       bool
+}
+
+// The next members of the audience after the cursor, with what the
+// fan-out needs to decide and render (this query and the dispatch load are
+// the only broadcast paths that read the unsubscribe token).
+func (q *Queries) FanoutBatch(ctx context.Context, arg FanoutBatchParams) ([]FanoutBatchRow, error) {
+	rows, err := q.db.Query(ctx, fanoutBatch,
+		arg.AudienceID,
+		arg.ProjectID,
+		arg.AfterID,
+		arg.RowLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []FanoutBatchRow{}
+	for rows.Next() {
+		var i FanoutBatchRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Email,
+			&i.Status,
+			&i.Attributes,
+			&i.UnsubscribeToken,
+			&i.Suppressed,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const getBroadcast = `-- name: GetBroadcast :one
@@ -188,6 +290,59 @@ func (q *Queries) InsertBroadcast(ctx context.Context, arg InsertBroadcastParams
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const insertBroadcastEmails = `-- name: InsertBroadcastEmails :many
+INSERT INTO emails (project_id, sender, recipient, subject, template_id, template_version, broadcast_id, contact_id)
+SELECT $1::uuid, $2::text, unnest($3::text[]),
+       unnest($4::text[]), $5::uuid, $6::integer,
+       $7::uuid, unnest($8::uuid[])
+ON CONFLICT (broadcast_id, contact_id) DO NOTHING
+RETURNING id
+`
+
+type InsertBroadcastEmailsParams struct {
+	ProjectID       uuid.UUID
+	Sender          string
+	Recipients      []string
+	Subjects        []string
+	TemplateID      uuid.UUID
+	TemplateVersion int32
+	BroadcastID     uuid.UUID
+	ContactIds      []uuid.UUID
+}
+
+// One email per contact; a contact that already has one for this broadcast
+// is skipped (a repeated batch creates nothing twice).
+// The three arrays have one element per contact (unnest in the select
+// list zips arrays of equal length).
+func (q *Queries) InsertBroadcastEmails(ctx context.Context, arg InsertBroadcastEmailsParams) ([]uuid.UUID, error) {
+	rows, err := q.db.Query(ctx, insertBroadcastEmails,
+		arg.ProjectID,
+		arg.Sender,
+		arg.Recipients,
+		arg.Subjects,
+		arg.TemplateID,
+		arg.TemplateVersion,
+		arg.BroadcastID,
+		arg.ContactIds,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []uuid.UUID{}
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listBroadcasts = `-- name: ListBroadcasts :many
@@ -289,6 +444,72 @@ func (q *Queries) LockBroadcast(ctx context.Context, arg LockBroadcastParams) (B
 	return i, err
 }
 
+const lockBroadcastForFanout = `-- name: LockBroadcastForFanout :one
+SELECT b.id, b.project_id, b.name, b.audience_id, b.sender, b.template_id, b.template_version, b.variables, b.unsubscribe_url, b.status, b.scheduled_at, b.started_at, b.finished_at, b.cursor_contact_id, b.recipients, b.skipped_unsubscribed, b.skipped_suppressed, b.skipped_invalid, b.created_at, b.updated_at, p.status AS project_status
+FROM broadcasts b JOIN projects p ON p.id = b.project_id
+WHERE b.id = $1 AND b.project_id = $2
+FOR NO KEY UPDATE OF b
+`
+
+type LockBroadcastForFanoutParams struct {
+	ID        uuid.UUID
+	ProjectID uuid.UUID
+}
+
+type LockBroadcastForFanoutRow struct {
+	ID                  uuid.UUID
+	ProjectID           uuid.UUID
+	Name                string
+	AudienceID          uuid.UUID
+	Sender              string
+	TemplateID          uuid.UUID
+	TemplateVersion     int32
+	Variables           []byte
+	UnsubscribeUrl      string
+	Status              string
+	ScheduledAt         *time.Time
+	StartedAt           *time.Time
+	FinishedAt          *time.Time
+	CursorContactID     *uuid.UUID
+	Recipients          int32
+	SkippedUnsubscribed int32
+	SkippedSuppressed   int32
+	SkippedInvalid      int32
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
+	ProjectStatus       string
+}
+
+// The broadcast with its project's status, locked for one fan-out batch.
+func (q *Queries) LockBroadcastForFanout(ctx context.Context, arg LockBroadcastForFanoutParams) (LockBroadcastForFanoutRow, error) {
+	row := q.db.QueryRow(ctx, lockBroadcastForFanout, arg.ID, arg.ProjectID)
+	var i LockBroadcastForFanoutRow
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.Name,
+		&i.AudienceID,
+		&i.Sender,
+		&i.TemplateID,
+		&i.TemplateVersion,
+		&i.Variables,
+		&i.UnsubscribeUrl,
+		&i.Status,
+		&i.ScheduledAt,
+		&i.StartedAt,
+		&i.FinishedAt,
+		&i.CursorContactID,
+		&i.Recipients,
+		&i.SkippedUnsubscribed,
+		&i.SkippedSuppressed,
+		&i.SkippedInvalid,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.ProjectStatus,
+	)
+	return i, err
+}
+
 const lockProjectForBroadcasts = `-- name: LockProjectForBroadcasts :one
 SELECT id FROM projects WHERE id = $1 FOR NO KEY UPDATE
 `
@@ -339,4 +560,19 @@ func (q *Queries) ScheduleBroadcast(ctx context.Context, arg ScheduleBroadcastPa
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const startBroadcast = `-- name: StartBroadcast :exec
+UPDATE broadcasts SET status = 'sending', started_at = now(), updated_at = now()
+WHERE id = $1 AND project_id = $2 AND status = 'scheduled'
+`
+
+type StartBroadcastParams struct {
+	ID        uuid.UUID
+	ProjectID uuid.UUID
+}
+
+func (q *Queries) StartBroadcast(ctx context.Context, arg StartBroadcastParams) error {
+	_, err := q.db.Exec(ctx, startBroadcast, arg.ID, arg.ProjectID)
+	return err
 }
