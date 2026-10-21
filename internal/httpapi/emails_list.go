@@ -26,7 +26,7 @@ const (
 // listQueryParams are the query parameters GET /v1/emails understands.
 var listQueryParams = map[string]bool{
 	"status": true, "recipient": true, "created_after": true, "created_before": true,
-	"limit": true, "cursor": true, "template_id": true,
+	"limit": true, "cursor": true, "template_id": true, "broadcast_id": true,
 }
 
 func (s *Server) handleListEmails(w http.ResponseWriter, r *http.Request) {
@@ -102,6 +102,13 @@ func parseListQuery(query url.Values) (f emails.ListFilter, limit, status int, c
 			return bad("invalid_filter", "template_id must be a single UUID")
 		}
 		f.TemplateID = &id
+	}
+	if v, ok := query["broadcast_id"]; ok {
+		id, err := uuid.Parse(v[0])
+		if len(v) != 1 || err != nil || len(v[0]) != 36 {
+			return bad("invalid_filter", "broadcast_id must be a single UUID")
+		}
+		f.BroadcastID = &id
 	}
 	for _, b := range []struct {
 		name string

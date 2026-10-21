@@ -16,6 +16,7 @@ import (
 
 	"github.com/skraus2/email-platform/internal/admin"
 	"github.com/skraus2/email-platform/internal/auth"
+	"github.com/skraus2/email-platform/internal/broadcasts"
 	"github.com/skraus2/email-platform/internal/config"
 	"github.com/skraus2/email-platform/internal/contacts"
 	"github.com/skraus2/email-platform/internal/database"
@@ -70,6 +71,11 @@ func run() error {
 	// Cancellations are status changes: they reach subscribed webhook
 	// endpoints like those made by the worker.
 	service.Recorder().OnStatusChange(webhooks.NewOutbox(enqueuer).OnStatusChange)
+	broadcastStore := broadcasts.NewStore(pool, enqueuer, cfg.BroadcastMaxOpen)
+	broadcastStore.LimitScheduleAhead(cfg.ScheduleMaxAhead)
+	if cfg.RequireVerifiedSender {
+		broadcastStore.RequireVerifiedSenders()
+	}
 	// Registration through the API is opt-in: only an API process given the
 	// webhook key-encryption keys can store new endpoint secrets.
 	var registrar httpapi.WebhookRegistrar
@@ -78,12 +84,13 @@ func run() error {
 		logger.Info("webhook endpoint registration through the API is enabled")
 	}
 	api := httpapi.New(httpapi.Deps{
-		Logger:    logger,
-		Emails:    service,
-		Webhooks:  registrar,
-		Templates: templates.NewStore(pool, cfg.TemplateMaxPerProject, cfg.TemplateMaxVersions, int64(cfg.TemplateMaxStorageBytes), cfg.TemplateWritesPerMinute),
-		Contacts:  contacts.NewStore(pool, cfg.ContactMaxPerProject),
-		Audiences: contacts.NewAudiences(pool, cfg.AudienceMaxPerProject, cfg.AudienceMaxContacts),
+		Logger:     logger,
+		Emails:     service,
+		Webhooks:   registrar,
+		Templates:  templates.NewStore(pool, cfg.TemplateMaxPerProject, cfg.TemplateMaxVersions, int64(cfg.TemplateMaxStorageBytes), cfg.TemplateWritesPerMinute),
+		Contacts:   contacts.NewStore(pool, cfg.ContactMaxPerProject),
+		Audiences:  contacts.NewAudiences(pool, cfg.AudienceMaxPerProject, cfg.AudienceMaxContacts),
+		Broadcasts: broadcastStore,
 		Authenticate: func(ctx context.Context, token string) (auth.Principal, error) {
 			return auth.Authenticate(ctx, queries.GetActiveKeyByPrefix, token)
 		},

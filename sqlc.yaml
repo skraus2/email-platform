@@ -30,6 +30,7 @@ sql:
       - db/migrations/00027_contacts.sql
       - db/migrations/00028_audiences.sql
       - db/migrations/00029_scheduled_sends.sql
+      - db/migrations/00030_broadcasts.sql
     queries: db/queries
     gen:
       go:

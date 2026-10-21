@@ -49,6 +49,8 @@ type Email struct {
 	TemplateVersion *int
 	// ScheduledAt is the planned send time (nil: immediate).
 	ScheduledAt *time.Time
+	// BroadcastID names the broadcast of a recipient email (nil otherwise).
+	BroadcastID *uuid.UUID
 	// Replayed is set by Create when the request repeated an earlier one
 	// with the same idempotency key: the email is that earlier one.
 	Replayed bool
@@ -58,7 +60,7 @@ func fromRow(r store.Email) Email {
 	e := Email{
 		ID: r.ID, ProjectID: r.ProjectID, Status: r.Status, From: r.Sender, To: r.Recipient,
 		Subject: r.Subject, CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt, FinishedAt: r.FinishedAt,
-		Attempts: int(r.Attempts), ErrorCode: r.ErrorCode, TemplateID: r.TemplateID, ScheduledAt: r.ScheduledAt,
+		Attempts: int(r.Attempts), ErrorCode: r.ErrorCode, TemplateID: r.TemplateID, ScheduledAt: r.ScheduledAt, BroadcastID: r.BroadcastID,
 	}
 	if r.TemplateVersion != nil {
 		v := int(*r.TemplateVersion)
@@ -524,6 +526,7 @@ type ListFilter struct {
 	CreatedAfter  *time.Time // inclusive
 	CreatedBefore *time.Time // exclusive
 	TemplateID    *uuid.UUID // only emails sent from this template
+	BroadcastID   *uuid.UUID // only recipient emails of this broadcast
 	// After is the cursor: only emails with a smaller id follow (uuid.Nil:
 	// from the newest).
 	After uuid.UUID
@@ -589,12 +592,12 @@ func (s *Service) List(ctx context.Context, projectID uuid.UUID, f ListFilter, l
 		if f.Recipient != "" {
 			rows, err = q.ListProjectEmailsByRecipient(qctx, store.ListProjectEmailsByRecipientParams{
 				ProjectID: projectID, Recipient: f.Recipient, BeforeID: before, MinID: minID, Statuses: statuses,
-				CreatedAfter: f.CreatedAfter, CreatedBefore: f.CreatedBefore, TemplateID: f.TemplateID, RowLimit: rowLimit,
+				CreatedAfter: f.CreatedAfter, CreatedBefore: f.CreatedBefore, TemplateID: f.TemplateID, BroadcastID: f.BroadcastID, RowLimit: rowLimit,
 			})
 		} else {
 			rows, err = q.ListProjectEmails(qctx, store.ListProjectEmailsParams{
 				ProjectID: projectID, BeforeID: before, MinID: minID, Statuses: statuses,
-				CreatedAfter: f.CreatedAfter, CreatedBefore: f.CreatedBefore, TemplateID: f.TemplateID, RowLimit: rowLimit,
+				CreatedAfter: f.CreatedAfter, CreatedBefore: f.CreatedBefore, TemplateID: f.TemplateID, BroadcastID: f.BroadcastID, RowLimit: rowLimit,
 			})
 		}
 		return err

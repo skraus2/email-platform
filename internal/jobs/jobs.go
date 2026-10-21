@@ -37,6 +37,23 @@ type DeliverWebhookArgs struct {
 // Kind implements river.JobArgs.
 func (DeliverWebhookArgs) Kind() string { return "deliver_webhook" }
 
+// BroadcastFanoutArgs identifies a broadcast whose recipient emails are to
+// be created.
+type BroadcastFanoutArgs struct {
+	BroadcastID uuid.UUID `json:"broadcast_id"`
+	ProjectID   uuid.UUID `json:"project_id"`
+}
+
+// Kind implements river.JobArgs.
+func (BroadcastFanoutArgs) Kind() string { return "broadcast_fanout" }
+
+// QueueBroadcasts runs broadcast fan-out apart from email dispatch.
+const QueueBroadcasts = "broadcasts"
+
+// broadcastFanoutAttempts bounds internal failures of one fan-out; each run
+// does one batch and continues by snoozing, which costs no attempt.
+const broadcastFanoutAttempts = 25
+
 // QueueWebhooks runs webhook deliveries apart from email dispatch, so slow
 // receivers can never take the slots sends need.
 const QueueWebhooks = "webhooks"
@@ -142,6 +159,17 @@ func (e *Enqueuer) sendOpts(opts SendOpts) *river.InsertOpts {
 		o.Priority = priorityBulk
 	}
 	return o
+}
+
+// EnqueueBroadcastFanout inserts the fan-out job of a broadcast in tx, to run
+// not before at.
+func (e *Enqueuer) EnqueueBroadcastFanout(ctx context.Context, tx pgx.Tx, args BroadcastFanoutArgs, at time.Time) error {
+	if _, err := e.client.InsertTx(ctx, tx, args, &river.InsertOpts{
+		Queue: QueueBroadcasts, MaxAttempts: broadcastFanoutAttempts, ScheduledAt: at,
+	}); err != nil {
+		return fmt.Errorf("enqueue broadcast_fanout: %w", err)
+	}
+	return nil
 }
 
 // EnqueueWebhooks inserts delivery jobs in tx, in the webhook queue.

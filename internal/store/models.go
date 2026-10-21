@@ -54,6 +54,29 @@ type AudienceMember struct {
 	CreatedAt  time.Time
 }
 
+type Broadcast struct {
+	ID                  uuid.UUID
+	ProjectID           uuid.UUID
+	Name                string
+	AudienceID          uuid.UUID
+	Sender              string
+	TemplateID          uuid.UUID
+	TemplateVersion     int32
+	Variables           []byte
+	UnsubscribeUrl      string
+	Status              string
+	ScheduledAt         *time.Time
+	StartedAt           *time.Time
+	FinishedAt          *time.Time
+	CursorContactID     *uuid.UUID
+	Recipients          int32
+	SkippedUnsubscribed int32
+	SkippedSuppressed   int32
+	SkippedInvalid      int32
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
+}
+
 type Contact struct {
 	ID               uuid.UUID
 	ProjectID        uuid.UUID
@@ -85,6 +108,8 @@ type Email struct {
 	TemplateID      *uuid.UUID
 	TemplateVersion *int32
 	ScheduledAt     *time.Time
+	BroadcastID     *uuid.UUID
+	ContactID       *uuid.UUID
 }
 
 type EmailContent struct {

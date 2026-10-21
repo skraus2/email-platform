@@ -118,6 +118,7 @@ WHERE project_id = sqlc.arg(project_id)
   AND (sqlc.narg(created_after)::timestamptz IS NULL OR created_at >= sqlc.narg(created_after)::timestamptz)
   AND (sqlc.narg(created_before)::timestamptz IS NULL OR created_at < sqlc.narg(created_before)::timestamptz)
   AND (sqlc.narg(template_id)::uuid IS NULL OR template_id = sqlc.narg(template_id)::uuid)
+  AND (sqlc.narg(broadcast_id)::uuid IS NULL OR broadcast_id = sqlc.narg(broadcast_id)::uuid)
 ORDER BY id DESC
 LIMIT sqlc.arg(row_limit);
 
@@ -132,6 +133,7 @@ WHERE project_id = sqlc.arg(project_id)
   AND (sqlc.narg(created_after)::timestamptz IS NULL OR created_at >= sqlc.narg(created_after)::timestamptz)
   AND (sqlc.narg(created_before)::timestamptz IS NULL OR created_at < sqlc.narg(created_before)::timestamptz)
   AND (sqlc.narg(template_id)::uuid IS NULL OR template_id = sqlc.narg(template_id)::uuid)
+  AND (sqlc.narg(broadcast_id)::uuid IS NULL OR broadcast_id = sqlc.narg(broadcast_id)::uuid)
 ORDER BY id DESC
 LIMIT sqlc.arg(row_limit);
 

@@ -81,6 +81,9 @@ type Config struct {
 
 	// ScheduleMaxAhead bounds how far in the future a send may be planned.
 	ScheduleMaxAhead time.Duration
+	// BroadcastMaxOpen caps a project's broadcasts in draft, scheduled or
+	// sending.
+	BroadcastMaxOpen int
 
 	// Admin sessions end after AdminSessionIdle without use or
 	// AdminSessionMax after login.
@@ -276,6 +279,7 @@ func Load(lookup LookupFunc) (Config, error) {
 	cfg.ContactMaxPerProject, errs = intInRange(get, "CONTACT_MAX_PER_PROJECT", "250000", 1, 10_000_000, errs)
 	cfg.AudienceMaxPerProject, errs = intInRange(get, "AUDIENCE_MAX_PER_PROJECT", "100", 1, 10_000, errs)
 	cfg.AudienceMaxContacts, errs = intInRange(get, "AUDIENCE_MAX_CONTACTS", "100000", 1, 1_000_000, errs)
+	cfg.BroadcastMaxOpen, errs = intInRange(get, "BROADCAST_MAX_OPEN", "20", 1, 1000, errs)
 	cfg.ScheduleMaxAhead, errs = positiveDuration(get, "SCHEDULE_MAX_AHEAD", "720h", errs)
 	if cfg.ScheduleMaxAhead > 720*time.Hour || (cfg.ScheduleMaxAhead > 0 && cfg.ScheduleMaxAhead < time.Minute) {
 		errs = append(errs, errors.New("SCHEDULE_MAX_AHEAD must be between 1m and 720h"))

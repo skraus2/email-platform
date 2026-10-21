@@ -105,8 +105,22 @@ func ValidateVariables(schema Schema, raw []byte) error {
 	return err
 }
 
+// ValidateSharedVariables checks values that cover only part of a schema
+// (the rest comes from elsewhere at send time): declared names and types,
+// without requiring any variable. Errors are *Error (variables_invalid).
+func ValidateSharedVariables(schema Schema, raw []byte) error {
+	_, err := decodeVariables(schema, raw, false)
+	return err
+}
+
 // variables decodes and checks the request variables.
 func variables(schema Schema, raw []byte) (map[string]any, error) {
+	return decodeVariables(schema, raw, true)
+}
+
+// decodeVariables decodes and checks variables; requireAll also demands
+// every required variable.
+func decodeVariables(schema Schema, raw []byte, requireAll bool) (map[string]any, error) {
 	bad := func(field, format string, args ...any) error {
 		return fail(CodeVariablesInvalid, field, format, args...)
 	}
@@ -163,7 +177,7 @@ func variables(schema Schema, raw []byte) (map[string]any, error) {
 		}
 	}
 	for name, v := range schema {
-		if v.Required && !seen[name] {
+		if requireAll && v.Required && !seen[name] {
 			return nil, bad("variables."+name, "is required")
 		}
 	}

@@ -87,7 +87,7 @@ func (q *Queries) AdminEmailDeliveries(ctx context.Context, arg AdminEmailDelive
 }
 
 const adminGetEmail = `-- name: AdminGetEmail :one
-SELECT e.id, e.project_id, e.sender, e.recipient, e.subject, e.status, e.provider, e.provider_id, e.attempts, e.last_error, e.created_at, e.updated_at, e.finished_at, e.error_code, e.template_id, e.template_version, e.scheduled_at, p.name AS project_name
+SELECT e.id, e.project_id, e.sender, e.recipient, e.subject, e.status, e.provider, e.provider_id, e.attempts, e.last_error, e.created_at, e.updated_at, e.finished_at, e.error_code, e.template_id, e.template_version, e.scheduled_at, e.broadcast_id, e.contact_id, p.name AS project_name
 FROM emails e JOIN projects p ON p.id = e.project_id
 WHERE e.id = $1
 `
@@ -118,6 +118,8 @@ func (q *Queries) AdminGetEmail(ctx context.Context, id uuid.UUID) (AdminGetEmai
 		&i.Email.TemplateID,
 		&i.Email.TemplateVersion,
 		&i.Email.ScheduledAt,
+		&i.Email.BroadcastID,
+		&i.Email.ContactID,
 		&i.ProjectName,
 	)
 	return i, err
@@ -316,7 +318,7 @@ func (q *Queries) AdminListWebhookEndpoints(ctx context.Context, arg AdminListWe
 }
 
 const adminSearchEmails = `-- name: AdminSearchEmails :many
-SELECT e.id, e.project_id, e.sender, e.recipient, e.subject, e.status, e.provider, e.provider_id, e.attempts, e.last_error, e.created_at, e.updated_at, e.finished_at, e.error_code, e.template_id, e.template_version, e.scheduled_at, p.name AS project_name
+SELECT e.id, e.project_id, e.sender, e.recipient, e.subject, e.status, e.provider, e.provider_id, e.attempts, e.last_error, e.created_at, e.updated_at, e.finished_at, e.error_code, e.template_id, e.template_version, e.scheduled_at, e.broadcast_id, e.contact_id, p.name AS project_name
 FROM emails e JOIN projects p ON p.id = e.project_id
 WHERE e.id < $1::uuid
   AND ($2::uuid IS NULL OR e.project_id = $2::uuid)
@@ -394,6 +396,8 @@ func (q *Queries) AdminSearchEmails(ctx context.Context, arg AdminSearchEmailsPa
 			&i.Email.TemplateID,
 			&i.Email.TemplateVersion,
 			&i.Email.ScheduledAt,
+			&i.Email.BroadcastID,
+			&i.Email.ContactID,
 			&i.ProjectName,
 		); err != nil {
 			return nil, err

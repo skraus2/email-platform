@@ -15,7 +15,7 @@ import (
 const cancelEmail = `-- name: CancelEmail :one
 UPDATE emails SET status = 'canceled', finished_at = now(), updated_at = now()
 WHERE id = $1 AND project_id = $2 AND status = 'queued'
-RETURNING id, project_id, sender, recipient, subject, status, provider, provider_id, attempts, last_error, created_at, updated_at, finished_at, error_code, template_id, template_version, scheduled_at
+RETURNING id, project_id, sender, recipient, subject, status, provider, provider_id, attempts, last_error, created_at, updated_at, finished_at, error_code, template_id, template_version, scheduled_at, broadcast_id, contact_id
 `
 
 type CancelEmailParams struct {
@@ -45,6 +45,8 @@ func (q *Queries) CancelEmail(ctx context.Context, arg CancelEmailParams) (Email
 		&i.TemplateID,
 		&i.TemplateVersion,
 		&i.ScheduledAt,
+		&i.BroadcastID,
+		&i.ContactID,
 	)
 	return i, err
 }
@@ -148,7 +150,7 @@ func (q *Queries) ExpireOpenEmails(ctx context.Context, cutoff time.Time) ([]Exp
 }
 
 const getEmail = `-- name: GetEmail :one
-SELECT id, project_id, sender, recipient, subject, status, provider, provider_id, attempts, last_error, created_at, updated_at, finished_at, error_code, template_id, template_version, scheduled_at FROM emails WHERE id = $1 AND project_id = $2
+SELECT id, project_id, sender, recipient, subject, status, provider, provider_id, attempts, last_error, created_at, updated_at, finished_at, error_code, template_id, template_version, scheduled_at, broadcast_id, contact_id FROM emails WHERE id = $1 AND project_id = $2
 `
 
 type GetEmailParams struct {
@@ -177,6 +179,8 @@ func (q *Queries) GetEmail(ctx context.Context, arg GetEmailParams) (Email, erro
 		&i.TemplateID,
 		&i.TemplateVersion,
 		&i.ScheduledAt,
+		&i.BroadcastID,
+		&i.ContactID,
 	)
 	return i, err
 }
@@ -263,7 +267,7 @@ func (q *Queries) HandoffLeavesWindowIn(ctx context.Context, arg HandoffLeavesWi
 const insertEmail = `-- name: InsertEmail :one
 INSERT INTO emails (project_id, sender, recipient, subject, template_id, template_version, scheduled_at)
 VALUES ($1, $2, $3, $4, $5, $6, $7)
-RETURNING id, project_id, sender, recipient, subject, status, provider, provider_id, attempts, last_error, created_at, updated_at, finished_at, error_code, template_id, template_version, scheduled_at
+RETURNING id, project_id, sender, recipient, subject, status, provider, provider_id, attempts, last_error, created_at, updated_at, finished_at, error_code, template_id, template_version, scheduled_at, broadcast_id, contact_id
 `
 
 type InsertEmailParams struct {
@@ -305,6 +309,8 @@ func (q *Queries) InsertEmail(ctx context.Context, arg InsertEmailParams) (Email
 		&i.TemplateID,
 		&i.TemplateVersion,
 		&i.ScheduledAt,
+		&i.BroadcastID,
+		&i.ContactID,
 	)
 	return i, err
 }
@@ -332,7 +338,7 @@ func (q *Queries) InsertEmailContent(ctx context.Context, arg InsertEmailContent
 }
 
 const listEmails = `-- name: ListEmails :many
-SELECT id, project_id, sender, recipient, subject, status, provider, provider_id, attempts, last_error, created_at, updated_at, finished_at, error_code, template_id, template_version, scheduled_at FROM emails
+SELECT id, project_id, sender, recipient, subject, status, provider, provider_id, attempts, last_error, created_at, updated_at, finished_at, error_code, template_id, template_version, scheduled_at, broadcast_id, contact_id FROM emails
 WHERE project_id = $1 AND ($3::text IS NULL OR status = $3)
 ORDER BY created_at DESC, id DESC
 LIMIT $2
@@ -372,6 +378,8 @@ func (q *Queries) ListEmails(ctx context.Context, arg ListEmailsParams) ([]Email
 			&i.TemplateID,
 			&i.TemplateVersion,
 			&i.ScheduledAt,
+			&i.BroadcastID,
+			&i.ContactID,
 		); err != nil {
 			return nil, err
 		}
@@ -384,7 +392,7 @@ func (q *Queries) ListEmails(ctx context.Context, arg ListEmailsParams) ([]Email
 }
 
 const listProjectEmails = `-- name: ListProjectEmails :many
-SELECT id, project_id, sender, recipient, subject, status, provider, provider_id, attempts, last_error, created_at, updated_at, finished_at, error_code, template_id, template_version, scheduled_at FROM emails
+SELECT id, project_id, sender, recipient, subject, status, provider, provider_id, attempts, last_error, created_at, updated_at, finished_at, error_code, template_id, template_version, scheduled_at, broadcast_id, contact_id FROM emails
 WHERE project_id = $1
   AND id < $2::uuid
   AND id >= $3::uuid
@@ -392,8 +400,9 @@ WHERE project_id = $1
   AND ($5::timestamptz IS NULL OR created_at >= $5::timestamptz)
   AND ($6::timestamptz IS NULL OR created_at < $6::timestamptz)
   AND ($7::uuid IS NULL OR template_id = $7::uuid)
+  AND ($8::uuid IS NULL OR broadcast_id = $8::uuid)
 ORDER BY id DESC
-LIMIT $8
+LIMIT $9
 `
 
 type ListProjectEmailsParams struct {
@@ -404,6 +413,7 @@ type ListProjectEmailsParams struct {
 	CreatedAfter  *time.Time
 	CreatedBefore *time.Time
 	TemplateID    *uuid.UUID
+	BroadcastID   *uuid.UUID
 	RowLimit      int32
 }
 
@@ -421,6 +431,7 @@ func (q *Queries) ListProjectEmails(ctx context.Context, arg ListProjectEmailsPa
 		arg.CreatedAfter,
 		arg.CreatedBefore,
 		arg.TemplateID,
+		arg.BroadcastID,
 		arg.RowLimit,
 	)
 	if err != nil {
@@ -448,6 +459,8 @@ func (q *Queries) ListProjectEmails(ctx context.Context, arg ListProjectEmailsPa
 			&i.TemplateID,
 			&i.TemplateVersion,
 			&i.ScheduledAt,
+			&i.BroadcastID,
+			&i.ContactID,
 		); err != nil {
 			return nil, err
 		}
@@ -460,7 +473,7 @@ func (q *Queries) ListProjectEmails(ctx context.Context, arg ListProjectEmailsPa
 }
 
 const listProjectEmailsByRecipient = `-- name: ListProjectEmailsByRecipient :many
-SELECT id, project_id, sender, recipient, subject, status, provider, provider_id, attempts, last_error, created_at, updated_at, finished_at, error_code, template_id, template_version, scheduled_at FROM emails
+SELECT id, project_id, sender, recipient, subject, status, provider, provider_id, attempts, last_error, created_at, updated_at, finished_at, error_code, template_id, template_version, scheduled_at, broadcast_id, contact_id FROM emails
 WHERE project_id = $1
   AND lower(recipient) = lower($2::text)
   AND id < $3::uuid
@@ -469,8 +482,9 @@ WHERE project_id = $1
   AND ($6::timestamptz IS NULL OR created_at >= $6::timestamptz)
   AND ($7::timestamptz IS NULL OR created_at < $7::timestamptz)
   AND ($8::uuid IS NULL OR template_id = $8::uuid)
+  AND ($9::uuid IS NULL OR broadcast_id = $9::uuid)
 ORDER BY id DESC
-LIMIT $9
+LIMIT $10
 `
 
 type ListProjectEmailsByRecipientParams struct {
@@ -482,6 +496,7 @@ type ListProjectEmailsByRecipientParams struct {
 	CreatedAfter  *time.Time
 	CreatedBefore *time.Time
 	TemplateID    *uuid.UUID
+	BroadcastID   *uuid.UUID
 	RowLimit      int32
 }
 
@@ -496,6 +511,7 @@ func (q *Queries) ListProjectEmailsByRecipient(ctx context.Context, arg ListProj
 		arg.CreatedAfter,
 		arg.CreatedBefore,
 		arg.TemplateID,
+		arg.BroadcastID,
 		arg.RowLimit,
 	)
 	if err != nil {
@@ -523,6 +539,8 @@ func (q *Queries) ListProjectEmailsByRecipient(ctx context.Context, arg ListProj
 			&i.TemplateID,
 			&i.TemplateVersion,
 			&i.ScheduledAt,
+			&i.BroadcastID,
+			&i.ContactID,
 		); err != nil {
 			return nil, err
 		}

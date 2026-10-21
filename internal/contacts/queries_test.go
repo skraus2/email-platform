@@ -14,7 +14,7 @@ func TestQueriesNeverReadTheToken(t *testing.T) {
 	t.Parallel()
 	allowed := map[string]bool{"InsertContact": true, "UnsubscribeByToken": true, "ContactIDByToken": true}
 	name := regexp.MustCompile(`(?m)^-- name: (\w+)`)
-	for _, file := range []string{"../../db/queries/contacts.sql", "../../db/queries/audiences.sql"} {
+	for _, file := range []string{"../../db/queries/contacts.sql", "../../db/queries/audiences.sql", "../../db/queries/broadcasts.sql"} {
 		b, err := os.ReadFile(file)
 		if err != nil {
 			t.Fatal(err)

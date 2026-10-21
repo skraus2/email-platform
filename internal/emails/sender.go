@@ -119,8 +119,12 @@ func ListSenders(ctx context.Context, q *store.Queries, projectID uuid.UUID, lim
 	return out, nil
 }
 
-// senderVerified reports whether from (an already validated address) is
+// SenderVerified reports whether from (an already validated address) is
 // covered by a verified identity of the project.
+func SenderVerified(ctx context.Context, q *store.Queries, projectID uuid.UUID, from string) (bool, error) {
+	return senderVerified(ctx, q, projectID, from)
+}
+
 func senderVerified(ctx context.Context, q *store.Queries, projectID uuid.UUID, from string) (bool, error) {
 	domain := from[strings.LastIndexByte(from, '@')+1:]
 	ok, err := q.IsSenderVerified(ctx, store.IsSenderVerifiedParams{ProjectID: projectID, Address: from, Domain: domain})

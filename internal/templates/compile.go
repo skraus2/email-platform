@@ -101,6 +101,38 @@ func compile(src Source, schema Schema, policy bool) (*Compiled, error) {
 	return c, nil
 }
 
+// Schema returns the variable schema the version was compiled with.
+func (c *Compiled) Schema() Schema { return c.schema }
+
+// HasHTML reports whether the version has an HTML part.
+func (c *Compiled) HasHTML() bool { return c.html != nil }
+
+// PrintsTopLevel reports whether part ("text" or "html") prints the
+// variable name outside of any condition, so every rendering contains it.
+func (c *Compiled) PrintsTopLevel(part, name string) bool {
+	var root *parse.ListNode
+	switch {
+	case part == "text":
+		root = c.text.Root
+	case part == "html" && c.html != nil:
+		root = c.html.Tree.Root
+	default:
+		return false
+	}
+	for _, n := range root.Nodes {
+		a, ok := n.(*parse.ActionNode)
+		if !ok || a.Pipe == nil || len(a.Pipe.Cmds) == 0 || len(a.Pipe.Cmds[0].Args) != 1 {
+			continue
+		}
+		// html/template appends escaper commands to the pipe; the first
+		// command is still the printed field.
+		if f, ok := a.Pipe.Cmds[0].Args[0].(*parse.FieldNode); ok && len(f.Ident) == 1 && f.Ident[0] == name {
+			return true
+		}
+	}
+	return false
+}
+
 func (c *Compiled) executeHTML(w io.Writer, data any) error {
 	if c.html == nil {
 		return nil
