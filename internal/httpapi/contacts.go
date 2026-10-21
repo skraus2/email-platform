@@ -24,6 +24,7 @@ type ContactService interface {
 	Update(ctx context.Context, projectID, id uuid.UUID, in contacts.UpdateInput) (contacts.Contact, error)
 	Delete(ctx context.Context, projectID, id uuid.UUID) error
 	List(ctx context.Context, projectID uuid.UUID, f contacts.ListFilter, limit int) ([]contacts.Contact, bool, error)
+	Unsubscribe(ctx context.Context, projectID uuid.UUID, token string) (uuid.UUID, error)
 }
 
 // contactResponse mirrors the Contact schema in api/openapi.yaml.
@@ -152,6 +153,30 @@ func (s *Server) handleDeleteContact(w http.ResponseWriter, r *http.Request) {
 
 // defaultPage is the page size of list endpoints without a limit.
 const defaultPage = 50
+
+type unsubscribeRequest struct {
+	Token string `json:"token"`
+}
+
+// handleUnsubscribe takes an unsubscribe reported by the app's own page.
+// The token is never logged or echoed; every failure to resolve it is the
+// same 404.
+func (s *Server) handleUnsubscribe(w http.ResponseWriter, r *http.Request) {
+	if !requireJSON(w, r) {
+		return
+	}
+	var req unsubscribeRequest
+	if status, code, msg := decodeStrict(w, r, &req); status != 0 {
+		writeError(w, status, code, msg)
+		return
+	}
+	id, err := s.contacts.Unsubscribe(r.Context(), principalFrom(r.Context()).ProjectID, req.Token)
+	if err != nil {
+		s.writeContactError(w, r, "unsubscribe", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"contact_id": id.String(), "status": contacts.StatusUnsubscribed})
+}
 
 // contactListParams are the query parameters GET /v1/contacts understands.
 var contactListParams = map[string]bool{"email": true, "status": true, "limit": true, "cursor": true}

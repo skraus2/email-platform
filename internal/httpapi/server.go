@@ -88,6 +88,8 @@ func New(d Deps) *Server {
 	mux.HandleFunc("PATCH /v1/contacts/{id}", s.requireScope(auth.ScopeContactsWrite, s.handleUpdateContact))
 	mux.HandleFunc("DELETE /v1/contacts/{id}", s.requireScope(auth.ScopeContactsWrite, s.handleDeleteContact))
 	mux.HandleFunc("/v1/contacts/{id}", methodNotAllowed(http.MethodGet+", "+http.MethodPatch+", "+http.MethodDelete))
+	mux.HandleFunc("POST /v1/unsubscribes", s.requireScope(auth.ScopeContactsWrite, s.handleUnsubscribe))
+	mux.HandleFunc("/v1/unsubscribes", methodNotAllowed(http.MethodPost))
 	mux.HandleFunc("POST /v1/audiences", s.requireScope(auth.ScopeContactsWrite, s.handleCreateAudience))
 	mux.HandleFunc("GET /v1/audiences", s.requireScope(auth.ScopeContactsRead, s.handleListAudiences))
 	mux.HandleFunc("/v1/audiences", methodNotAllowed(http.MethodGet+", "+http.MethodPost))

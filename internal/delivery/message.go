@@ -9,6 +9,7 @@ import (
 	"mime/quotedprintable"
 	"net/mail"
 	"net/textproto"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -33,6 +34,11 @@ func buildMessage(msg Message, now time.Time) ([]byte, error) {
 	if msg.Text == "" && msg.HTML == "" {
 		return nil, errors.New("message has no body")
 	}
+	if msg.ListUnsubscribeURL != "" {
+		if err := ValidateListUnsubscribeURL(msg.ListUnsubscribeURL); err != nil {
+			return nil, err
+		}
+	}
 
 	var b bytes.Buffer
 	header := func(k, v string) { b.WriteString(k + ": " + v + "\r\n") }
@@ -41,6 +47,12 @@ func buildMessage(msg Message, now time.Time) ([]byte, error) {
 	header("From", msg.From)
 	header("To", msg.To)
 	header("Subject", encodeSubject(msg.Subject))
+	if msg.ListUnsubscribeURL != "" {
+		// RFC 2369 + RFC 8058 one-click: the receiver's mailbox provider
+		// POSTs "List-Unsubscribe=One-Click" to the URL.
+		header("List-Unsubscribe", "<"+msg.ListUnsubscribeURL+">")
+		header("List-Unsubscribe-Post", "List-Unsubscribe=One-Click")
+	}
 	header("MIME-Version", "1.0")
 
 	switch {
@@ -79,6 +91,30 @@ func buildMessage(msg Message, now time.Time) ([]byte, error) {
 		}
 	}
 	return b.Bytes(), nil
+}
+
+// MaxListUnsubscribeURL keeps the unfolded List-Unsubscribe header line
+// ("List-Unsubscribe: <" + URL + ">") within the 998-byte line limit.
+const MaxListUnsubscribeURL = 998 - len("List-Unsubscribe: <>")
+
+// ValidateListUnsubscribeURL accepts an absolute https URL with a host, no
+// userinfo, of printable ASCII without space, quotes and angle brackets, at
+// most MaxListUnsubscribeURL bytes — safe to place between < and > in a
+// header line.
+func ValidateListUnsubscribeURL(v string) error {
+	if len(v) > MaxListUnsubscribeURL {
+		return fmt.Errorf("unsubscribe URL must be at most %d bytes", MaxListUnsubscribeURL)
+	}
+	for i := range len(v) {
+		if c := v[i]; c <= 0x20 || c >= 0x7f || c == '<' || c == '>' || c == '"' {
+			return errors.New("unsubscribe URL must be printable ASCII without spaces, quotes or angle brackets")
+		}
+	}
+	u, err := url.Parse(v)
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.Opaque != "" {
+		return errors.New("unsubscribe URL must be an absolute https URL without user information")
+	}
+	return nil
 }
 
 // encodeSubject returns the subject as RFC 2047 encoded-words when needed,

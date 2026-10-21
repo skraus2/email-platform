@@ -47,3 +47,31 @@ func TestMailpitCapturesExactlyTheMessage(t *testing.T) {
 		t.Errorf("html = %q, want %q", m.HTML, msg.HTML)
 	}
 }
+
+func TestMailpitShowsListUnsubscribeHeaders(t *testing.T) {
+	t.Parallel()
+	mp, err := delivery.NewMailpit(testmailpit.SMTPAddr())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const u = "https://app.example.test/unsubscribe?t=tok"
+	msg := delivery.Message{
+		ID: uuid.Must(uuid.NewV7()), From: "news@example.test", To: "reader@example.test",
+		Subject: "Newsletter " + t.Name(), Text: "Unsubscribe: " + u, ListUnsubscribeURL: u,
+	}
+	res, err := mp.Send(context.Background(), msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := testmailpit.FindByMessageID(t, strings.Trim(res.ProviderID, "<>"), 5*time.Second)
+	if len(got) != 1 {
+		t.Fatalf("found %d messages", len(got))
+	}
+	h := testmailpit.Headers(t, got[0].ID)
+	if lu := h["List-Unsubscribe"]; len(lu) != 1 || lu[0] != "<"+u+">" {
+		t.Fatalf("List-Unsubscribe = %v", lu)
+	}
+	if p := h["List-Unsubscribe-Post"]; len(p) != 1 || p[0] != "List-Unsubscribe=One-Click" {
+		t.Fatalf("List-Unsubscribe-Post = %v", p)
+	}
+}

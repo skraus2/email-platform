@@ -36,6 +36,7 @@ func apiBase() string {
 
 // Message is the part of Mailpit's message view the tests compare.
 type Message struct {
+	ID        string // Mailpit's own id
 	MessageID string
 	From      struct{ Address string }
 	To        []struct{ Address string }
@@ -62,6 +63,14 @@ func FindByMessageID(t testing.TB, messageID string, timeout time.Duration) []Me
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
+}
+
+// Headers returns the raw headers of a captured message (by Mailpit id).
+func Headers(t testing.TB, id string) map[string][]string {
+	t.Helper()
+	var h map[string][]string
+	get(t, "/api/v1/message/"+url.PathEscape(id)+"/headers", &h)
+	return h
 }
 
 func search(t testing.TB, messageID string) []string {

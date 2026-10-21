@@ -241,3 +241,19 @@ func names(block string) string {
 	}
 	return strings.Join(out, ",")
 }
+
+func TestSESRawMessageCarriesListUnsubscribe(t *testing.T) {
+	t.Parallel()
+	stub := testaws.NewSESv2(t)
+	stub.Respond(func(testaws.SendEmail) testaws.Response { return testaws.Response{MessageID: "0102-ses-id"} })
+	msg := sesMessage()
+	msg.ListUnsubscribeURL = "https://app.example.test/unsubscribe?t=abc"
+	if _, err := newTestSES(t, stub.URL).Send(context.Background(), msg); err != nil {
+		t.Fatal(err)
+	}
+	h := headerBlock(stub.Sends()[0].Raw)
+	if !strings.Contains(h, "\r\nList-Unsubscribe: <https://app.example.test/unsubscribe?t=abc>\r\n") ||
+		!strings.Contains(h, "\r\nList-Unsubscribe-Post: List-Unsubscribe=One-Click\r\n") {
+		t.Fatalf("raw headers lack the unsubscribe headers:\n%s", h)
+	}
+}

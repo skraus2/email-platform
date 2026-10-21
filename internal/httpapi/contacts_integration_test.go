@@ -101,3 +101,37 @@ func TestContactIsolationOverHTTP(t *testing.T) {
 		t.Fatalf("contacts: %d %v", n, err)
 	}
 }
+
+func TestUnsubscribeOverHTTP(t *testing.T) {
+	t.Parallel()
+	s := newStack(t)
+	_, token := s.project(t, "contacts:read", "contacts:write", "emails:send")
+	_, other := s.project(t, "contacts:write")
+	_, body := s.do(t, "POST", "/v1/contacts", token, `{"email":"reader@example.test","status":"subscribed","consent_source":"form"}`)
+	id := body["id"].(string)
+	var tok string
+	if err := s.pool.QueryRow(context.Background(), "SELECT unsubscribe_token FROM contacts WHERE id = $1", id).Scan(&tok); err != nil {
+		t.Fatal(err)
+	}
+	report := `{"token":"` + tok + `"}`
+
+	_, unknown := s.do(t, "POST", "/v1/unsubscribes", other, `{"token":"`+strings.Repeat("A", 43)+`"}`)
+	code, foreign := s.do(t, "POST", "/v1/unsubscribes", other, report)
+	if code != 404 || errorCode(foreign) != "not_found" || foreign["error"].(map[string]any)["message"] != unknown["error"].(map[string]any)["message"] {
+		t.Fatalf("foreign project: %d %v vs %v", code, foreign, unknown)
+	}
+	for range 2 {
+		code, body := s.do(t, "POST", "/v1/unsubscribes", token, report)
+		if code != 200 || body["contact_id"] != id || body["status"] != "unsubscribed" || len(body) != 2 {
+			t.Fatalf("report: %d %v", code, body)
+		}
+	}
+	if _, body := s.do(t, "GET", "/v1/contacts/"+id, token, ""); body["status"] != "unsubscribed" {
+		t.Fatalf("contact: %v", body)
+	}
+	// Unsubscribe stops broadcasts only: a transactional send still goes out.
+	code, body = s.do(t, "POST", "/v1/emails", token, `{"from":"app@example.test","to":"reader@example.test","subject":"Password reset","text":"x"}`)
+	if code != 202 {
+		t.Fatalf("transactional send to an unsubscribed contact: %d %v", code, body)
+	}
+}

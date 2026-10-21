@@ -155,3 +155,65 @@ func TestBuildMessageRejectsHeaderInjection(t *testing.T) {
 		})
 	}
 }
+
+func TestBuildMessageListUnsubscribe(t *testing.T) {
+	const u = "https://app.example.test/unsubscribe?t=AbC-_0123456789abcdefghijklmnopqrstuvwxyzABC"
+	msg := sample()
+	msg.ListUnsubscribeURL = u
+	raw, err := buildMessage(msg, fixedTime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := parse(t, raw).Header
+	if h.Get("List-Unsubscribe") != "<"+u+">" || h.Get("List-Unsubscribe-Post") != "List-Unsubscribe=One-Click" {
+		t.Fatalf("headers = %q / %q", h.Get("List-Unsubscribe"), h.Get("List-Unsubscribe-Post"))
+	}
+
+	// Without a URL neither header exists.
+	raw, err = buildMessage(sample(), fixedTime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h := parse(t, raw).Header; h.Get("List-Unsubscribe") != "" || h.Get("List-Unsubscribe-Post") != "" {
+		t.Fatal("unsubscribe headers on a message without URL")
+	}
+
+	// The longest accepted URL keeps the header line within 998 bytes.
+	long := "https://a.test/" + strings.Repeat("x", MaxListUnsubscribeURL-len("https://a.test/"))
+	msg.ListUnsubscribeURL = long
+	raw, err = buildMessage(msg, fixedTime)
+	if err != nil {
+		t.Fatalf("URL of %d bytes: %v", len(long), err)
+	}
+	for line := range strings.SplitSeq(string(raw), "\r\n") {
+		if len(line) > 998 {
+			t.Fatalf("line of %d bytes", len(line))
+		}
+	}
+
+	for name, bad := range map[string]string{
+		"too long":    long + "x",
+		"http":        "http://app.example.test/u?t=x",
+		"relative":    "/unsubscribe?t=x",
+		"mailto":      "mailto:u@example.test",
+		"userinfo":    "https://user:pw@app.example.test/u",
+		"no host":     "https:///u",
+		"CRLF":        "https://app.example.test/u\r\nBcc: victim@example.test",
+		"LF":          "https://app.example.test/u\nX: y",
+		"angle":       "https://app.example.test/u>, <https://evil.test/",
+		"space":       "https://app.example.test/u x",
+		"quote":       `https://app.example.test/u"x`,
+		"non-ASCII":   "https://app.example.test/ü",
+		"NUL":         "https://app.example.test/u\x00",
+		"control DEL": "https://app.example.test/u\x7f",
+	} {
+		msg := sample()
+		msg.ListUnsubscribeURL = bad
+		if _, err := buildMessage(msg, fixedTime); err == nil {
+			t.Errorf("%s: accepted %q", name, bad)
+		}
+		if ValidateListUnsubscribeURL(bad) == nil {
+			t.Errorf("%s: ValidateListUnsubscribeURL accepted %q", name, bad)
+		}
+	}
+}

@@ -25,6 +25,7 @@ type fakeContacts struct {
 	update contacts.UpdateInput
 	filter contacts.ListFilter
 	limit  int
+	token  string
 }
 
 func (f *fakeContacts) Create(_ context.Context, _ uuid.UUID, in contacts.CreateInput) (contacts.Contact, error) {
@@ -42,6 +43,11 @@ func (f *fakeContacts) Update(_ context.Context, _, _ uuid.UUID, in contacts.Upd
 }
 
 func (f *fakeContacts) Delete(context.Context, uuid.UUID, uuid.UUID) error { return f.err }
+
+func (f *fakeContacts) Unsubscribe(_ context.Context, _ uuid.UUID, token string) (uuid.UUID, error) {
+	f.token = token
+	return uuid.MustParse("01a00000-0000-7000-8000-0000000000aa"), f.err
+}
 
 func (f *fakeContacts) List(_ context.Context, _ uuid.UUID, filter contacts.ListFilter, limit int) ([]contacts.Contact, bool, error) {
 	f.filter, f.limit = filter, limit
@@ -90,6 +96,7 @@ func TestContactErrorMapping(t *testing.T) {
 			{"PATCH", "/v1/contacts/" + id, `{"status":"unsubscribed"}`},
 			{"DELETE", "/v1/contacts/" + id, ""},
 			{"GET", "/v1/contacts", ""},
+			{"POST", "/v1/unsubscribes", `{"token":"x"}`},
 		} {
 			rec, logs := contactCall(t, &fakeContacts{err: tc.err}, contactScopes, call.method, call.path, call.body)
 			if rec.Code != tc.status || !strings.Contains(rec.Body.String(), `"code":"`+tc.errCode+`"`) {
@@ -178,6 +185,39 @@ func TestListContactsQuery(t *testing.T) {
 		rec, _ := contactCall(t, &fakeContacts{}, contactScopes, "GET", "/v1/contacts"+q, "")
 		if rec.Code != 400 || !strings.Contains(rec.Body.String(), code) || strings.Contains(rec.Body.String(), "pending") {
 			t.Errorf("%s: %d %s", q, rec.Code, rec.Body)
+		}
+	}
+}
+
+func TestUnsubscribeRequest(t *testing.T) {
+	const tok = "TOKEN-VALUE-NEVER-ECHOED-0123456789abcdefgh"
+	f := &fakeContacts{}
+	rec, logs := contactCall(t, f, []string{auth.ScopeContactsWrite}, "POST", "/v1/unsubscribes", `{"token":"`+tok+`"}`)
+	if rec.Code != 200 || f.token != tok ||
+		rec.Body.String() != "{\"contact_id\":\"01a00000-0000-7000-8000-0000000000aa\",\"status\":\"unsubscribed\"}\n" {
+		t.Fatalf("unsubscribe: %d %s", rec.Code, rec.Body)
+	}
+	if strings.Contains(logs, tok) {
+		t.Fatal("token logged")
+	}
+	rec, logs = contactCall(t, &fakeContacts{err: contacts.ErrNotFound}, []string{auth.ScopeContactsWrite}, "POST", "/v1/unsubscribes", `{"token":"`+tok+`"}`)
+	if rec.Code != 404 || strings.Contains(rec.Body.String(), tok) || strings.Contains(logs, tok) {
+		t.Fatalf("unknown token: %d %s", rec.Code, rec.Body)
+	}
+	if rec, _ := contactCall(t, &fakeContacts{}, []string{auth.ScopeContactsRead}, "POST", "/v1/unsubscribes", `{"token":"x"}`); rec.Code != 403 {
+		t.Fatalf("read scope: %d", rec.Code)
+	}
+	for _, body := range []string{`{}`, `{"token":1}`, `{"token":"a","x":1}`} {
+		f := &fakeContacts{}
+		rec, _ := contactCall(t, f, []string{auth.ScopeContactsWrite}, "POST", "/v1/unsubscribes", body)
+		if body == `{}` {
+			if rec.Code != 200 || f.token != "" {
+				t.Errorf("%s: %d (an empty token reaches the store, which answers 404)", body, rec.Code)
+			}
+			continue
+		}
+		if rec.Code != 400 {
+			t.Errorf("%s: %d", body, rec.Code)
 		}
 	}
 }

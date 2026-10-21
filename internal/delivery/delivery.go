@@ -21,6 +21,9 @@ type Message struct {
 	Subject   string
 	Text      string
 	HTML      string
+	// ListUnsubscribeURL, when set, becomes the RFC 8058 one-click
+	// List-Unsubscribe header (see ValidateListUnsubscribeURL).
+	ListUnsubscribeURL string
 }
 
 // Status values a provider can report for an accepted message.
