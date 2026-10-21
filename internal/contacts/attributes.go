@@ -22,7 +22,7 @@ const (
 	MaxAttributeLength     = 1000 // characters of a string value
 	MaxAttributesSize      = 8 << 10
 	MaxConsentSourceLength = 100
-	maxNumberLiteral       = 64
+	maxNumberLiteral       = maxNumberDigits + 2 // sign and decimal point of a written-out value
 	// maxNumberDigits bounds a number written out without exponent: the
 	// database stores numbers exactly and prints them that way, so 1e-800
 	// would take 800 bytes.

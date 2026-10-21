@@ -135,12 +135,21 @@ func TestCreateContactValidation(t *testing.T) {
 	if err := s.Delete(ctx, a, c.ID); err != nil {
 		t.Fatal(err)
 	}
+	// Values at the bound survive a read and write back unchanged.
+	edge, err := s.Create(ctx, a, contacts.CreateInput{Email: "e@example.test", Status: "unsubscribed",
+		Attributes: json.RawMessage(`{"a":1e63,"b":1e-63,"c":-1e63,"d":0e-63}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Update(ctx, a, edge.ID, contacts.UpdateInput{Attributes: edge.Attributes}); err != nil {
+		t.Fatalf("round trip of %s: %v", edge.Attributes, err)
+	}
 	// Unsubscribed contacts need no source.
 	if _, err := s.Create(ctx, a, contacts.CreateInput{Email: "u@example.test", Status: "unsubscribed"}); err != nil {
 		t.Fatal(err)
 	}
 	var n int
-	if err := pool.QueryRow(ctx, "SELECT count(*) FROM contacts").Scan(&n); err != nil || n != 1 {
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM contacts").Scan(&n); err != nil || n != 2 {
 		t.Fatalf("stored %d contacts, %v", n, err)
 	}
 }
