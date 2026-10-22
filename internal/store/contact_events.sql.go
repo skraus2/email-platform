@@ -15,20 +15,26 @@ import (
 const blockingRunExists = `-- name: BlockingRunExists :one
 SELECT EXISTS (
     SELECT 1 FROM automation_runs
-    WHERE automation_id = $1 AND contact_id = $2
-      AND (status = 'active' OR NOT $3::boolean))::boolean
+        WHERE automation_id = $1 AND contact_id = $2 AND project_id = $3
+      AND (status = 'active' OR NOT $4::boolean))::boolean
 `
 
 type BlockingRunExistsParams struct {
 	AutomationID uuid.UUID
 	ContactID    uuid.UUID
+	ProjectID    uuid.UUID
 	AllowReentry bool
 }
 
 // Whether the contact may not start a run of the automation: an active run,
 // or (without re-entry) any run at all.
 func (q *Queries) BlockingRunExists(ctx context.Context, arg BlockingRunExistsParams) (bool, error) {
-	row := q.db.QueryRow(ctx, blockingRunExists, arg.AutomationID, arg.ContactID, arg.AllowReentry)
+	row := q.db.QueryRow(ctx, blockingRunExists,
+		arg.AutomationID,
+		arg.ContactID,
+		arg.ProjectID,
+		arg.AllowReentry,
+	)
 	var column_1 bool
 	err := row.Scan(&column_1)
 	return column_1, err

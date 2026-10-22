@@ -229,6 +229,10 @@ func (s *Server) writeAutomationError(w http.ResponseWriter, r *http.Request, op
 	}
 }
 
+// maxContactEventBytes bounds a contact event request (data is at most
+// 8 KiB as compact JSON).
+const maxContactEventBytes = 64 << 10
+
 // ContactEventService records contact events and starts automation runs.
 type ContactEventService interface {
 	Report(ctx context.Context, projectID uuid.UUID, in automations.EventInput) (automations.Event, error)
@@ -270,14 +274,14 @@ func (s *Server) handleCreateContactEvent(w http.ResponseWriter, r *http.Request
 		key = vals[0]
 	}
 	var req createContactEventRequest
-	if status, code, msg := decodeStrict(w, r, &req); status != 0 {
+	if status, code, msg := decodeStrictLimit(w, r, &req, maxContactEventBytes); status != 0 {
 		writeError(w, status, code, msg)
 		return
 	}
 	in := automations.EventInput{Name: req.Name, Data: req.Data, IdempotencyKey: key}
 	if req.ContactID != nil {
 		id, err := uuid.Parse(*req.ContactID)
-		if err != nil || len(*req.ContactID) != 36 {
+		if err != nil || len(*req.ContactID) != 36 || id == uuid.Nil {
 			s.writeContactEventError(w, r, &automations.Error{Field: "contact_id", Reason: "must be a UUID"})
 			return
 		}

@@ -42,7 +42,7 @@ ORDER BY id;
 -- or (without re-entry) any run at all.
 SELECT EXISTS (
     SELECT 1 FROM automation_runs
-    WHERE automation_id = sqlc.arg(automation_id) AND contact_id = sqlc.arg(contact_id)
+        WHERE automation_id = sqlc.arg(automation_id) AND contact_id = sqlc.arg(contact_id) AND project_id = sqlc.arg(project_id)
       AND (status = 'active' OR NOT sqlc.arg(allow_reentry)::boolean))::boolean;
 
 -- name: InsertRun :one

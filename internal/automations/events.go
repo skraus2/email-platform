@@ -207,7 +207,9 @@ func (e *Events) Report(ctx context.Context, projectID uuid.UUID, in EventInput)
 			return fmt.Errorf("triggered automations: %w", err)
 		}
 		for _, a := range autos {
-			blocked, err := q.BlockingRunExists(ctx, store.BlockingRunExistsParams{AutomationID: a.ID, ContactID: contactID, AllowReentry: a.AllowReentry})
+			blocked, err := q.BlockingRunExists(ctx, store.BlockingRunExistsParams{
+				AutomationID: a.ID, ContactID: contactID, ProjectID: projectID, AllowReentry: a.AllowReentry,
+			})
 			if err != nil {
 				return fmt.Errorf("re-entry check: %w", err)
 			}
@@ -235,6 +237,14 @@ func (e *Events) Report(ctx context.Context, projectID uuid.UUID, in EventInput)
 		}
 		return nil
 	})
+	if errors.Is(err, ErrContactNotFound) {
+		// Counted although refused: otherwise a key could test addresses
+		// for membership of the contact list without any limit.
+		if _, cerr := store.New(e.pool).CountContactEvent(ctx, projectID); cerr != nil {
+			return Event{}, fmt.Errorf("count refused event: %w", cerr)
+		}
+		return Event{}, err
+	}
 	if errors.Is(err, errKeyTaken) {
 		// Rolled back; the winner's event is committed and visible now.
 		got, found, err := e.match(ctx, store.New(e.pool), projectID, in.IdempotencyKey, fingerprint)

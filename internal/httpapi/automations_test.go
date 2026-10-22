@@ -252,6 +252,8 @@ func TestContactEventRequests(t *testing.T) {
 		"unknown field":  {nil, `{"name":"e","email":"a@example.test","x":1}`, 400},
 		"bad contact id": {nil, `{"name":"e","contact_id":"nope"}`, 422},
 		"empty email":    {nil, `{"name":"e","email":""}`, 422},
+		"nil contact id": {nil, `{"name":"e","email":"a@example.test","contact_id":"00000000-0000-0000-0000-000000000000"}`, 422},
+		"too large":      {nil, `{"name":"e","email":"a@example.test","data":{"a":"` + strings.Repeat("x", 64<<10) + `"}}`, 413},
 	} {
 		f := &fakeContactEvents{}
 		if rec := eventCall(t, f, events, tc.headers, tc.body); rec.Code != tc.status || f.called {

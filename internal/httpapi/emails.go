@@ -189,11 +189,14 @@ func decodeStrict(w http.ResponseWriter, r *http.Request, v any) (int, string, s
 }
 
 // decodeStrictLimit is decodeStrict with a body limit of limit bytes (a
-// whole number of MiB).
+// whole number of MiB or, below 1 MiB, of KiB).
 func decodeStrictLimit(w http.ResponseWriter, r *http.Request, v any, limit int64) (int, string, string) {
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, limit))
 	var tooBig *http.MaxBytesError
 	if errors.As(err, &tooBig) {
+		if limit < 1<<20 {
+			return http.StatusRequestEntityTooLarge, "payload_too_large", fmt.Sprintf("request body must be at most %d KiB", limit>>10)
+		}
 		return http.StatusRequestEntityTooLarge, "payload_too_large", fmt.Sprintf("request body must be at most %d MiB", limit>>20)
 	}
 	if err != nil {

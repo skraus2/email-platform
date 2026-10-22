@@ -4,6 +4,7 @@ package automations_test
 
 import (
 	"errors"
+	"fmt"
 	"log/slog"
 	"sync"
 	"testing"
@@ -78,8 +79,11 @@ func TestReportStartsRuns(t *testing.T) {
 		AND trigger_data = '{"order":"A-1"}'::jsonb AND next_step_at IS NOT NULL`, got.ID); n != 2 {
 		t.Fatalf("%d runs with data", n)
 	}
-	if n := f.count(t, `SELECT count(*) FROM river_job WHERE kind = 'automation_step' AND queue = 'automations' AND args->>'step' = '0'`); n != 2 {
-		t.Fatalf("%d step jobs", n)
+	for _, r := range got.Runs {
+		if n := f.count(t, `SELECT count(*) FROM river_job WHERE kind = 'automation_step' AND queue = 'automations'
+			AND args->>'step' = '0' AND args->>'run_id' = $1 AND args->>'project_id' = $2`, r.ID.String(), f.project.String()); n != 1 {
+			t.Fatalf("%d step jobs for run %s", n, r.ID)
+		}
 	}
 	// The event row stores no data.
 	if n := f.count(t, `SELECT count(*) FROM contact_events WHERE id = $1 AND name = 'user.signed_up' AND contact_id = $2`, got.ID, c); n != 1 {
@@ -239,9 +243,18 @@ func TestReportConcurrentSameContact(t *testing.T) {
 	}
 }
 
+// awayFromMinuteEnd waits out the last seconds of a minute, so a test's
+// requests share one rate limit window.
+func awayFromMinuteEnd() {
+	if s := time.Now().Second(); s >= 50 {
+		time.Sleep(time.Duration(61-s) * time.Second)
+	}
+}
+
 func TestReportRateLimit(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t, 50)
+	awayFromMinuteEnd()
 	c := f.contact(t, f.project, "a@example.test")
 	ev := f.events(3)
 	in := automations.EventInput{Name: "e", ContactID: c, IdempotencyKey: "k1"}
@@ -269,6 +282,68 @@ func TestReportRateLimit(t *testing.T) {
 	}
 	if n := f.count(t, `SELECT count FROM contact_event_windows WHERE project_id = $1`, f.project); n != 3 {
 		t.Fatalf("window count %d", n)
+	}
+}
+
+// Concurrent reports all pass the read-only pre-check; the count in the
+// transaction refuses the excess and rolls back their events, runs and jobs.
+func TestReportRateLimitInTransaction(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t, 50)
+	awayFromMinuteEnd()
+	f.automation(t, "e", true, "")
+	ev := f.events(3)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	ok, limited := 0, 0
+	for i := range 10 {
+		c := f.contact(t, f.project, fmt.Sprintf("c%d@example.test", i))
+		wg.Go(func() {
+			_, err := ev.Report(f.ctx, f.project, automations.EventInput{Name: "e", ContactID: c})
+			var rl *automations.RateLimitError
+			mu.Lock()
+			defer mu.Unlock()
+			switch {
+			case err == nil:
+				ok++
+			case errors.As(err, &rl):
+				limited++
+			default:
+				t.Errorf("report: %v", err)
+			}
+		})
+	}
+	wg.Wait()
+	if ok != 3 || limited != 7 {
+		t.Fatalf("ok=%d limited=%d, want 3 and 7", ok, limited)
+	}
+	for q, want := range map[string]int{
+		`SELECT count FROM contact_event_windows WHERE project_id = $1`:                                    3,
+		`SELECT count(*) FROM contact_events WHERE project_id = $1`:                                        3,
+		`SELECT count(*) FROM automation_runs WHERE project_id = $1`:                                       3,
+		`SELECT count(*) FROM river_job WHERE kind = 'automation_step' AND args->>'project_id' = $1::text`: 3,
+	} {
+		if n := f.count(t, q, f.project); n != want {
+			t.Errorf("%s: %d, want %d", q, n, want)
+		}
+	}
+}
+
+// A refused lookup counts, so the 422 cannot probe addresses without limit.
+func TestReportUnknownContactCounts(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t, 50)
+	awayFromMinuteEnd()
+	ev := f.events(2)
+	for range 2 {
+		if _, err := ev.Report(f.ctx, f.project, automations.EventInput{Name: "e", Email: "nobody@example.test"}); !errors.Is(err, automations.ErrContactNotFound) {
+			t.Fatalf("unknown contact: %v", err)
+		}
+	}
+	_, err := ev.Report(f.ctx, f.project, automations.EventInput{Name: "e", Email: "nobody@example.test"})
+	var rl *automations.RateLimitError
+	if !errors.As(err, &rl) {
+		t.Fatalf("third probe: %v", err)
 	}
 }
 
@@ -300,6 +375,8 @@ func TestEventRetention(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// Re-entry runs that must survive: one still active, one finished
+	// recently (both of other contacts, added after the backdating below).
 	if _, err := f.pool.Exec(f.ctx, `UPDATE automation_runs SET status = 'completed', next_step_at = NULL, trigger_data = NULL,
 		finished_at = now() - interval '100 days', step = 3`); err != nil {
 		t.Fatal(err)
@@ -307,18 +384,31 @@ func TestEventRetention(t *testing.T) {
 	if _, err := f.pool.Exec(f.ctx, `UPDATE contact_events SET created_at = now() - interval '100 days' WHERE name <> 'c'`); err != nil {
 		t.Fatal(err)
 	}
+	active, recent := f.contact(t, f.project, "active@example.test"), f.contact(t, f.project, "recent@example.test")
+	for _, c := range []uuid.UUID{active, recent} {
+		if _, err := ev.Report(f.ctx, f.project, automations.EventInput{Name: "b", ContactID: c}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := f.pool.Exec(f.ctx, `UPDATE automation_runs SET status = 'completed', next_step_at = NULL, trigger_data = NULL,
+		finished_at = now() - interval '1 day', step = 3 WHERE contact_id = $1`, recent); err != nil {
+		t.Fatal(err)
+	}
 	p := retention.Pruner{Pool: f.pool, Logger: slog.New(slog.DiscardHandler), EventRetention: retention.MinEventRetention,
 		DeliveryRetention: retention.MinDeliveryRetention, ContactEventRetention: 90 * 24 * time.Hour}
 	if err := p.Run(f.ctx); err != nil {
 		t.Fatal(err)
 	}
-	if n := f.count(t, `SELECT count(*) FROM contact_events`); n != 1 {
-		t.Fatalf("%d events left, want the recent one", n)
+	if n := f.count(t, `SELECT count(*) FROM contact_events`); n != 3 {
+		t.Fatalf("%d events left, want the 3 recent ones", n)
 	}
-	// Runs of the re-entry automation are deleted; the one-run-ever rule
-	// keeps the other.
-	if n := f.count(t, `SELECT count(*) FROM automation_runs WHERE automation_id = $1`, again); n != 0 {
-		t.Fatalf("%d re-entry runs left", n)
+	// Old finished runs of the re-entry automation are deleted; its active
+	// and recently finished runs stay; the one-run-ever rule keeps the other.
+	if n := f.count(t, `SELECT count(*) FROM automation_runs WHERE automation_id = $1 AND contact_id = $2`, again, c); n != 0 {
+		t.Fatalf("%d old re-entry runs left", n)
+	}
+	if n := f.count(t, `SELECT count(*) FROM automation_runs WHERE automation_id = $1 AND contact_id IN ($2, $3)`, again, active, recent); n != 2 {
+		t.Fatalf("%d of the active and recent re-entry runs left, want 2", n)
 	}
 	if n := f.count(t, `SELECT count(*) FROM automation_runs WHERE automation_id = $1 AND trigger_event_id IS NULL`, once); n != 1 {
 		t.Fatalf("one-run automation lost its run (or its event link stayed)")
