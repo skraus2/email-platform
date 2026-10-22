@@ -7,11 +7,13 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"slices"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/skraus2/email-platform/internal/jobs"
@@ -391,5 +393,65 @@ func TestWorkerRunsWebhookQueue(t *testing.T) {
 	}
 	if queue != jobs.QueueWebhooks || errs != 0 {
 		t.Fatalf("queue %q, %d errors; want webhooks and none", queue, errs)
+	}
+}
+
+// A transactional send is fetched before a backlog of broadcast sends that
+// was queued earlier.
+func TestBulkSendsYieldToTransactionalSends(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	pool := testdb.NewMigrated(t)
+	enq, err := jobs.NewEnqueuer(pool, quiet, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var bulk []jobs.SendEmailArgs
+	for range 20 {
+		bulk = append(bulk, jobs.SendEmailArgs{EmailID: uuid.New(), ProjectID: uuid.New()})
+	}
+	transactional := jobs.SendEmailArgs{EmailID: uuid.New(), ProjectID: uuid.New()}
+	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		if err := enq.EnqueueSendEmails(ctx, tx, bulk, jobs.SendOpts{Bulk: true}); err != nil {
+			return err
+		}
+		return enq.EnqueueSendEmail(ctx, tx, transactional, jobs.SendOpts{})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	var order []uuid.UUID
+	done := make(chan struct{})
+	w, err := jobs.NewWorker(jobs.WorkerConfig{
+		Pool: pool, Logger: quiet, Concurrency: 1, JobTimeout: 10 * time.Second, Retry: testRetry,
+		Handlers: jobs.Handlers{
+			SendEmail: func(_ context.Context, a jobs.SendEmailArgs, _ jobs.Attempt) error {
+				mu.Lock()
+				defer mu.Unlock()
+				order = append(order, a.EmailID)
+				if len(order) == 21 {
+					close(done)
+				}
+				return nil
+			},
+			Cleanup: func(context.Context) error { return nil },
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = w.Stop(5 * time.Second) }()
+	select {
+	case <-done:
+	case <-time.After(20 * time.Second):
+		t.Fatal("jobs did not run")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if order[0] != transactional.EmailID {
+		t.Fatalf("transactional send ran at position %d of 21", slices.Index(order, transactional.EmailID)+1)
 	}
 }

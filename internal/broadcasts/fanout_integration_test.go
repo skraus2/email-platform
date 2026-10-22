@@ -170,6 +170,10 @@ func TestFanoutCreatesOneEmailPerSubscribedMember(t *testing.T) {
 	if n := f.count(t, "SELECT count(*) FROM river_job WHERE kind = 'send_email' AND priority = 2"); n != 4 {
 		t.Fatalf("bulk jobs: %d", n)
 	}
+	// Broadcast emails do not use up the project's API send rate.
+	if n := f.count(t, "SELECT count(*) FROM rate_limit_windows"); n != 0 {
+		t.Fatalf("send rate windows: %d", n)
+	}
 	// A further run changes nothing.
 	if runs := runAll(t, f.fanout(t, nil, nil), b); runs != 1 || f.count(t, "SELECT count(*) FROM emails") != 4 {
 		t.Fatal("re-run after completion created emails")
