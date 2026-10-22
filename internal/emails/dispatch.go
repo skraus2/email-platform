@@ -94,7 +94,8 @@ func (d *Dispatcher) dailyWait(ctx context.Context, bulk bool) (time.Duration, e
 	}
 	limit := d.daily.limit
 	if bulk {
-		// Broadcast emails leave a share of the cap to transactional mail.
+		// Bulk (broadcast and automation) emails leave a share of the cap to
+		// transactional mail.
 		limit -= max(limit/dailyReserveDivisor, 1)
 		if limit < 1 {
 			return noBulkShareWait, nil
@@ -117,15 +118,15 @@ func (d *Dispatcher) dailyWait(ctx context.Context, bulk bool) (time.Duration, e
 	return max(time.Duration(secs*float64(time.Second)), time.Second), nil
 }
 
-// dailyReserveDivisor: broadcast emails stop at 90 % of the daily cap.
+// dailyReserveDivisor: bulk emails stop at 90 % of the daily cap.
 const dailyReserveDivisor = 10
 
-// Broadcast emails over the daily cap wait at least minBulkDailyWait and
+// Bulk emails over the daily cap wait at least minBulkDailyWait and
 // spread their wake-ups over at least bulkDailySpread.
 const (
 	minBulkDailyWait = time.Minute
 	bulkDailySpread  = 15 * time.Minute
-	// noBulkShareWait is the wait of broadcast emails when the cap is too
+	// noBulkShareWait is the wait of bulk emails when the cap is too
 	// small to leave them any share.
 	noBulkShareWait = time.Hour
 )
@@ -190,7 +191,7 @@ func (d *Dispatcher) SendEmail(ctx context.Context, args jobs.SendEmailArgs, at 
 	}
 	if wait > 0 {
 		if bulk {
-			// A broadcast backlog can be large: spread it over a long
+			// A bulk backlog can be large: spread it over a long
 			// window instead of letting every job wake for the next slot.
 			wait = max(wait, minBulkDailyWait)
 			return jobs.Snooze(wait + rand.N(max(wait, bulkDailySpread))) //nolint:gosec // scheduling jitter, not security
@@ -220,6 +221,10 @@ func (d *Dispatcher) SendEmail(ctx context.Context, args jobs.SendEmailArgs, at 
 	// fan-out) is sent. Rendering comes after the waits, so a backlog that
 	// snoozes never renders twice.
 	text, html, unsubscribeURL := deref(e.TextBody), deref(e.HtmlBody), deref(e.ListUnsubscribeUrl)
+	if e.AutomationID != nil && unsubscribeURL == "" {
+		// Consent-gated mail never goes out without its unsubscribe headers.
+		return d.fail(ctx, log, key, CodeContentMissing, CodeContentMissing)
+	}
 	if e.BroadcastID != nil {
 		r, url, err := d.renderBroadcast(ctx, e)
 		var te *templates.Error
@@ -303,7 +308,8 @@ func (d *Dispatcher) SendEmail(ctx context.Context, args jobs.SendEmailArgs, at 
 }
 
 // listCanceled is the refusal outcome of an email whose broadcast or
-// automation run was cancelled (the other outcomes are failure codes).
+// automation run was cancelled or whose automation was archived (the other
+// outcomes are failure codes).
 const listCanceled = "canceled"
 
 // listRefusal says why a broadcast or automation email must not be sent:
@@ -360,7 +366,8 @@ func (d *Dispatcher) refuseListEmail(ctx context.Context, log *slog.Logger, key 
 		if _, err := q.CancelEmail(dctx, store.CancelEmailParams(key)); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				// Claimed or finalized meanwhile: whoever did so ends it
-				// (a claim re-checks the broadcast and refuses).
+				// (a claim re-checks the broadcast, run and automation and
+				// refuses).
 				return nil
 			}
 			return err

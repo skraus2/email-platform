@@ -33,9 +33,9 @@ func automationEmail(t *testing.T, ctx context.Context, pool *pgxpool.Pool, proj
 			t.Fatal(err)
 		}
 	}
-	var templateID, version uuid.UUID
+	var templateID uuid.UUID
 	row(&templateID, "INSERT INTO templates (project_id, slug, latest_version) VALUES ($1, 'welcome', 1) RETURNING id", projectID)
-	row(&version, `INSERT INTO template_versions (template_id, project_id, version, subject, text_body, variables)
+	row(new(uuid.UUID), `INSERT INTO template_versions (template_id, project_id, version, subject, text_body, variables)
 		VALUES ($1, $2, 1, 'Welcome', 'Bye {{.unsubscribe_url}}', '{"unsubscribe_url":{"type":"string","required":false,"max_length":1000}}')
 		RETURNING template_id`, templateID, projectID)
 	row(&contactID, "INSERT INTO contacts (project_id, email, status, consent_source, unsubscribe_token) VALUES ($1, 'customer@example.test', 'subscribed', 'x', $2) RETURNING id",
@@ -194,5 +194,24 @@ func TestAutomationEmailUsesBulkShareOfDailyCap(t *testing.T) {
 	err := d.SendEmail(ctx, jobs.SendEmailArgs{EmailID: emailID, ProjectID: project}, jobs.Attempt{JobID: 1, Number: 1, MaxAttempts: 5})
 	if wait, ok := jobs.SnoozeDelay(err); !ok || prov.calls != 0 || wait < time.Minute {
 		t.Fatalf("automation email at 9/10: %v, calls %d", err, prov.calls)
+	}
+}
+
+// An automation email whose content lost its List-Unsubscribe URL is never
+// sent without the headers.
+func TestAutomationEmailWithoutUnsubscribeURLFails(t *testing.T) {
+	t.Parallel()
+	ctx, pool, project := newAutomationProject(t)
+	emailID, _, _, _ := automationEmail(t, ctx, pool, project)
+	if _, err := pool.Exec(ctx, "UPDATE email_contents SET list_unsubscribe_url = NULL WHERE email_id = $1", emailID); err != nil {
+		t.Fatal(err)
+	}
+	prov := &countingProvider{}
+	d := NewDispatcher(pool, prov, slog.New(slog.DiscardHandler), 5*time.Second, time.Hour)
+	if err := d.SendEmail(ctx, jobs.SendEmailArgs{EmailID: emailID, ProjectID: project}, jobs.Attempt{JobID: 1, Number: 1, MaxAttempts: 5}); err != nil {
+		t.Fatal(err)
+	}
+	if status, code, _ := emailState(t, ctx, pool, emailID); prov.calls != 0 || status != "failed" || code == nil || *code != CodeContentMissing {
+		t.Fatalf("calls=%d status=%s code=%v", prov.calls, status, code)
 	}
 }
