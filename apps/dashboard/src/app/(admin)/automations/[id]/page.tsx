@@ -180,8 +180,11 @@ export default async function AutomationPage({
         <h2 id="runs-h">Latest runs</h2>
         {runs.data.length === 0 ? (
           <p className="empty">
-            No runs yet; a run starts when an app reports the trigger event for
-            a contact.
+            {a.status === "active"
+              ? "No runs yet; a run starts when an app reports the trigger event for a contact."
+              : a.status === "paused"
+                ? "No runs; a paused automation starts none until it is active again."
+                : "No runs; an archived automation starts none."}
           </p>
         ) : (
           <>
@@ -225,7 +228,7 @@ export default async function AutomationPage({
                         <RunStatus run={r} />
                       </td>
                       <td>
-                        <RunPosition run={r} />
+                        <RunPosition run={r} steps={a.steps.length} />
                       </td>
                       <td>
                         <Timestamp iso={r.created_at} />

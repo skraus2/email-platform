@@ -19,7 +19,22 @@ export function RunStatus({ run }: { run: AutomationRun }) {
  * Where a run stands: the next step and when it is due, or the step it
  * ended at. Steps are numbered from 1 as in the step list.
  */
-export function RunPosition({ run }: { run: AutomationRun }) {
+export function RunPosition({
+  run,
+  steps,
+}: {
+  run: AutomationRun;
+  /** Number of steps of the automation, when known. */
+  steps?: number;
+}) {
+  if (run.status === "active" && steps !== undefined && run.step >= steps) {
+    // A wait as the last step: nothing runs after it.
+    return (
+      <>
+        Finishes <Timestamp iso={run.next_step_at} />
+      </>
+    );
+  }
   if (run.status === "active") {
     return (
       <>
@@ -29,6 +44,11 @@ export function RunPosition({ run }: { run: AutomationRun }) {
   }
   if (run.status === "completed") {
     return <span className="muted">all steps done</span>;
+  }
+  // Cancelled runs and runs of a disabled project stopped before their
+  // next step ran.
+  if (run.status === "canceled" || run.reason === "project_disabled") {
+    return <>Ended before step {run.step + 1}</>;
   }
   return <>Ended at step {run.step + 1}</>;
 }
