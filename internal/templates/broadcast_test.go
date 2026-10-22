@@ -135,3 +135,21 @@ func TestReferences(t *testing.T) {
 		}
 	}
 }
+
+func TestReferencesFailsClosed(t *testing.T) {
+	schema, err := ParseSchema([]byte(`{"unsubscribe_url":{"type":"string"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Constructs the publish policy refuses, compiled without it (as stored
+	// versions are): anything the walk cannot follow counts as a use.
+	for _, subject := range []string{"{{with .unsubscribe_url}}{{.}}{{end}}", "{{.}}", "{{$u := 1}}{{$u}}"} {
+		c, err := compile(Source{Subject: subject, Text: "x"}, schema, false)
+		if err != nil {
+			t.Fatalf("%q: %v", subject, err)
+		}
+		if !c.References("subject", "unsubscribe_url") {
+			t.Errorf("%q: not counted as a use", subject)
+		}
+	}
+}

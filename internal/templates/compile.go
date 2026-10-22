@@ -200,6 +200,13 @@ func (c *Compiled) References(part, name string) bool {
 			}
 		case *parse.FieldNode:
 			return len(n.Ident) > 0 && n.Ident[0] == name
+		case *parse.TextNode, *parse.CommentNode, *parse.StringNode, *parse.BoolNode,
+			*parse.NumberNode, *parse.IdentifierNode:
+			return false
+		default:
+			// Anything else (with, range, variables, dot) could reach the
+			// value in ways this walk does not follow: assume it does.
+			return true
 		}
 		return false
 	}

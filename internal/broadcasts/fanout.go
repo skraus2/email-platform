@@ -16,6 +16,10 @@ import (
 	"github.com/skraus2/email-platform/internal/templates"
 )
 
+// errUnsubscribeInSubject: the version's subject uses the unsubscribe URL
+// (create refuses such versions; fan-out checks again where it stores).
+var errUnsubscribeInSubject = errors.New("template subject uses the unsubscribe URL")
+
 // BatchSize is the number of audience members one fan-out run handles.
 const BatchSize = 500
 
@@ -80,6 +84,11 @@ func (f *Fanout) Run(ctx context.Context, args jobs.BroadcastFanoutArgs, at jobs
 		c, _, err := f.compiled.Compiled(v)
 		if err != nil {
 			return fmt.Errorf("compile template version: %w", err)
+		}
+		// Subjects are stored: a version that would put the unsubscribe
+		// URL (with its token) there is never fanned out.
+		if c.References("subject", contacts.ReservedAttribute) {
+			return errUnsubscribeInSubject
 		}
 		after := uuid.Nil
 		if b.CursorContactID != nil {

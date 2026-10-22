@@ -257,7 +257,7 @@ func (d *Dispatcher) SendEmail(ctx context.Context, args jobs.SendEmailArgs, at 
 		}
 		// The reason is gone again (e.g. unsubscribed and re-subscribed in
 		// between): try again rather than leaving the email queued.
-		return errors.New("claim refused without a lasting reason; retrying")
+		return d.internalError(ctx, log, key, at, errors.New("claim refused without a lasting reason"))
 	}
 	if e.Status == "sending" {
 		// A previous attempt was interrupted after possibly reaching the
