@@ -229,7 +229,7 @@ echo "8 parallel POSTs with one Idempotency-Key -> 1 email, 1 message in Mailpit
 # with one-click unsubscribe headers.
 autokey=$("$TMP/admin" key create -project "$project" -scopes templates:write,contacts:write,automations:read,automations:write,events:write 2>"$TMP/admin.err") ||
   fail "admin key create (automations): $(cat "$TMP/admin.err")"
-printf '%s\n' "$autokey" "smoke-auto@example.test" >>"$TMP/needles"
+printf '%s\n' "$autokey" "smoke-auto@example.test" "app.example.test/u?t=" >>"$TMP/needles"
 printf 'Authorization: Bearer %s\n' "$autokey" >"$TMP/auto.header"
 auto() { curl -sS -X "$1" "http://$ADDR$2" -H @"$TMP/auto.header" -H 'Content-Type: application/json' ${3:+-d "$3"}; }
 first_id() { grep -o '"id":"[0-9a-f-]\{36\}"' | head -1 | cut -d'"' -f4; }

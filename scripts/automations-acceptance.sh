@@ -24,6 +24,11 @@ TMP="$(mktemp -d)"
 API_PID="" WORKER_PID="" RECV_PID=""
 
 cleanup() {
+  # Runs left by a failed run must not continue on the next local worker.
+  for a in "${welcome:-}" "${trial:-}"; do
+    [[ -n "$a" ]] && curl -sS -o /dev/null -X PATCH "http://$ADDR/v1/automations/$a" -H @"$TMP/auth.header" \
+      -H 'Content-Type: application/json' -d '{"status":"archived"}' 2>/dev/null || true
+  done
   [[ -n "${key:-}" ]] && "$TMP/admin" key revoke -prefix "$(cut -d_ -f2 <<<"$key")" >/dev/null 2>&1 || true
   [[ -s "$TMP/webhook.out" ]] && "$TMP/admin" webhook disable -project "$project" -id "$(head -1 "$TMP/webhook.out" | cut -f1)" >/dev/null 2>&1 || true
   kill "$API_PID" "$WORKER_PID" "$RECV_PID" 2>/dev/null || true
@@ -68,7 +73,7 @@ key=$("$TMP/admin" key create -project "$project" \
 run_id=$RANDOM
 ANN="ann-$run_id@accept.test" BOB="bob-$run_id@accept.test" CID="cid-$run_id@accept.test"
 umask 077
-printf '%s\n' "$key" "$ANN" "$BOB" "$CID" "accept-secret-" >"$TMP/needles"
+printf '%s\n' "$key" "$ANN" "$BOB" "$CID" "accept-secret-" "app.accept.test/u?t=" "signup-" >"$TMP/needles"
 tr ',' '\n' <<<"$WEBHOOK_KEKS" | sed 's/^[^:]*://' >>"$TMP/needles"
 printf 'Authorization: Bearer %s\n' "$key" >"$TMP/auth.header"
 
@@ -99,7 +104,9 @@ send="{\"type\":\"send\",\"from\":\"news@accept.test\",\"template_id\":\"$tmpl\"
 welcome=$(api POST /v1/automations "{\"name\":\"Welcome\",\"trigger\":{\"event\":\"user.signed_up\"},\"steps\":[$send,{\"type\":\"wait\",\"seconds\":60},{\"type\":\"condition\",\"event\":\"order.completed\",\"op\":\"not_occurred\"},$send]}" | field id)
 trial=$(api POST /v1/automations "{\"name\":\"Trial\",\"trigger\":{\"event\":\"trial.started\"},\"steps\":[{\"type\":\"wait\",\"seconds\":60},$send]}" | field id)
 contact() { api POST /v1/contacts "{\"email\":\"$1\",\"status\":\"subscribed\",\"consent_source\":\"acceptance\",\"attributes\":{\"name\":\"$2\"}}" | field id; }
-ann=$(contact "$ANN" Ann) bob=$(contact "$BOB" Bob) cid=$(contact "$CID" Cid)
+ann=$(contact "$ANN" Ann)
+bob=$(contact "$BOB" Bob)
+cid=$(contact "$CID" Cid)
 
 # A retried trigger (same key, same payload) replays: one run.
 ev1=$(api POST /v1/contact-events "{\"name\":\"user.signed_up\",\"contact_id\":\"$ann\",\"data\":{\"name\":\"accept-secret-$run_id\"}}" "Idempotency-Key: signup-$ann")
@@ -122,7 +129,7 @@ done
 [[ "$(api GET "/v1/automation-runs/$run_cid" "" | run_field reason)" == automation_archived ]] || fail "archived automation's run not canceled"
 echo "archive -> waiting run canceled (automation_archived)"
 
-# wait_run RUN STEP SECONDS: until the run is at STEP or ended.
+# run_email RUN STEP: the id of the run's captured email of STEP (empty if none).
 run_email() { api GET "/v1/automation-runs/$1" "" | sed -nE "s/.*\"emails\":\[(.*)\].*/\1/p" | grep -o "\"id\":\"[0-9a-f-]\{36\}\",\"step\":$2,\"status\":\"captured\"" | field id; }
 deadline=$((SECONDS + 60))
 until [[ -n "$(run_email "$run_ann" 0)" && -n "$(run_email "$run_bob" 0)" ]]; do
@@ -135,7 +142,9 @@ ann_first=$(run_email "$run_ann" 0)
 msg=$(curl -sS "$MAILPIT_URL/api/v1/search?query=message-id:%22$ann_first@email-platform.local%22" | sed -nE 's/.*"messages":\[\{"ID":"([^"]+)".*/\1/p')
 [[ -n "$msg" ]] || fail "first email of $run_ann not in Mailpit"
 headers=$(curl -sS "$MAILPIT_URL/api/v1/message/$msg/headers")
+[[ "$ann" =~ ^[0-9a-f-]{36}$ ]] || fail "contact id: $ann"
 token=$(docker compose exec -T postgres psql -U email_platform -d email_platform -Atc "SELECT unsubscribe_token FROM contacts WHERE id = '$ann'")
+[[ -n "$token" ]] && printf '%s\n' "$token" >>"$TMP/needles"
 [[ "$headers" == *"https://app.accept.test/u?t=$token"* && "$headers" == *"List-Unsubscribe=One-Click"* ]] ||
   fail "List-Unsubscribe headers missing or not personal"
 echo "Mailpit -> first emails with one-click List-Unsubscribe carrying the contact's token"
@@ -150,8 +159,18 @@ until grep -q "\"email_id\":\"$ann_first\",\"valid\":true,\"status\":503" "$TMP/
   [[ $SECONDS -ge $deadline ]] && fail "no refused delivery for $ann_first"
   sleep 0.2
 done
+# The refused attempt is recorded and its retry scheduled (at least 8 s away)
+# once no delivery job runs any more.
+psql_q() { docker compose exec -T postgres psql -U email_platform -d email_platform -Atc "$1"; }
+deadline=$((SECONDS + 10))
+until [[ $(psql_q "SELECT count(*) FROM river_job WHERE kind = 'deliver_webhook' AND state = 'running'") -eq 0 ]]; do
+  [[ $SECONDS -ge $deadline ]] && fail "a webhook delivery job kept running"
+  sleep 0.1
+done
+pending=$(psql_q "SELECT count(*) FROM webhook_deliveries WHERE project_id = '$project' AND status = 'pending' AND attempts >= 1")
+[[ "$pending" -ge 1 ]] || fail "no refused delivery waits for its retry"
 kill -KILL "$WORKER_PID"; wait "$WORKER_PID" 2>/dev/null || true
-echo "worker SIGKILL while both runs wait and a webhook retry is pending"
+echo "worker SIGKILL while both runs wait and $pending refused webhook deliveries wait for their retry"
 sleep 62
 start_worker 2
 

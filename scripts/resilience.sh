@@ -25,6 +25,9 @@ cleanup() {
   # The run's key is useless afterwards; revoke it instead of leaving an
   # active credential behind.
   [[ -n "${key:-}" ]] && "$TMP/admin" key revoke -prefix "$(cut -d_ -f2 <<<"$key")" >/dev/null 2>&1 || true
+  # Runs left by a failed run must not continue on the next local worker.
+  [[ -n "${automation:-}" ]] && curl -sS -o /dev/null -X PATCH "http://$ADDR/v1/automations/$automation" -H @"$TMP/auth2.header" \
+    -H 'Content-Type: application/json' -d '{"status":"archived"}' 2>/dev/null || true
   [[ -n "${akey:-}" ]] && "$TMP/admin" key revoke -prefix "$(cut -d_ -f2 <<<"$akey")" >/dev/null 2>&1 || true
   kill "$API_PID" "$WORKER_PID" 2>/dev/null || true
   wait "$API_PID" "$WORKER_PID" 2>/dev/null || true
@@ -34,16 +37,19 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Logs are printed on failure with the run's secrets filtered out (the
+# needles file grows as keys are issued).
+redact() { if [[ -s "$TMP/needles" ]]; then grep -viFf "$TMP/needles" "$1" || true; else cat "$1"; fi; }
 fail() {
   echo "RESILIENCE FAIL: $*" >&2
-  echo "--- api.log (tail)" >&2; tail -n 30 "$TMP/api.log" >&2 || true
-  echo "--- worker.log (tail)" >&2; tail -n 30 "$TMP/worker.log" >&2 || true
+  echo "--- api.log (tail)" >&2; redact "$TMP/api.log" | tail -n 30 >&2 || true
+  echo "--- worker.log (tail)" >&2; redact "$TMP/worker.log" | tail -n 30 >&2 || true
   exit 1
 }
 
 # Short retries and rescue so the scenarios finish in minutes.
 export LOG_FORMAT=json SEND_MAX_ATTEMPTS=20 RETRY_BASE_DELAY=1s RETRY_MAX_DELAY=5s \
-  PROVIDER_TIMEOUT=2s JOB_RESCUE_AFTER=65s API_RATE_LIMIT_PER_MINUTE=100000 \
+  PROVIDER_TIMEOUT=2s JOB_RESCUE_AFTER=65s API_RATE_LIMIT_PER_MINUTE=100000 CONTACT_EVENT_RATE_PER_MINUTE=100000 \
   PROVIDER_RATE_PER_SECOND=4
 
 go build -o "$TMP/" ./cmd/api ./cmd/worker ./cmd/admin
@@ -69,6 +75,10 @@ start_worker 1
 project=$("$TMP/admin" project create -name "resilience-$(date +%s)-$RANDOM" | cut -f1) || fail "admin project create"
 key=$("$TMP/admin" key create -project "$project" 2>/dev/null) || fail "admin key create"
 umask 077
+# Needles from a file: the key must not appear in grep's command line.
+printf '%s\n' "$key" "res-recipient@example.test" "resilience body" "reskey-" "email_platform:email_platform@" \
+  "res-run-" "app.example.test/u?t=" >"$TMP/needles"
+tr ',' '\n' <<<"$WEBHOOK_KEKS" | sed 's/^[^:]*://' >>"$TMP/needles"
 printf 'Authorization: Bearer %s\n' "$key" >"$TMP/auth.header"
 
 # send N PREFIX: POSTs N emails with idempotency keys, appends ids to $TMP/ids.PREFIX.
@@ -180,17 +190,18 @@ wait_captured postrestart 120
 echo "(c) PostgreSQL restart: readyz 503 seen: $saw503; POST codes during restart: $(printf '%s\n' "${codes[@]}" | sort | uniq -c | awk '{printf "%s×%s ", $1, $2}'); 10/10 captured afterwards without restarting api/worker"
 
 # (d) automation runs survive worker kills -----------------------------------
-# RUNS contacts trigger an automation (send, wait 60 s, send). The worker is
-# killed with SIGKILL while the first steps run and again while every run
-# waits; after each restart every run ends with exactly one email per send
-# step. A faster provider rate keeps the 2×RUNS sends short.
+# RUNS contacts trigger an automation (send, wait 60 s, send). All runs reach
+# their wait; the worker is killed with SIGKILL while they wait and stays
+# down past the due times, so the restarted worker meets a backlog of due
+# step jobs; it is killed again while some of them run (mid-transaction or
+# committed but not marked complete) and restarted. Every run must end with
+# exactly one email per send step. A faster provider rate keeps the 2×RUNS
+# sends short.
 RUNS="${RESILIENCE_RUNS:-1000}"
 psql_q() { docker compose exec -T postgres psql -U email_platform -d email_platform -Atc "$1"; }
-kill -TERM "$WORKER_PID"; wait "$WORKER_PID" 2>/dev/null || true
-export PROVIDER_RATE_PER_SECOND=500
-start_worker 3
 akey=$("$TMP/admin" key create -project "$project" -scopes automations:read,automations:write,events:write,contacts:write,templates:write 2>/dev/null) ||
   fail "admin key create (automations)"
+printf '%s\n' "$akey" >>"$TMP/needles"
 printf 'Authorization: Bearer %s\n' "$akey" >"$TMP/auth2.header"
 api() { # api METHOD PATH BODY -> prints the response, fails on >= 300
   local code
@@ -204,39 +215,40 @@ tmpl=$(api POST /v1/templates '{"slug":"res-welcome"}' | id_of)
 api POST "/v1/templates/$tmpl/versions" '{"subject":"Welcome","text":"Hi {{.unsubscribe_url}}","variables":{"unsubscribe_url":{"type":"string","required":true}}}' >/dev/null
 send_step="{\"type\":\"send\",\"from\":\"res@example.test\",\"template_id\":\"$tmpl\",\"template_version\":1,\"unsubscribe_url\":\"https://app.example.test/u?t={token}\"}"
 automation=$(api POST /v1/automations "{\"name\":\"resilience\",\"trigger\":{\"event\":\"res.signed_up\"},\"steps\":[$send_step,{\"type\":\"wait\",\"seconds\":60},$send_step]}" | id_of)
-[[ -n "$automation" ]] || fail "automation not created"
+[[ "$automation" =~ ^[0-9a-f-]{36}$ ]] || fail "automation not created"
 started=$SECONDS
-# The events are reported while the worker is down, so their step jobs form
-# a backlog the restarted worker is killed in the middle of.
 kill -TERM "$WORKER_PID"; wait "$WORKER_PID" 2>/dev/null || true
+export PROVIDER_RATE_PER_SECOND=500 AUTOMATION_CONCURRENCY=16
+start_worker 3
 for i in $(seq 1 "$RUNS"); do
   c=$(api POST /v1/contacts "{\"email\":\"res-run-$i@example.test\",\"status\":\"subscribed\",\"consent_source\":\"resilience\"}" | id_of)
   api POST /v1/contact-events "{\"name\":\"res.signed_up\",\"contact_id\":\"$c\"}" >/dev/null
 done
-start_worker 4
-steprunning=0
-for _ in $(seq 1 200); do
-  steprunning=$(psql_q "SELECT count(*) FROM river_job WHERE kind = 'automation_step' AND state = 'running'")
-  [[ "$steprunning" -ge 1 ]] && break
-  sleep 0.01
-done
-stepdone=$(psql_q "SELECT count(*) FROM automation_runs WHERE automation_id = '$automation' AND step > 0")
-kill -KILL "$WORKER_PID"; wait "$WORKER_PID" 2>/dev/null || true
-[[ "$steprunning" -ge 1 ]] || fail "automation: no step job was running at the kill; the scenario did not test rescue"
-start_worker 5
 runs_sql="FROM automation_runs WHERE automation_id = '$automation'"
-# Every run reaches its wait (rescued step jobs need JOB_RESCUE_AFTER).
-deadline=$((SECONDS + 240))
+deadline=$((SECONDS + 120))
 until [[ $(psql_q "SELECT count(*) $runs_sql AND status = 'active' AND step = 2") -eq $RUNS ]]; do
   [[ $SECONDS -ge $deadline ]] && fail "automation: runs did not all reach their wait: $(psql_q "SELECT status, step, count(*) $runs_sql GROUP BY 1, 2")"
   sleep 1
 done
-# Kill while every run waits; stay down past the due times.
+# SIGKILL while every run waits; stay down past the due times.
 kill -KILL "$WORKER_PID"; wait "$WORKER_PID" 2>/dev/null || true
 waiting=$(psql_q "SELECT count(*) $runs_sql AND status = 'active' AND next_step_at > now()")
 sleep 65
 overdue=$(psql_q "SELECT count(*) $runs_sql AND status = 'active' AND next_step_at < now()")
-start_worker 6
+# The restarted worker works the backlog of due step jobs; SIGKILL it while
+# some of them run.
+start_worker 4
+steprunning=0
+for _ in $(seq 1 500); do
+  steprunning=$(psql_q "SELECT count(*) FROM river_job WHERE kind = 'automation_step' AND state = 'running'")
+  [[ "$steprunning" -ge 1 ]] && break
+  sleep 0.01
+done
+kill -KILL "$WORKER_PID"; wait "$WORKER_PID" 2>/dev/null || true
+[[ "$steprunning" -ge 1 ]] || fail "automation: no step job was running at the kill; the scenario did not test rescue"
+stepdone=$(psql_q "SELECT count(*) $runs_sql AND status = 'completed'")
+start_worker 5
+# Jobs killed while running are rescued after JOB_RESCUE_AFTER.
 deadline=$((SECONDS + 300))
 until [[ $(psql_q "SELECT count(*) $runs_sql AND status = 'completed'") -eq $RUNS ]]; do
   [[ $SECONDS -ge $deadline ]] && fail "automation: runs not completed: $(psql_q "SELECT status, step, count(*) $runs_sql GROUP BY 1, 2")"
@@ -256,9 +268,7 @@ for id in $(psql_q "SELECT id FROM emails WHERE automation_id = '$automation' OR
   [[ "$c" -ge 1 ]] || fail "automation: $id missing in Mailpit"
   if [[ "$c" -gt 1 ]]; then grep 'possible_duplicate_send' "$TMP/worker.log" | grep -qF "$id" || fail "automation: duplicate of $id not flagged"; fi
 done
-echo "(d) automation runs: $RUNS runs; SIGKILL with $steprunning step jobs running ($stepdone of $RUNS first steps done), again with $waiting runs waiting ($overdue overdue at restart); all completed with exactly 2 captured emails each in $((SECONDS - started))s"
+echo "(d) automation runs: $RUNS runs; SIGKILL with $waiting runs waiting ($overdue overdue at restart), again with $steprunning due step jobs running ($stepdone of $RUNS runs completed); all completed with exactly 2 captured emails each in $((SECONDS - started))s"
 
-# Needles from a file: the key must not appear in grep's command line.
-printf '%s\n' "$key" "$akey" "res-run-" "res-recipient@example.test" "resilience body" "reskey-" "email_platform:email_platform@" >"$TMP/needles"
 if grep -qFf "$TMP/needles" "$TMP/api.log" "$TMP/worker.log"; then fail "logs contain a secret, password, idempotency key or personal data"; fi
 echo "RESILIENCE OK"

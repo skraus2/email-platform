@@ -1,10 +1,11 @@
 //go:build smoke
 
-// Command webhookrecv plays the internal app in the smoke test: it accepts
-// webhook requests on a loopback address, verifies each signature with the
-// endpoint secret and appends one JSON line per request (type, event id,
-// email id, valid) to an output file. It is not part of the shipped
-// binaries (build tag "smoke"); scripts/smoke.sh builds and runs it.
+// Command webhookrecv plays the internal app in the process-level scripts: it
+// accepts webhook requests on a loopback address, verifies each signature
+// with the endpoint secret and appends one JSON line per request (type,
+// event id, email id, valid, the status it answered) to an output file. It
+// is not part of the shipped binaries (build tag "smoke"); scripts/smoke.sh
+// and scripts/automations-acceptance.sh build and run it.
 //
 // The secret is read from the file named by WEBHOOK_SECRET_FILE on every
 // request (the endpoint, and with it the secret, is created after the

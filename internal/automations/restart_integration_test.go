@@ -51,10 +51,13 @@ func (f *fixture) worker(t *testing.T, sink *countingSink) (stop func()) {
 	if err := w.Start(f.ctx); err != nil {
 		t.Fatal(err)
 	}
+	var once sync.Once
 	return func() {
-		if err := w.Stop(10 * time.Second); err != nil {
-			t.Errorf("stop worker: %v", err)
-		}
+		once.Do(func() {
+			if err := w.Stop(10 * time.Second); err != nil {
+				t.Errorf("stop worker: %v", err)
+			}
+		})
 	}
 }
 
@@ -86,7 +89,7 @@ func TestActiveWaitsSurviveWorkerRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Waits are at least a minute through the API; shorten this one.
-	f.exec(t, `UPDATE automations SET steps = jsonb_set(steps, '{1,seconds}', '3') WHERE id = $1`, a.ID)
+	f.exec(t, `UPDATE automations SET steps = jsonb_set(steps, '{1,seconds}', '10') WHERE id = $1`, a.ID)
 	ev := f.events(10_000)
 	for i := range runs {
 		c := f.contact(t, f.project, fmt.Sprintf("r%d@example.test", i))
@@ -98,17 +101,18 @@ func TestActiveWaitsSurviveWorkerRestart(t *testing.T) {
 	sink := &countingSink{sent: map[string]int{}}
 
 	stop := f.worker(t, sink)
+	t.Cleanup(stop)
 	f.waitFor(t, "runs waiting", `SELECT count(*) FROM automation_runs WHERE status = 'active' AND step = 2`, runs, 20*time.Second)
 	f.waitFor(t, "first emails sent", `SELECT count(*) FROM emails WHERE status = 'captured'`, runs, 20*time.Second)
 	stop()
 	// While no worker runs, the waits come due; nothing is lost or done.
-	time.Sleep(4 * time.Second)
+	time.Sleep(11 * time.Second)
 	if n := f.count(t, `SELECT count(*) FROM automation_runs WHERE status = 'active' AND step = 2 AND next_step_at < now()`); n != runs {
 		t.Fatalf("%d overdue waiting runs while stopped, want %d", n, runs)
 	}
 
 	stop = f.worker(t, sink)
-	defer stop()
+	t.Cleanup(stop)
 	f.waitFor(t, "runs completed", `SELECT count(*) FROM automation_runs WHERE status = 'completed'`, runs, 30*time.Second)
 	f.waitFor(t, "second emails sent", `SELECT count(*) FROM emails WHERE status = 'captured'`, 2*runs, 30*time.Second)
 	if n := f.count(t, `SELECT count(*) FROM (SELECT automation_run_id FROM emails GROUP BY automation_run_id HAVING count(*) <> 2) x`); n != 0 {
