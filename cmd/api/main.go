@@ -80,6 +80,7 @@ func run() error {
 		broadcastStore.RequireVerifiedSenders()
 	}
 	automationStore := automations.NewStore(pool, enqueuer, cfg.AutomationMaxPerProject)
+	automationStore.LimitCreates(cfg.AutomationCreatesPerHour)
 	if cfg.RequireVerifiedSender {
 		automationStore.RequireVerifiedSenders()
 	}

@@ -165,9 +165,9 @@ func ParseSteps(raw json.RawMessage) ([]Step, error) {
 }
 
 func parseStep(field string, raw json.RawMessage) (Step, error) {
-	var obj map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &obj); err != nil || obj == nil {
-		return Step{}, invalid(field, "must be an object")
+	obj, err := decodeObject(raw)
+	if err != nil {
+		return Step{}, invalid(field, "%s", err.Error())
 	}
 	var typ string
 	if err := json.Unmarshal(obj["type"], &typ); err != nil {
@@ -192,7 +192,8 @@ func parseStep(field string, raw json.RawMessage) (Step, error) {
 	}
 	for k := range obj {
 		if !slices.Contains(stepFields[shape], k) {
-			return Step{}, invalid(field+"."+k, "is not a field of a %s step", typ)
+			// The unknown name is not repeated (it is submitted text).
+			return Step{}, invalid(field, "has a field that a %s step does not have (field names are case-sensitive)", typ)
 		}
 	}
 	s := Step{Type: typ}
@@ -251,6 +252,35 @@ func parseStep(field string, raw json.RawMessage) (Step, error) {
 		}
 	}
 	return s, nil
+}
+
+// decodeObject reads one JSON object into its fields, refusing duplicate
+// names (a map would silently keep the last one).
+func decodeObject(raw json.RawMessage) (map[string]json.RawMessage, error) {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
+		return nil, errors.New("must be an object")
+	}
+	obj := map[string]json.RawMessage{}
+	for dec.More() {
+		tok, err := dec.Token()
+		if err != nil {
+			return nil, errors.New("must be an object")
+		}
+		name, _ := tok.(string)
+		if _, dup := obj[name]; dup {
+			return nil, errors.New("must not repeat a field")
+		}
+		var v json.RawMessage
+		if err := dec.Decode(&v); err != nil {
+			return nil, errors.New("must be an object")
+		}
+		obj[name] = v
+	}
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('}') {
+		return nil, errors.New("must be an object")
+	}
+	return obj, nil
 }
 
 // parseVersion reads a positive integer or "published" (0).

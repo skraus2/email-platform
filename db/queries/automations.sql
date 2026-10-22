@@ -30,3 +30,7 @@ WHERE project_id = sqlc.arg(project_id) AND id < sqlc.arg(before_id)::uuid
   AND (sqlc.narg(status)::text IS NULL OR status = sqlc.narg(status)::text)
 ORDER BY id DESC
 LIMIT sqlc.arg(row_limit);
+
+-- name: CountRecentAutomations :one
+-- Automations the project created in the last hour (archived ones count).
+SELECT count(*) FROM automations WHERE project_id = $1 AND created_at > now() - interval '1 hour';

@@ -74,7 +74,7 @@ type createAutomationRequest struct {
 	Name         string            `json:"name"`
 	Trigger      automationTrigger `json:"trigger"`
 	AllowReentry bool              `json:"allow_reentry"`
-	Status       string            `json:"status"`
+	Status       *string           `json:"status"`
 	Steps        json.RawMessage   `json:"steps"`
 }
 
@@ -203,6 +203,9 @@ func (s *Server) writeAutomationError(w http.ResponseWriter, r *http.Request, op
 	case errors.Is(err, automations.ErrMissingUnsubscribe):
 		writeError(w, http.StatusUnprocessableEntity, "template_missing_unsubscribe",
 			"the template version of a send step must declare unsubscribe_url as a string, print {{.unsubscribe_url}} outside conditions in its text part and link it as an <a href> outside conditions in its HTML part")
+	case errors.Is(err, automations.ErrRateLimited):
+		w.Header().Set("Retry-After", "60")
+		writeError(w, http.StatusTooManyRequests, "rate_limited", "the project created as many automations in the last hour as it may; retry later")
 	case errors.Is(err, automations.ErrLimit):
 		writeError(w, http.StatusUnprocessableEntity, "automation_limit_reached", "the project has reached its limit of automations that are not archived")
 	case errors.Is(err, emails.ErrSenderNotVerified):

@@ -11,6 +11,26 @@ import (
 	"github.com/google/uuid"
 )
 
+const activeRunsLeft = `-- name: ActiveRunsLeft :one
+SELECT EXISTS (SELECT 1 FROM automation_runs r
+               JOIN automations a ON a.id = r.automation_id AND a.project_id = r.project_id
+               WHERE r.automation_id = $1 AND r.project_id = $2 AND r.status = 'active' AND a.status = 'archived')::boolean
+`
+
+type ActiveRunsLeftParams struct {
+	AutomationID uuid.UUID
+	ProjectID    uuid.UUID
+}
+
+// Whether an archived automation still has active runs (some may have been
+// locked during the last cancellation batch).
+func (q *Queries) ActiveRunsLeft(ctx context.Context, arg ActiveRunsLeftParams) (bool, error) {
+	row := q.db.QueryRow(ctx, activeRunsLeft, arg.AutomationID, arg.ProjectID)
+	var column_1 bool
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const cancelArchivedRuns = `-- name: CancelArchivedRuns :execrows
 UPDATE automation_runs
 SET status = 'canceled', reason = 'automation_archived', next_step_at = NULL, trigger_data = NULL,

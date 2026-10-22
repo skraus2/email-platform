@@ -79,6 +79,7 @@ func TestAutomationErrorMapping(t *testing.T) {
 		{automations.ErrTemplateNotFound, 422, "template_not_found"},
 		{automations.ErrMissingUnsubscribe, 422, "template_missing_unsubscribe"},
 		{automations.ErrLimit, 422, "automation_limit_reached"},
+		{automations.ErrRateLimited, 429, "rate_limited"},
 		{emails.ErrSenderNotVerified, 422, "sender_not_verified"},
 		{automations.ErrArchived, 409, "automation_archived"},
 		{&automations.Error{Field: "steps[0].seconds", Reason: "bad"}, 422, "validation_failed"},
@@ -114,6 +115,19 @@ func TestAutomationRequests(t *testing.T) {
 		f := &fakeAutomations{}
 		if rec := automationCall(t, f, automationScopes, "POST", "/v1/automations", "application/json", body); rec.Code != 400 || f.called {
 			t.Errorf("%s: %d", body, rec.Code)
+		}
+	}
+	if f.in.Status != nil {
+		t.Fatalf("absent status passed as %q", *f.in.Status)
+	}
+	f = &fakeAutomations{}
+	if rec := automationCall(t, f, automationScopes, "POST", "/v1/automations", "application/json", strings.Replace(validAutomationBody, `"name"`, `"status":"","name"`, 1)); rec.Code != 201 || f.in.Status == nil || *f.in.Status != "" {
+		t.Fatalf("empty status must reach validation: %d %+v", rec.Code, f.in.Status)
+	}
+	for _, p := range []string{"/v1/automations/nope", "/v1/automations/" + strings.Repeat("0", 36)} {
+		f := &fakeAutomations{}
+		if rec := automationCall(t, f, automationScopes, "GET", p, "", ""); rec.Code != 404 || !strings.Contains(rec.Body.String(), `"code":"not_found"`) {
+			t.Errorf("malformed id %s: %d %s", p, rec.Code, rec.Body)
 		}
 	}
 	if rec := automationCall(t, &fakeAutomations{}, automationScopes, "POST", "/v1/automations", "text/plain", validAutomationBody); rec.Code != 415 {

@@ -40,7 +40,10 @@ var (
 	ErrTemplateNotFound   = errors.New("template not found")
 	ErrMissingUnsubscribe = broadcasts.ErrMissingUnsubscribe
 	ErrLimit              = errors.New("automation limit reached")
-	ErrArchived           = errors.New("automation is archived")
+	// ErrRateLimited: the project created as many automations in the last
+	// hour as it may (archived ones count).
+	ErrRateLimited = errors.New("automation create rate limit reached")
+	ErrArchived    = errors.New("automation is archived")
 	// ErrBusy: a lock wait ran out; retry later.
 	ErrBusy = errors.New("automations busy")
 )
@@ -48,6 +51,10 @@ var (
 // DefaultMaxPerProject caps the automations of a project that are not
 // archived unless NewStore gets another value.
 const DefaultMaxPerProject = 50
+
+// DefaultCreatesPerHour caps automation creates per project and hour unless
+// LimitCreates sets another value (archived automations stay stored).
+const DefaultCreatesPerHour = 100
 
 // MaxPage bounds one list page.
 const MaxPage = 100
@@ -84,8 +91,8 @@ type CreateInput struct {
 	Name         string
 	TriggerEvent string
 	AllowReentry bool
-	// Status is StatusActive (default when empty) or StatusPaused.
-	Status string
+	// Status is StatusActive (default when nil) or StatusPaused.
+	Status *string
 	Steps  json.RawMessage
 }
 
@@ -106,14 +113,18 @@ type Store struct {
 	pool          *pgxpool.Pool
 	enq           ArchiveEnqueuer
 	maxPerProject int
+	perHour       int
 	requireSender bool
 }
 
 // NewStore caps the automations of a project that are not archived at
 // maxPerProject.
 func NewStore(pool *pgxpool.Pool, enq ArchiveEnqueuer, maxPerProject int) *Store {
-	return &Store{pool: pool, enq: enq, maxPerProject: max(maxPerProject, 1)}
+	return &Store{pool: pool, enq: enq, maxPerProject: max(maxPerProject, 1), perHour: DefaultCreatesPerHour}
 }
+
+// LimitCreates caps how many automations a project may create per hour.
+func (s *Store) LimitCreates(perHour int) { s.perHour = max(perHour, 1) }
 
 // RequireVerifiedSenders makes Create refuse a send step whose from address
 // has no verified sender identity of the project.
@@ -142,19 +153,24 @@ func (s *Store) Create(ctx context.Context, projectID uuid.UUID, in CreateInput)
 	if !ValidEventName(in.TriggerEvent) {
 		return Automation{}, invalid("trigger.event", "must match ^[a-z0-9][a-z0-9_.:-]{0,99}$")
 	}
-	status := in.Status
-	switch status {
-	case "":
-		status = StatusActive
-	case StatusActive, StatusPaused:
-	default:
-		return Automation{}, invalid("status", "must be active or paused")
+	status := StatusActive
+	if in.Status != nil {
+		if *in.Status != StatusActive && *in.Status != StatusPaused {
+			return Automation{}, invalid("status", "must be active or paused")
+		}
+		status = *in.Status
 	}
 	steps, err := ParseSteps(in.Steps)
 	if err != nil {
 		return Automation{}, err
 	}
 	q := store.New(s.pool)
+	// Cheap read-only pre-check: a project at its cap or create rate does no
+	// template work. The checks under the project lock below are
+	// authoritative.
+	if err := s.refuse(ctx, q, projectID); err != nil {
+		return Automation{}, err
+	}
 	for i := range steps {
 		if steps[i].Type != StepSend {
 			continue
@@ -179,13 +195,10 @@ func (s *Store) Create(ctx context.Context, projectID uuid.UUID, in CreateInput)
 			}
 			return fmt.Errorf("lock project: %w", err)
 		}
-		n, err := q.CountLiveAutomations(ctx, projectID)
-		if err != nil {
-			return fmt.Errorf("count automations: %w", err)
+		if err := s.refuse(ctx, q, projectID); err != nil {
+			return err
 		}
-		if n >= int64(s.maxPerProject) {
-			return ErrLimit
-		}
+		var err error
 		row, err = q.InsertAutomation(ctx, store.InsertAutomationParams{
 			ProjectID: projectID, Name: in.Name, Status: status, TriggerEvent: in.TriggerEvent,
 			AllowReentry: in.AllowReentry, Steps: stored,
@@ -199,6 +212,26 @@ func (s *Store) Create(ctx context.Context, projectID uuid.UUID, in CreateInput)
 		return Automation{}, err
 	}
 	return fromRow(row)
+}
+
+// refuse returns ErrLimit or ErrRateLimited when the project may not create
+// another automation now.
+func (s *Store) refuse(ctx context.Context, q *store.Queries, projectID uuid.UUID) error {
+	n, err := q.CountLiveAutomations(ctx, projectID)
+	if err != nil {
+		return fmt.Errorf("count automations: %w", err)
+	}
+	if n >= int64(s.maxPerProject) {
+		return ErrLimit
+	}
+	recent, err := q.CountRecentAutomations(ctx, projectID)
+	if err != nil {
+		return fmt.Errorf("count recent automations: %w", err)
+	}
+	if recent >= int64(s.perHour) {
+		return ErrRateLimited
+	}
+	return nil
 }
 
 // checkSend validates a send step against the database and resolves its
@@ -251,7 +284,8 @@ func prefixed(field string, err error) error {
 	}
 	var te *templates.Error
 	if errors.As(err, &te) {
-		return &templates.Error{Code: te.Code, Field: field + ".variables." + te.Field, Reason: te.Reason}
+		// Template errors name "variables" or "variables.<name>" already.
+		return &templates.Error{Code: te.Code, Field: field + "." + te.Field, Reason: te.Reason}
 	}
 	return err
 }
@@ -420,6 +454,9 @@ func runCounts(ctx context.Context, q *store.Queries, projectID, id uuid.UUID) (
 // ArchiveBatch is how many runs one archive job run cancels.
 const ArchiveBatch = 1000
 
+// archiveRetry is the wait before cancelling runs that were locked.
+const archiveRetry = 5 * time.Second
+
 // CancelArchivedRuns is the automation_archive job handler: it cancels one
 // batch of active runs of an archived automation and snoozes for the next.
 func CancelArchivedRuns(pool *pgxpool.Pool) func(ctx context.Context, args jobs.AutomationArchiveArgs, at jobs.Attempt) error {
@@ -433,8 +470,16 @@ func CancelArchivedRuns(pool *pgxpool.Pool) func(ctx context.Context, args jobs.
 		if n == ArchiveBatch {
 			return jobs.Snooze(0) // a full batch: more may be left
 		}
-		// Runs skipped because their step job held them are cancelled by
-		// that job (it sees the archived automation).
+		// Runs skipped because another transaction held them (a step job
+		// that read the automation before the archive) are tried again; a
+		// lock lasts at most one job timeout.
+		left, err := store.New(pool).ActiveRunsLeft(ctx, store.ActiveRunsLeftParams{AutomationID: args.AutomationID, ProjectID: args.ProjectID})
+		if err != nil {
+			return fmt.Errorf("check archived runs: %w", err)
+		}
+		if left {
+			return jobs.Snooze(archiveRetry)
+		}
 		return nil
 	}
 }

@@ -57,7 +57,7 @@ func TestParseStepsRefuses(t *testing.T) {
 		"wait too short":       {`[{"type":"wait","seconds":59},` + sendStep + `]`, "steps[0].seconds"},
 		"wait too long":        {`[{"type":"wait","seconds":2592001},` + sendStep + `]`, "steps[0].seconds"},
 		"wait fraction":        {`[{"type":"wait","seconds":60.5},` + sendStep + `]`, "steps[0].seconds"},
-		"wait extra field":     {`[{"type":"wait","seconds":60,"op":"eq"},` + sendStep + `]`, "steps[0].op"},
+		"wait extra field":     {`[{"type":"wait","seconds":60,"op":"eq"},` + sendStep + `]`, "steps[0]"},
 		"condition both":       {`[{"type":"condition","attribute":"a","event":"e","op":"eq"},` + sendStep + `]`, "steps[0]"},
 		"condition neither":    {`[{"type":"condition","op":"eq"},` + sendStep + `]`, "steps[0]"},
 		"bad attribute":        {`[{"type":"condition","attribute":"Plan","op":"exists"},` + sendStep + `]`, "steps[0].attribute"},
@@ -69,11 +69,13 @@ func TestParseStepsRefuses(t *testing.T) {
 		"long value":           {`[{"type":"condition","attribute":"a","op":"eq","value":"` + strings.Repeat("x", 1001) + `"},` + sendStep + `]`, "steps[0].value"},
 		"bad event":            {`[{"type":"condition","event":"Order","op":"occurred"},` + sendStep + `]`, "steps[0].event"},
 		"bad event op":         {`[{"type":"condition","event":"e","op":"eq"},` + sendStep + `]`, "steps[0].op"},
-		"event with value":     {`[{"type":"condition","event":"e","op":"occurred","value":1},` + sendStep + `]`, "steps[0].value"},
+		"event with value":     {`[{"type":"condition","event":"e","op":"occurred","value":1},` + sendStep + `]`, "steps[0]"},
 		"send bad template id": {`[{"type":"send","from":"a@b.test","template_id":"x","template_version":1,"unsubscribe_url":"u"}]`, "steps[0].template_id"},
 		"send bad version":     {`[{"type":"send","from":"a@b.test","template_id":"0192f0c4-7a4e-7c3a-9b1e-2f3a4b5c6d7e","template_version":0,"unsubscribe_url":"u"}]`, "steps[0].template_version"},
 		"send no from":         {`[{"type":"send","template_id":"0192f0c4-7a4e-7c3a-9b1e-2f3a4b5c6d7e","template_version":1,"unsubscribe_url":"u"}]`, "steps[0].from"},
-		"send extra field":     {`[{"type":"send","from":"a@b.test","template_id":"0192f0c4-7a4e-7c3a-9b1e-2f3a4b5c6d7e","template_version":1,"unsubscribe_url":"u","to":"x@y.test"}]`, "steps[0].to"},
+		"duplicate field":      {`[{"type":"wait","seconds":60,"seconds":61},` + sendStep + `]`, "steps[0]"},
+		"secret unknown field": {`[{"type":"wait","seconds":60,"xxxxxxxxxx":1},` + sendStep + `]`, "steps[0]"},
+		"send extra field":     {`[{"type":"send","from":"a@b.test","template_id":"0192f0c4-7a4e-7c3a-9b1e-2f3a4b5c6d7e","template_version":1,"unsubscribe_url":"u","to":"x@y.test"}]`, "steps[0]"},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {

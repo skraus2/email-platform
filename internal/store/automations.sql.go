@@ -22,6 +22,18 @@ func (q *Queries) CountLiveAutomations(ctx context.Context, projectID uuid.UUID)
 	return count, err
 }
 
+const countRecentAutomations = `-- name: CountRecentAutomations :one
+SELECT count(*) FROM automations WHERE project_id = $1 AND created_at > now() - interval '1 hour'
+`
+
+// Automations the project created in the last hour (archived ones count).
+func (q *Queries) CountRecentAutomations(ctx context.Context, projectID uuid.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countRecentAutomations, projectID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const getAutomation = `-- name: GetAutomation :one
 SELECT id, project_id, name, status, trigger_event, allow_reentry, steps, created_at, updated_at, archived_at FROM automations WHERE id = $1 AND project_id = $2
 `

@@ -18,3 +18,10 @@ WHERE id IN (
       AND r.status = 'active' AND a.status = 'archived'
     LIMIT sqlc.arg(row_limit)
     FOR NO KEY UPDATE OF r SKIP LOCKED);
+
+-- name: ActiveRunsLeft :one
+-- Whether an archived automation still has active runs (some may have been
+-- locked during the last cancellation batch).
+SELECT EXISTS (SELECT 1 FROM automation_runs r
+               JOIN automations a ON a.id = r.automation_id AND a.project_id = r.project_id
+               WHERE r.automation_id = $1 AND r.project_id = $2 AND r.status = 'active' AND a.status = 'archived')::boolean;

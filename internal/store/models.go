@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgtype"
 )
 
 type AdminSession struct {
@@ -158,7 +157,7 @@ type Email struct {
 	ContactID       *uuid.UUID
 	AutomationID    *uuid.UUID
 	AutomationRunID *uuid.UUID
-	AutomationStep  pgtype.Int2
+	AutomationStep  *int16
 }
 
 type EmailContent struct {

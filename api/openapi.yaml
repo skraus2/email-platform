@@ -994,8 +994,9 @@ paths:
         the old one). A contact has at most one active run per automation;
         with `allow_reentry: false` (default) at most one run ever. A project
         has at most 50 automations that are not archived by default
-        (`422 automation_limit_reached`). A retried create makes a second
-        automation.
+        (`422 automation_limit_reached`) and creates at most 100 per hour,
+        archived ones included (`429 rate_limited`, `Retry-After`). A retried
+        create makes a second automation.
       requestBody:
         required: true
         content:
@@ -1021,6 +1022,8 @@ paths:
           $ref: "#/components/responses/UnsupportedMediaType"
         "422":
           $ref: "#/components/responses/UnprocessableEntity"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
         "500":
           $ref: "#/components/responses/InternalError"
         "503":

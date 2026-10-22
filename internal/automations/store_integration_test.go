@@ -131,7 +131,8 @@ func TestCreateAutomation(t *testing.T) {
 		t.Fatalf("stored version moved: %d", got.Steps[0].TemplateVersion)
 	}
 	paused := f.input()
-	paused.Status = automations.StatusPaused
+	st := automations.StatusPaused
+	paused.Status = &st
 	paused.AllowReentry = true
 	p, err := f.store.Create(f.ctx, f.project, paused)
 	if err != nil || p.Status != automations.StatusPaused || !p.AllowReentry {
@@ -159,7 +160,7 @@ func TestCreateAutomationRefuses(t *testing.T) {
 	}{
 		"empty name":      {func() automations.CreateInput { in := f.input(); in.Name = ""; return in }, nil, "name"},
 		"bad trigger":     {func() automations.CreateInput { in := f.input(); in.TriggerEvent = "Signup"; return in }, nil, "trigger.event"},
-		"archived status": {func() automations.CreateInput { in := f.input(); in.Status = "archived"; return in }, nil, "status"},
+		"archived status": {func() automations.CreateInput { in := f.input(); s := "archived"; in.Status = &s; return in }, nil, "status"},
 		"bad step": {func() automations.CreateInput {
 			return f.input(`{"type":"wait","seconds":1}`, f.sendStep(f.template, "1"))
 		}, nil, "steps[0].seconds"},
@@ -194,7 +195,7 @@ func TestCreateAutomationRefuses(t *testing.T) {
 	// Undeclared shared variable: a template error naming the step.
 	_, err := f.store.Create(f.ctx, f.project, f.input(strings.Replace(f.sendStep(f.template, "1"), `{"plan":"pro"}`, `{"nope":"x"}`, 1)))
 	var te *templates.Error
-	if !errors.As(err, &te) || !strings.HasPrefix(te.Field, "steps[0].variables") {
+	if !errors.As(err, &te) || te.Field != "steps[0].variables" {
 		t.Fatalf("undeclared variable: %v", err)
 	}
 	if n := f.count(t, `SELECT count(*) FROM automations`); n != 0 {
@@ -255,6 +256,12 @@ func TestAutomationCapConcurrent(t *testing.T) {
 		t.Fatalf("ok=%d limited=%d, want 1 and 7", ok, limited)
 	}
 	// Archived automations do not count; the other project has its own cap.
+	// The other project has its own cap.
+	if _, err := f.store.Create(f.ctx, f.other, automations.CreateInput{
+		Name: "x", TriggerEvent: "e", Steps: json.RawMessage("[" + f.sendStep(f.foreign, "1") + "]"),
+	}); err != nil {
+		t.Fatalf("other project: %v", err)
+	}
 	page, _, err := f.store.List(f.ctx, f.project, "", uuid.Nil, 10)
 	if err != nil {
 		t.Fatal(err)
