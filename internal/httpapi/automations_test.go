@@ -97,6 +97,9 @@ func TestAutomationErrorMapping(t *testing.T) {
 			if rec.Code != tc.status || !strings.Contains(rec.Body.String(), `"code":"`+tc.code+`"`) || strings.Contains(rec.Body.String(), "secret-detail") {
 				t.Errorf("%v %s %s: %d %s", tc.err, call.method, call.path, rec.Code, rec.Body)
 			}
+			if tc.status == 429 && rec.Header().Get("Retry-After") != "60" {
+				t.Errorf("%v %s %s: Retry-After %q", tc.err, call.method, call.path, rec.Header().Get("Retry-After"))
+			}
 		}
 	}
 }
