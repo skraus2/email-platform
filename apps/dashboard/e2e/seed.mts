@@ -74,7 +74,8 @@ const V1_NAME = "<Ada & Co>";
 const BLOCKED = `blocked@${DOMAIN}`;
 /** Audience members: two subscribed, one unsubscribed (gets nothing). */
 const READERS = [`reader1@${DOMAIN}`, `reader2@${DOMAIN}`];
-const FORMER_READER = `former@${DOMAIN}`;
+/** Per run: Mailpit keeps earlier runs' messages. */
+const FORMER_READER = `former-${randomBytes(4).toString("hex")}@${DOMAIN}`;
 
 const NEWSLETTER = {
   subject: "E2E newsletter for {{.name}}",
@@ -240,7 +241,8 @@ async function seedAll() {
   const audience = await v1<{ id: string }>(apiKey, "/v1/audiences", {
     name: "E2E readers",
   });
-  for (const [i, email] of [...READERS, FORMER_READER].entries()) {
+  // The suppressed address is a subscribed member too: fan-out skips it.
+  for (const [i, email] of [...READERS, FORMER_READER, BLOCKED].entries()) {
     const subscribed = email !== FORMER_READER;
     const c = await v1<{ id: string }>(apiKey, "/v1/contacts", {
       email,
@@ -269,7 +271,9 @@ async function seedAll() {
     template_version: "published",
     unsubscribe_url: "https://app.e2e-shop.test/unsubscribe?t={token}",
   });
-  await v1(apiKey, `/v1/broadcasts/${broadcast.id}/schedule`, {});
+  await v1(apiKey, `/v1/broadcasts/${broadcast.id}/schedule`, {
+    scheduled_at: new Date(Date.now() + 3_000).toISOString(),
+  });
 
   // A planned email the worker sends once it is due (during "wait").
   const plannedSent = await send({
@@ -284,7 +288,9 @@ async function seedAll() {
     to: TEMPLATE_RECIPIENT,
     subject: "E2E planned",
     text: "Never sent",
-    scheduled_at: new Date(Date.now() + 3_600_000).toISOString(),
+    // Due before the other planned email: had the cancel not held, the
+    // worker would send it during "wait".
+    scheduled_at: new Date(Date.now() + 8_000).toISOString(),
   });
   await v1(apiKey, `/v1/emails/${planned.id}/cancel`, {});
 
@@ -301,6 +307,7 @@ async function seedAll() {
       id: broadcast.id,
       name: "E2E October newsletter",
       recipients: READERS,
+      unsubscribedReader: FORMER_READER,
     },
     emails: {
       // + 2 newsletter recipients, + 2 planned emails (one cancelled),
@@ -332,6 +339,9 @@ async function waitFinal() {
     if (b.status === "completed") {
       break;
     }
+    if (Date.now() + 200 >= deadline) {
+      throw new Error(`newsletter fan-out not completed (status ${b.status})`);
+    }
     await new Promise((r) => setTimeout(r, 200));
   }
   while (Date.now() < deadline) {
@@ -347,7 +357,12 @@ async function waitFinal() {
   throw new Error("emails still queued or sending after 60 s");
 }
 
-type MailpitMessage = { Subject: string; Text: string; HTML: string };
+type MailpitMessage = {
+  ID: string;
+  Subject: string;
+  Text: string;
+  HTML: string;
+};
 
 /** The Mailpit messages carrying this email's Message-ID (waits up to 5 s). */
 async function mailpitMessages(emailId: string): Promise<MailpitMessage[]> {
@@ -502,8 +517,7 @@ async function checkBroadcasts() {
     if (e.status !== "captured" || msgs.length !== 1) {
       fail(`${e.to}: status ${e.status}, ${msgs.length} messages`);
     }
-    const found = await mailpitTo(e.to);
-    const headers = await mailpitHeaders(found[0].ID);
+    const headers = await mailpitHeaders(msgs[0].ID);
     const link =
       /^<(https:\/\/app\.e2e-shop\.test\/unsubscribe\?t=([A-Za-z0-9_-]{43}))>$/.exec(
         headers["List-Unsubscribe"]?.[0] ?? "",
@@ -517,18 +531,18 @@ async function checkBroadcasts() {
     if (!msgs[0].Text.includes(link![1]) || !msgs[0].HTML.includes(link![1])) {
       fail(`${e.to}: the body does not carry the personal unsubscribe link`);
     }
+    needles(link![2]);
     tokens.set(e.to, link![2]);
   }
   if (new Set(tokens.values()).size !== tokens.size) {
     fail("unsubscribe tokens are not personal");
   }
-  if ((await mailpitTo(FORMER_READER)).length !== 0) {
+  if ((await mailpitTo(s.broadcast.unsubscribedReader)).length !== 0) {
     fail("the unsubscribed reader got the newsletter");
   }
 
   // The app's unsubscribe page reports the first reader's token.
   const [first, second] = s.broadcast.recipients;
-  needles(...tokens.values());
   const un = await v1<{ status: string }>(s.apiKey, "/v1/unsubscribes", {
     token: tokens.get(first),
   });
@@ -588,8 +602,15 @@ async function checkBroadcasts() {
       `planned email: ${planned.status}, finished ${planned.finished_at} before due ${planned.scheduled_at}?`,
     );
   }
-  if ((await mailpitMessages(s.emails.plannedId)).length !== 0) {
-    fail("the cancelled planned email reached Mailpit");
+  const cancelled = await v1<{ status: string }>(
+    s.apiKey,
+    `/v1/emails/${s.emails.plannedId}`,
+  );
+  if (
+    cancelled.status !== "canceled" ||
+    (await mailpitMessages(s.emails.plannedId)).length !== 0
+  ) {
+    fail(`the cancelled planned email: ${cancelled.status} or in Mailpit`);
   }
 }
 

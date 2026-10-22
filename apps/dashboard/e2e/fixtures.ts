@@ -19,8 +19,16 @@ export type Seed = {
     v1: { subject: string; text: string; html: string };
   };
   large: { id: string };
-  /** A newsletter to two subscribed readers (a third is unsubscribed). */
-  broadcast: { id: string; name: string; recipients: string[] };
+  /**
+   * A newsletter to two subscribed readers; a third member is unsubscribed
+   * and a fourth suppressed.
+   */
+  broadcast: {
+    id: string;
+    name: string;
+    recipients: string[];
+    unsubscribedReader: string;
+  };
   emails: {
     total: number;
     /** A planned email cancelled before it was due. */

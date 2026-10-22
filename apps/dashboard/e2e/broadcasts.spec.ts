@@ -31,7 +31,7 @@ test("the broadcast list and detail show progress and lead to the recipient emai
     progress.locator("dt:text-is('Recipient emails created') + dd"),
   ).toHaveText("2");
   await expect(progress).toContainText(
-    "1 (1 unsubscribed, 0 suppressed, 0 not renderable)",
+    "2 (1 unsubscribed, 1 suppressed, 0 not renderable)",
   );
   const table = page.getByRole("table", { name: "Recipient emails by status" });
   await expect(
