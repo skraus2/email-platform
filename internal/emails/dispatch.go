@@ -165,12 +165,14 @@ func (d *Dispatcher) SendEmail(ctx context.Context, args jobs.SendEmailArgs, at 
 	if e.ProjectStatus != "active" {
 		return d.fail(ctx, log, key, CodeProjectDisabled, CodeProjectDisabled)
 	}
-	bulk := e.BroadcastID != nil
-	if bulk {
-		if outcome := broadcastRefusal(e.BroadcastStatus, e.ContactExists, e.ContactStatus); outcome != "" {
-			return d.refuseBroadcast(ctx, log, key, e.Status, outcome)
-		}
-	} else if !e.HasContent {
+	// Broadcast and automation emails are bulk (job priority, share of the
+	// daily cap) and go only to subscribed contacts; only broadcast emails
+	// are rendered here, automation emails carry their content.
+	bulk := e.BroadcastID != nil || e.AutomationID != nil
+	if outcome, code := listRefusal(e); outcome != "" {
+		return d.refuseListEmail(ctx, log, key, e.Status, outcome, code)
+	}
+	if e.BroadcastID == nil && !e.HasContent {
 		return d.fail(ctx, log, key, CodeContentMissing, CodeContentMissing)
 	}
 	if e.Suppressed {
@@ -217,8 +219,8 @@ func (d *Dispatcher) SendEmail(ctx context.Context, args jobs.SendEmailArgs, at 
 	// version and its contact's current attributes; the stored subject (from
 	// fan-out) is sent. Rendering comes after the waits, so a backlog that
 	// snoozes never renders twice.
-	text, html, unsubscribeURL := deref(e.TextBody), deref(e.HtmlBody), ""
-	if bulk {
+	text, html, unsubscribeURL := deref(e.TextBody), deref(e.HtmlBody), deref(e.ListUnsubscribeUrl)
+	if e.BroadcastID != nil {
 		r, url, err := d.renderBroadcast(ctx, e)
 		var te *templates.Error
 		if errors.As(err, &te) {
@@ -248,8 +250,9 @@ func (d *Dispatcher) SendEmail(ctx context.Context, args jobs.SendEmailArgs, at 
 			return nil
 		case now.ProjectStatus != "active":
 			return d.fail(ctx, log, key, CodeProjectDisabled, CodeProjectDisabled)
-		case now.BroadcastID != nil && broadcastRefusal(now.BroadcastStatus, now.ContactExists, now.ContactStatus) != "":
-			return d.refuseBroadcast(ctx, log, key, now.Status, broadcastRefusal(now.BroadcastStatus, now.ContactExists, now.ContactStatus))
+		case listRefusalOf(now) != "":
+			outcome, code := listRefusal(now)
+			return d.refuseListEmail(ctx, log, key, now.Status, outcome, code)
 		case now.Suppressed:
 			return d.fail(ctx, log, key, CodeSuppressed, CodeSuppressed)
 		case d.verified && !now.SenderVerified:
@@ -299,35 +302,56 @@ func (d *Dispatcher) SendEmail(ctx context.Context, args jobs.SendEmailArgs, at 
 	return errors.New(detail)
 }
 
-// broadcastCanceled is the refusal outcome of an email whose broadcast was
-// cancelled (the other outcomes are failure codes).
-const broadcastCanceled = "canceled"
+// listCanceled is the refusal outcome of an email whose broadcast or
+// automation run was cancelled (the other outcomes are failure codes).
+const listCanceled = "canceled"
 
-// broadcastRefusal says why a broadcast email must not be sent: its
-// broadcast was cancelled, its contact deleted or unsubscribed ("" = send).
-func broadcastRefusal(broadcastStatus *string, contactExists bool, contactStatus *string) string {
+// listRefusal says why a broadcast or automation email must not be sent:
+// its broadcast, run or automation was cancelled, or its contact deleted or
+// unsubscribed ("" = send). code is the failure code of a cancelled email
+// an earlier attempt left "sending".
+func listRefusal(e store.GetEmailForDispatchRow) (outcome, code string) {
 	switch {
-	case broadcastStatus != nil && *broadcastStatus == "canceled":
-		return broadcastCanceled
-	case !contactExists:
-		return CodeContactDeleted
-	case contactStatus == nil || *contactStatus != "subscribed":
-		return CodeUnsubscribed
+	case e.BroadcastID != nil:
+		code = CodeBroadcastCanceled
+		if e.BroadcastStatus != nil && *e.BroadcastStatus == "canceled" {
+			return listCanceled, code
+		}
+	case e.AutomationID != nil:
+		// A run deleted by retention (run status unknown) is no reason.
+		code = CodeAutomationCanceled
+		if (e.RunStatus != nil && *e.RunStatus == "canceled") || (e.AutomationStatus != nil && *e.AutomationStatus == "archived") {
+			return listCanceled, code
+		}
+	default:
+		return "", ""
 	}
-	return ""
+	switch {
+	case !e.ContactExists:
+		return CodeContactDeleted, code
+	case e.ContactStatus == nil || *e.ContactStatus != "subscribed":
+		return CodeUnsubscribed, code
+	}
+	return "", ""
 }
 
-// refuseBroadcast ends a broadcast email that must not be sent. A queued
-// email of a cancelled broadcast becomes canceled (it was never handed to
-// a provider); one an earlier attempt left "sending" may already be out, so
-// it fails with broadcast_canceled instead. Everything else fails with the
-// outcome as its code.
-func (d *Dispatcher) refuseBroadcast(ctx context.Context, log *slog.Logger, key store.GetEmailForDispatchParams, status, outcome string) error {
-	if outcome != broadcastCanceled {
+// listRefusalOf is the outcome of listRefusal alone.
+func listRefusalOf(e store.GetEmailForDispatchRow) string {
+	outcome, _ := listRefusal(e)
+	return outcome
+}
+
+// refuseListEmail ends a broadcast or automation email that must not be
+// sent. A queued email of a cancelled broadcast or run becomes canceled (it
+// was never handed to a provider); one an earlier attempt left "sending"
+// may already be out, so it fails with canceledCode instead. Everything else
+// fails with the outcome as its code.
+func (d *Dispatcher) refuseListEmail(ctx context.Context, log *slog.Logger, key store.GetEmailForDispatchParams, status, outcome, canceledCode string) error {
+	if outcome != listCanceled {
 		return d.fail(ctx, log, key, outcome, outcome)
 	}
 	if status == "sending" {
-		return d.fail(ctx, log, key, CodeBroadcastCanceled, CodeBroadcastCanceled)
+		return d.fail(ctx, log, key, canceledCode, canceledCode)
 	}
 	dctx, cancel := detached(ctx)
 	defer cancel()
@@ -341,10 +365,14 @@ func (d *Dispatcher) refuseBroadcast(ctx context.Context, log *slog.Logger, key 
 			}
 			return err
 		}
-		return d.events.Transition(dctx, tx, key.ProjectID, key.ID, events.TypeCanceled, "", "")
+		if err := d.events.Transition(dctx, tx, key.ProjectID, key.ID, events.TypeCanceled, "", ""); err != nil {
+			return err
+		}
+		// Automation emails carry content (broadcast emails have none).
+		return q.DeleteEmailContent(dctx, store.DeleteEmailContentParams{EmailID: key.ID, ProjectID: key.ProjectID})
 	})
 	if err != nil {
-		return fmt.Errorf("cancel broadcast email: %w", err)
+		return fmt.Errorf("cancel email: %w", err)
 	}
 	return nil
 }

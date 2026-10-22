@@ -466,8 +466,8 @@ func TestEngineFinalAttemptContext(t *testing.T) {
 	}
 }
 
-// Variables: shared values < contact attributes < trigger event data <
-// unsubscribe URL.
+// Variables: shared values < contact attributes < trigger event data (the
+// unsubscribe URL, set last by the platform, is covered by TestMergeLayers).
 func TestEngineVariablePrecedence(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t, 50)

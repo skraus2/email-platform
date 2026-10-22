@@ -207,6 +207,8 @@ func (q *Queries) GetEmail(ctx context.Context, arg GetEmailParams) (Email, erro
 const getEmailForDispatch = `-- name: GetEmailForDispatch :one
 SELECT e.id, e.project_id, e.sender, e.recipient, e.subject, e.status,
        c.text_body, c.html_body, (c.email_id IS NOT NULL)::boolean AS has_content,
+       c.list_unsubscribe_url,
+       e.automation_id, ar.status AS run_status, au.status AS automation_status,
        e.broadcast_id, e.template_id, e.template_version,
        b.status AS broadcast_status, b.variables AS broadcast_variables, b.unsubscribe_url AS broadcast_unsubscribe_url,
        (ct.id IS NOT NULL)::boolean AS contact_exists, ct.status AS contact_status,
@@ -223,6 +225,8 @@ JOIN projects p ON p.id = e.project_id
 LEFT JOIN email_contents c ON c.email_id = e.id AND c.project_id = e.project_id
 LEFT JOIN broadcasts b ON b.id = e.broadcast_id AND b.project_id = e.project_id
 LEFT JOIN contacts ct ON ct.id = e.contact_id AND ct.project_id = e.project_id
+LEFT JOIN automation_runs ar ON ar.id = e.automation_run_id AND ar.project_id = e.project_id
+LEFT JOIN automations au ON au.id = e.automation_id AND au.project_id = e.project_id
 WHERE e.id = $1 AND e.project_id = $2
 `
 
@@ -241,6 +245,10 @@ type GetEmailForDispatchRow struct {
 	TextBody                *string
 	HtmlBody                *string
 	HasContent              bool
+	ListUnsubscribeUrl      *string
+	AutomationID            *uuid.UUID
+	RunStatus               *string
+	AutomationStatus        *string
 	BroadcastID             *uuid.UUID
 	TemplateID              *uuid.UUID
 	TemplateVersion         *int32
@@ -259,7 +267,8 @@ type GetEmailForDispatchRow struct {
 // Content columns are NULL once the content has been deleted. A broadcast
 // email has no content: it carries its broadcast's template, shared
 // variables and unsubscribe URL, and its contact's current state (with the
-// unsubscribe token for the link).
+// unsubscribe token for the link). An automation email has content (with
+// its List-Unsubscribe URL) and carries its run's and automation's state.
 func (q *Queries) GetEmailForDispatch(ctx context.Context, arg GetEmailForDispatchParams) (GetEmailForDispatchRow, error) {
 	row := q.db.QueryRow(ctx, getEmailForDispatch, arg.ID, arg.ProjectID)
 	var i GetEmailForDispatchRow
@@ -273,6 +282,10 @@ func (q *Queries) GetEmailForDispatch(ctx context.Context, arg GetEmailForDispat
 		&i.TextBody,
 		&i.HtmlBody,
 		&i.HasContent,
+		&i.ListUnsubscribeUrl,
+		&i.AutomationID,
+		&i.RunStatus,
+		&i.AutomationStatus,
 		&i.BroadcastID,
 		&i.TemplateID,
 		&i.TemplateVersion,
@@ -810,6 +823,16 @@ WHERE emails.id = $1 AND emails.project_id = $2 AND emails.status IN ('queued', 
   AND (emails.broadcast_id IS NULL
        OR (EXISTS (SELECT 1 FROM broadcasts b
                    WHERE b.id = emails.broadcast_id AND b.project_id = emails.project_id AND b.status <> 'canceled')
+                      AND EXISTS (SELECT 1 FROM contacts ct
+                       WHERE ct.id = emails.contact_id AND ct.project_id = emails.project_id AND ct.status = 'subscribed')))
+  -- An automation email: its run is not cancelled (a run deleted by
+  -- retention is no reason), its automation not archived, and its contact
+  -- still exists and is subscribed.
+  AND (emails.automation_id IS NULL
+       OR (NOT EXISTS (SELECT 1 FROM automation_runs ar
+                       WHERE ar.id = emails.automation_run_id AND ar.project_id = emails.project_id AND ar.status = 'canceled')
+           AND EXISTS (SELECT 1 FROM automations au
+                       WHERE au.id = emails.automation_id AND au.project_id = emails.project_id AND au.status <> 'archived')
            AND EXISTS (SELECT 1 FROM contacts ct
                        WHERE ct.id = emails.contact_id AND ct.project_id = emails.project_id AND ct.status = 'subscribed')))
 `
@@ -822,9 +845,9 @@ type MarkSendingParams struct {
 
 // Claims the email for a send attempt. Project status, suppression, (when
 // required) a verified sender identity of the project for the exact address
-// or its exact domain, and for broadcast emails the broadcast and contact
-// state are checked as part of the claim, so a change made before this
-// point is always honoured.
+// or its exact domain, and for broadcast and automation emails the
+// broadcast, run, automation and contact state are checked as part of the
+// claim, so a change made before this point is always honoured.
 func (q *Queries) MarkSending(ctx context.Context, arg MarkSendingParams) (int64, error) {
 	result, err := q.db.Exec(ctx, markSending, arg.ID, arg.ProjectID, arg.RequireVerifiedSender)
 	if err != nil {

@@ -41,6 +41,7 @@ export const FAILURE_CODES = [
   "contact_deleted",
   "broadcast_canceled",
   "render_failed",
+  "automation_canceled",
 ] as const;
 
 export const PAGE_SIZE = 50;
