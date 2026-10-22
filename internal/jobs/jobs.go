@@ -337,6 +337,15 @@ type broadcastFanoutWorker struct {
 	retry RetryPolicy
 }
 
+// fanoutTimeout bounds one fan-out batch (rendering up to a batch of
+// recipients), independently of the per-send budget.
+const fanoutTimeout = 2 * time.Minute
+
+// Timeout gives a fan-out batch its own budget.
+func (w *broadcastFanoutWorker) Timeout(*river.Job[BroadcastFanoutArgs]) time.Duration {
+	return fanoutTimeout
+}
+
 // NextRetry spaces retries after internal errors (continuation snoozes).
 func (w *broadcastFanoutWorker) NextRetry(job *river.Job[BroadcastFanoutArgs]) time.Time {
 	return time.Now().Add(w.retry.Delay(len(job.Errors)+1, rand.Float64))

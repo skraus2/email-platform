@@ -14,6 +14,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/skraus2/email-platform/internal/templates"
 )
 
 // Attribute limits.
@@ -30,7 +32,14 @@ const (
 )
 
 // ReservedAttribute is filled in by the platform when a broadcast renders.
-const ReservedAttribute = "unsubscribe_url"
+const ReservedAttribute = templates.UnsubscribeVariable
+
+// TokenPlaceholder in a broadcast's unsubscribe URL is replaced by the
+// contact's unsubscribe token.
+const TokenPlaceholder = templates.TokenPlaceholder
+
+// UnsubscribeURL puts a contact's token into an unsubscribe URL template.
+func UnsubscribeURL(template, token string) string { return templates.UnsubscribeURL(template, token) }
 
 var attributeName = regexp.MustCompile(`^[a-z][a-z0-9_]{0,39}$`)
 

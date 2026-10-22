@@ -129,15 +129,18 @@ func broadcastEmail(t *testing.T, ctx context.Context, pool interface {
 // send with the same outcome as one made before the load.
 func TestBroadcastChangeBetweenLoadAndClaimStopsSend(t *testing.T) {
 	t.Parallel()
+	cancel := "UPDATE broadcasts SET status = 'canceled', finished_at = now() WHERE id = $2 AND $1::uuid IS NOT NULL"
 	for name, c := range map[string]struct {
-		change string
-		status string
-		code   string
+		change  string
+		status  string
+		code    string
+		sending bool // an earlier attempt left the email "sending"
 	}{
-		"broadcast canceled":   {"UPDATE broadcasts SET status = 'canceled', finished_at = now() WHERE id = $2 AND $1::uuid IS NOT NULL", "canceled", ""},
-		"contact unsubscribed": {"UPDATE contacts SET status = 'unsubscribed' WHERE id = $1 AND $2::uuid IS NOT NULL", "failed", CodeUnsubscribed},
-		"contact deleted":      {"DELETE FROM contacts WHERE id = $1 AND $2::uuid IS NOT NULL", "failed", CodeContactDeleted},
-		"no change":            {"SELECT $1::uuid, $2::uuid", "captured", ""},
+		"broadcast canceled":               {cancel, "canceled", "", false},
+		"broadcast canceled while sending": {cancel, "failed", CodeBroadcastCanceled, true},
+		"contact unsubscribed":             {"UPDATE contacts SET status = 'unsubscribed' WHERE id = $1 AND $2::uuid IS NOT NULL", "failed", CodeUnsubscribed, false},
+		"contact deleted":                  {"DELETE FROM contacts WHERE id = $1 AND $2::uuid IS NOT NULL", "failed", CodeContactDeleted, false},
+		"no change":                        {"SELECT $1::uuid, $2::uuid", "captured", "", false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -149,6 +152,11 @@ func TestBroadcastChangeBetweenLoadAndClaimStopsSend(t *testing.T) {
 				t.Fatal(err)
 			}
 			emailID, contactID, broadcastID := broadcastEmail(t, ctx, pool, p.ID)
+			if c.sending {
+				if _, err := pool.Exec(ctx, "UPDATE emails SET status = 'sending', attempts = 1 WHERE id = $1", emailID); err != nil {
+					t.Fatal(err)
+				}
+			}
 			prov := &countingProvider{}
 			d := NewDispatcher(pool, prov, slog.New(slog.DiscardHandler), 5*time.Second, time.Hour)
 			var once sync.Once
@@ -211,10 +219,19 @@ func TestDailyCapReserveForTransactionalMail(t *testing.T) {
 		t.Fatal(err)
 	}
 	err = d.SendEmail(ctx, jobs.SendEmailArgs{EmailID: bulk, ProjectID: p.ID}, jobs.Attempt{JobID: 1, Number: 1, MaxAttempts: 5})
-	if _, ok := jobs.SnoozeDelay(err); !ok || prov.calls != 0 {
+	// A broadcast backlog waits at least a minute, spread over a window.
+	if wait, ok := jobs.SnoozeDelay(err); !ok || prov.calls != 0 || wait < time.Minute {
 		t.Fatalf("broadcast email at 9/10: %v, calls %d", err, prov.calls)
 	}
 	if err := d.SendEmail(ctx, jobs.SendEmailArgs{EmailID: tx.ID, ProjectID: p.ID}, jobs.Attempt{JobID: 2, Number: 1, MaxAttempts: 5}); err != nil || prov.calls != 1 {
 		t.Fatalf("transactional email at 9/10: %v, calls %d", err, prov.calls)
+	}
+	// A cap of 1 leaves broadcasts no share: they wait an hour, not a second.
+	if err := d.LimitDailyHandoffs("fake", 1); err != nil {
+		t.Fatal(err)
+	}
+	err = d.SendEmail(ctx, jobs.SendEmailArgs{EmailID: bulk, ProjectID: p.ID}, jobs.Attempt{JobID: 1, Number: 1, MaxAttempts: 5})
+	if wait, ok := jobs.SnoozeDelay(err); !ok || wait < time.Hour {
+		t.Fatalf("broadcast email at cap 1: %v", err)
 	}
 }

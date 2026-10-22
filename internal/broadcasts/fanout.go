@@ -5,8 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -20,10 +18,6 @@ import (
 
 // BatchSize is the number of audience members one fan-out run handles.
 const BatchSize = 500
-
-// disabledWait is how long fan-out of a disabled project's broadcast waits
-// before it looks again.
-const disabledWait = time.Minute
 
 // SendEnqueuer inserts recipient dispatch jobs inside the caller's
 // transaction.
@@ -43,11 +37,6 @@ type Fanout struct {
 // NewFanout builds the fan-out handler.
 func NewFanout(pool *pgxpool.Pool, enq SendEnqueuer, logger *slog.Logger, compiled *templates.Cache) *Fanout {
 	return &Fanout{pool: pool, enq: enq, logger: logger, compiled: compiled, batch: BatchSize}
-}
-
-// UnsubscribeURL puts a contact's token into a broadcast's URL template.
-func UnsubscribeURL(template, token string) string {
-	return strings.Replace(template, TokenPlaceholder, token, 1)
 }
 
 // Run is the broadcast_fanout job handler. It processes one batch in one
@@ -116,7 +105,7 @@ func (f *Fanout) Run(ctx context.Context, args jobs.BroadcastFanoutArgs, at jobs
 				continue
 			}
 			vars, err := templates.MergeVariables(c.Schema(), b.Variables, m.Attributes,
-				map[string]string{contacts.ReservedAttribute: UnsubscribeURL(b.UnsubscribeUrl, m.UnsubscribeToken)})
+				map[string]string{contacts.ReservedAttribute: contacts.UnsubscribeURL(b.UnsubscribeUrl, m.UnsubscribeToken)})
 			if err != nil {
 				invalid++
 				continue
@@ -162,14 +151,17 @@ func (f *Fanout) Run(ctx context.Context, args jobs.BroadcastFanoutArgs, at jobs
 	})
 	if err != nil {
 		if at.Final() {
-			log.ErrorContext(ctx, "broadcast fan-out failed on its final attempt; the broadcast stays sending until it is cancelled", slog.Any("error", err))
+			log.ErrorContext(ctx, "broadcast fan-out failed on its final attempt; the broadcast stays open until it is cancelled", slog.Any("error", err))
 		}
 		return err
 	}
 	switch {
 	case disabled:
-		log.InfoContext(ctx, "project disabled; broadcast fan-out waits")
-		return jobs.Snooze(disabledWait)
+		// Disabling a project stops its broadcasts for good: re-enabling it
+		// must not silently send the rest. The broadcast stays open and can
+		// be cancelled.
+		log.WarnContext(ctx, "project disabled; broadcast fan-out stopped")
+		return nil
 	case done:
 		if created > 0 || skipped > 0 {
 			log.InfoContext(ctx, "broadcast fan-out batch", slog.Int("created", created), slog.Int("skipped", skipped))

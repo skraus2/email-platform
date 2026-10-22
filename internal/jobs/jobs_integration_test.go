@@ -455,3 +455,78 @@ func TestBulkSendsYieldToTransactionalSends(t *testing.T) {
 		t.Fatalf("transactional send ran at position %d of 21", slices.Index(order, transactional.EmailID)+1)
 	}
 }
+
+func TestWorkerRunsBroadcastQueue(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	pool := testdb.NewMigrated(t)
+	var mu sync.Mutex
+	var attempts []jobs.Attempt
+	var remaining []time.Duration
+	done := make(chan struct{})
+	h := newRecorder().handlers()
+	h.BroadcastFanout = func(ctx context.Context, _ jobs.BroadcastFanoutArgs, a jobs.Attempt) error {
+		deadline, _ := ctx.Deadline()
+		mu.Lock()
+		defer mu.Unlock()
+		attempts = append(attempts, a)
+		remaining = append(remaining, time.Until(deadline))
+		if len(attempts) < 3 {
+			return jobs.Snooze(0) // the next batch
+		}
+		close(done)
+		return nil
+	}
+	w, err := jobs.NewWorker(jobs.WorkerConfig{
+		Pool: pool, Logger: quiet, Handlers: h, Concurrency: 1, Retry: testRetry, JobTimeout: 500 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = w.Stop(5 * time.Second) })
+
+	enq, _ := jobs.NewEnqueuer(pool, quiet, testMaxAttempts)
+	tx, _ := pool.Begin(ctx)
+	if err := enq.EnqueueBroadcastFanout(ctx, tx, jobs.BroadcastFanoutArgs{BroadcastID: uuid.New(), ProjectID: uuid.New()}, time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-done:
+	case <-time.After(20 * time.Second):
+		t.Fatal("fan-out job not run three times")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	for _, a := range attempts {
+		if a.Number != 1 {
+			t.Fatalf("attempts = %+v, want snoozes not to use an attempt", attempts)
+		}
+	}
+	// Its own 2 min budget, not the 500 ms send budget.
+	for _, r := range remaining {
+		if r < 110*time.Second || r > 121*time.Second {
+			t.Fatalf("job deadline in %v, want ≈ 2 min", r)
+		}
+	}
+	var queue, state string
+	var errs int
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if err := pool.QueryRow(ctx, "SELECT queue, state, coalesce(array_length(errors, 1), 0) FROM river_job WHERE kind = 'broadcast_fanout'").Scan(&queue, &state, &errs); err != nil {
+			t.Fatal(err)
+		}
+		if state == "completed" || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if queue != jobs.QueueBroadcasts || state != "completed" || errs != 0 {
+		t.Fatalf("job queue=%s state=%s errors=%d", queue, state, errs)
+	}
+}

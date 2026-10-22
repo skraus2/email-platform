@@ -109,3 +109,29 @@ func TestMergeVariables(t *testing.T) {
 		}
 	}
 }
+
+func TestReferences(t *testing.T) {
+	schema, err := ParseSchema([]byte(`{"unsubscribe_url":{"type":"string"},"vip":{"type":"boolean"},"name":{"type":"string"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, c := range []struct {
+		subject string
+		want    bool
+	}{
+		{"News for {{.name}}", false},
+		{"Bye {{.unsubscribe_url}}", true},
+		{"{{if .vip}}{{.unsubscribe_url}}{{end}}", true},
+		{"{{if .vip}}x{{else}}{{.unsubscribe_url}}{{end}}", true},
+		{`{{if eq .unsubscribe_url "x"}}y{{end}}`, true},
+		{"{{/* {{.unsubscribe_url}} */}}x", false},
+	} {
+		comp, err := Compile(Source{Subject: c.subject, Text: "{{.unsubscribe_url}}"}, schema)
+		if err != nil {
+			t.Fatalf("%d: %v", i, err)
+		}
+		if got := comp.References("subject", "unsubscribe_url"); got != c.want {
+			t.Errorf("%d %q: %v", i, c.subject, got)
+		}
+	}
+}

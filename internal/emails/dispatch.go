@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"math"
 	"math/rand/v2"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -97,6 +96,9 @@ func (d *Dispatcher) dailyWait(ctx context.Context, bulk bool) (time.Duration, e
 	if bulk {
 		// Broadcast emails leave a share of the cap to transactional mail.
 		limit -= max(limit/dailyReserveDivisor, 1)
+		if limit < 1 {
+			return noBulkShareWait, nil
+		}
 	}
 	q := store.New(d.pool)
 	n, err := q.CountProviderHandoffs(ctx, &d.daily.provider)
@@ -117,6 +119,16 @@ func (d *Dispatcher) dailyWait(ctx context.Context, bulk bool) (time.Duration, e
 
 // dailyReserveDivisor: broadcast emails stop at 90 % of the daily cap.
 const dailyReserveDivisor = 10
+
+// Broadcast emails over the daily cap wait at least minBulkDailyWait and
+// spread their wake-ups over at least bulkDailySpread.
+const (
+	minBulkDailyWait = time.Minute
+	bulkDailySpread  = 15 * time.Minute
+	// noBulkShareWait is the wait of broadcast emails when the cap is too
+	// small to leave them any share.
+	noBulkShareWait = time.Hour
+)
 
 // maxDailyJitter spreads jobs waiting for the same daily slot.
 const maxDailyJitter = time.Minute
@@ -175,6 +187,12 @@ func (d *Dispatcher) SendEmail(ctx context.Context, args jobs.SendEmailArgs, at 
 		return d.internalError(ctx, log, key, at, fmt.Errorf("daily hand-off count: %w", err))
 	}
 	if wait > 0 {
+		if bulk {
+			// A broadcast backlog can be large: spread it over a long
+			// window instead of letting every job wake for the next slot.
+			wait = max(wait, minBulkDailyWait)
+			return jobs.Snooze(wait + rand.N(max(wait, bulkDailySpread))) //nolint:gosec // scheduling jitter, not security
+		}
 		log.InfoContext(ctx, "daily provider limit reached; snoozing", slog.Duration("wait", wait))
 		return jobs.Snooze(wait + rand.N(min(wait/10, maxDailyJitter)+time.Second)) //nolint:gosec // scheduling jitter, not security
 	}
@@ -237,7 +255,9 @@ func (d *Dispatcher) SendEmail(ctx context.Context, args jobs.SendEmailArgs, at 
 		case d.verified && !now.SenderVerified:
 			return d.fail(ctx, log, key, CodeSenderNotVerified, CodeSenderNotVerified)
 		}
-		return nil
+		// The reason is gone again (e.g. unsubscribed and re-subscribed in
+		// between): try again rather than leaving the email queued.
+		return errors.New("claim refused without a lasting reason; retrying")
 	}
 	if e.Status == "sending" {
 		// A previous attempt was interrupted after possibly reaching the
@@ -315,7 +335,9 @@ func (d *Dispatcher) refuseBroadcast(ctx context.Context, log *slog.Logger, key 
 		q := store.New(tx)
 		if _, err := q.CancelEmail(dctx, store.CancelEmailParams(key)); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
-				return nil // claimed or finalized meanwhile; its next run decides
+				// Claimed or finalized meanwhile: whoever did so ends it
+				// (a claim re-checks the broadcast and refuses).
+				return nil
 			}
 			return err
 		}
@@ -335,16 +357,18 @@ func (d *Dispatcher) renderBroadcast(ctx context.Context, e store.GetEmailForDis
 	if e.TemplateID == nil || e.TemplateVersion == nil || e.BroadcastUnsubscribeUrl == nil || e.ContactToken == nil {
 		return templates.Rendered{}, "", errors.New("broadcast email without template or contact data")
 	}
-	v, err := templates.Resolve(ctx, store.New(d.pool), e.ProjectID, *e.TemplateID, int(*e.TemplateVersion))
-	if err != nil {
-		return templates.Rendered{}, "", fmt.Errorf("load template version: %w", err)
+	c := d.compiled.Lookup(e.ProjectID, *e.TemplateID, int(*e.TemplateVersion))
+	if c == nil {
+		v, err := templates.Resolve(ctx, store.New(d.pool), e.ProjectID, *e.TemplateID, int(*e.TemplateVersion))
+		if err != nil {
+			return templates.Rendered{}, "", fmt.Errorf("load template version: %w", err)
+		}
+		if c, _, err = d.compiled.Compiled(v); err != nil {
+			return templates.Rendered{}, "", fmt.Errorf("compile template version: %v", err) //nolint:errorlint // a stored version is server state, never a client error
+		}
 	}
-	c, _, err := d.compiled.Compiled(v)
-	if err != nil {
-		return templates.Rendered{}, "", fmt.Errorf("compile template version: %v", err) //nolint:errorlint // a stored version is server state, never a client error
-	}
-	url := strings.Replace(*e.BroadcastUnsubscribeUrl, "{token}", *e.ContactToken, 1)
-	vars, err := templates.MergeVariables(c.Schema(), e.BroadcastVariables, e.ContactAttributes, map[string]string{"unsubscribe_url": url})
+	url := templates.UnsubscribeURL(*e.BroadcastUnsubscribeUrl, *e.ContactToken)
+	vars, err := templates.MergeVariables(c.Schema(), e.BroadcastVariables, e.ContactAttributes, map[string]string{templates.UnsubscribeVariable: url})
 	if err != nil {
 		return templates.Rendered{}, "", fmt.Errorf("merge variables: %w", err)
 	}

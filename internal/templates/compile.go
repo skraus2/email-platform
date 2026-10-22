@@ -154,6 +154,58 @@ func (c *Compiled) LinksTopLevel(name string) bool {
 	return false
 }
 
+// References reports whether part ("subject", "text" or "html") uses the
+// variable name anywhere: printed, in a condition, in any branch.
+func (c *Compiled) References(part, name string) bool {
+	var root *parse.ListNode
+	switch part {
+	case "subject":
+		root = c.subject.Root
+	case "text":
+		root = c.text.Root
+	case "html":
+		if c.html == nil {
+			return false
+		}
+		root = c.html.Tree.Root
+	default:
+		return false
+	}
+	var walk func(n parse.Node) bool
+	walk = func(n parse.Node) bool {
+		switch n := n.(type) {
+		case *parse.ListNode:
+			if n == nil {
+				return false
+			}
+			for _, child := range n.Nodes {
+				if walk(child) {
+					return true
+				}
+			}
+		case *parse.ActionNode:
+			return walk(n.Pipe)
+		case *parse.IfNode:
+			return walk(n.Pipe) || walk(n.List) || (n.ElseList != nil && walk(n.ElseList))
+		case *parse.PipeNode:
+			if n == nil {
+				return false
+			}
+			for _, cmd := range n.Cmds {
+				for _, arg := range cmd.Args {
+					if walk(arg) {
+						return true
+					}
+				}
+			}
+		case *parse.FieldNode:
+			return len(n.Ident) > 0 && n.Ident[0] == name
+		}
+		return false
+	}
+	return walk(root)
+}
+
 // printsField reports whether the action prints the declared field name as
 // its first command.
 func printsField(a *parse.ActionNode, name string) bool {

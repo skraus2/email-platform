@@ -151,6 +151,8 @@ func TestCreateBroadcastRefusals(t *testing.T) {
 	numberField := publish(templates.Source{Subject: "s", Text: "{{.unsubscribe_url}}"}, `{"unsubscribe_url":{"type":"number"}}`)
 	onlyInIf := publish(templates.Source{Subject: "s", Text: "{{if .vip}}{{.unsubscribe_url}}{{end}}"},
 		`{"unsubscribe_url":{"type":"string"},"vip":{"type":"boolean"}}`)
+	inSubject := publish(templates.Source{Subject: "{{if .vip}}{{.unsubscribe_url}}{{end}}", Text: "{{.unsubscribe_url}}"},
+		`{"unsubscribe_url":{"type":"string"},"vip":{"type":"boolean"}}`)
 	htmlMissing := publish(templates.Source{Subject: "s", Text: "{{.unsubscribe_url}}", HTML: "<p>hi</p>"}, `{"unsubscribe_url":{"type":"string"}}`)
 	empty, err := f.templates.Create(f.ctx, f.project, "empty", "")
 	if err != nil {
@@ -171,6 +173,7 @@ func TestCreateBroadcastRefusals(t *testing.T) {
 		"no unsubscribe variable": {func(in *broadcasts.CreateInput) { in.TemplateID, in.Variables = noField, nil }, func(err error) bool { return errors.Is(err, broadcasts.ErrMissingUnsubscribe) }},
 		"number variable":         {func(in *broadcasts.CreateInput) { in.TemplateID, in.Variables = numberField, nil }, func(err error) bool { return errors.Is(err, broadcasts.ErrMissingUnsubscribe) }},
 		"only inside if":          {func(in *broadcasts.CreateInput) { in.TemplateID, in.Variables = onlyInIf, nil }, func(err error) bool { return errors.Is(err, broadcasts.ErrMissingUnsubscribe) }},
+		"link in subject":         {func(in *broadcasts.CreateInput) { in.TemplateID, in.Variables = inSubject, nil }, func(err error) bool { return errors.As(err, &ve) && ve.Field == "template_version" }},
 		"html without link":       {func(in *broadcasts.CreateInput) { in.TemplateID, in.Variables = htmlMissing, nil }, func(err error) bool { return errors.Is(err, broadcasts.ErrMissingUnsubscribe) }},
 		"bad from":                {func(in *broadcasts.CreateInput) { in.From = "News <n@example.test>" }, func(err error) bool { return errors.As(err, &ve) && ve.Field == "from" }},
 		"long name":               {func(in *broadcasts.CreateInput) { in.Name = strings.Repeat("n", 201) }, func(err error) bool { return errors.As(err, &ve) && ve.Field == "name" }},

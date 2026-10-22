@@ -61,7 +61,7 @@ const (
 	MaxURLTemplate     = 900
 	MaxSharedVariables = 16 << 10
 	// TokenPlaceholder is replaced by the contact's unsubscribe token.
-	TokenPlaceholder = "{token}"
+	TokenPlaceholder = contacts.TokenPlaceholder
 	// DefaultScheduleMaxAhead bounds how far ahead a broadcast may start.
 	DefaultScheduleMaxAhead = 720 * time.Hour
 	// MaxPage bounds one list page.
@@ -239,6 +239,11 @@ func checkVersion(v templates.Version, urlTemplate string) error {
 	if !ok || spec.Type != templates.TypeString || !c.PrintsTopLevel("text", contacts.ReservedAttribute) ||
 		(c.HasHTML() && !c.LinksTopLevel(contacts.ReservedAttribute)) {
 		return ErrMissingUnsubscribe
+	}
+	// Subjects are stored and shown by the API; the per-contact URL (with
+	// its token) must never end up there.
+	if c.References("subject", contacts.ReservedAttribute) {
+		return invalid("template_version", "the subject must not use unsubscribe_url (subjects are stored and listed)")
 	}
 	limit := spec.MaxLength
 	if limit == 0 {

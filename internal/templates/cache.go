@@ -73,6 +73,12 @@ func (c *Cache) put(k cacheKey, compiled *Compiled, size int) {
 	}
 }
 
+// Lookup returns a cached compiled version without loading anything (nil
+// on a miss).
+func (c *Cache) Lookup(projectID, templateID uuid.UUID, version int) *Compiled {
+	return c.get(cacheKey{project: projectID, template: templateID, version: version})
+}
+
 // Compiled returns the compiled form of a stored version, compiling and
 // caching it on a miss (compiled reports a miss).
 func (c *Cache) Compiled(v Version) (_ *Compiled, compiled bool, _ error) {

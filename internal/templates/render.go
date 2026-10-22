@@ -232,3 +232,16 @@ func MergeVariables(schema Schema, shared, attributes []byte, platform map[strin
 	}
 	return bytes.TrimSuffix(b.Bytes(), []byte("\n")), nil
 }
+
+// UnsubscribeVariable is the variable a broadcast fills with the
+// recipient's unsubscribe URL.
+const UnsubscribeVariable = "unsubscribe_url"
+
+// TokenPlaceholder in a broadcast's unsubscribe URL is replaced by the
+// recipient's unsubscribe token.
+const TokenPlaceholder = "{token}"
+
+// UnsubscribeURL puts a token into an unsubscribe URL template.
+func UnsubscribeURL(template, token string) string {
+	return strings.Replace(template, TokenPlaceholder, token, 1)
+}

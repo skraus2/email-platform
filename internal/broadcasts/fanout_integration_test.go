@@ -10,7 +10,6 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -178,6 +177,14 @@ func TestFanoutCreatesOneEmailPerSubscribedMember(t *testing.T) {
 	if runs := runAll(t, f.fanout(t, nil, nil), b); runs != 1 || f.count(t, "SELECT count(*) FROM emails") != 4 {
 		t.Fatal("re-run after completion created emails")
 	}
+	// Even a repeat of every batch (cursor lost) creates no second email.
+	if _, err := f.pool.Exec(f.ctx, "UPDATE broadcasts SET status = 'sending', finished_at = NULL, cursor_contact_id = NULL WHERE id = $1", b.ID); err != nil {
+		t.Fatal(err)
+	}
+	runAll(t, f.fanout(t, nil, nil), b)
+	if f.count(t, "SELECT count(*) FROM emails") != 4 || f.count(t, "SELECT count(*) FROM river_job WHERE kind = 'send_email'") != 4 {
+		t.Fatal("a repeated batch created emails or jobs twice")
+	}
 }
 
 func TestFanoutResumesAfterFailedBatch(t *testing.T) {
@@ -253,7 +260,7 @@ func TestFanoutStopsWhenCanceled(t *testing.T) {
 	}
 }
 
-func TestFanoutWaitsWhileProjectDisabled(t *testing.T) {
+func TestFanoutStopsForADisabledProject(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t, 20)
 	f.members(t)
@@ -261,11 +268,22 @@ func TestFanoutWaitsWhileProjectDisabled(t *testing.T) {
 	if _, err := f.pool.Exec(f.ctx, "UPDATE projects SET status = 'disabled' WHERE id = $1", f.project); err != nil {
 		t.Fatal(err)
 	}
-	err := f.fanout(t, nil, nil).Run(f.ctx, jobs.BroadcastFanoutArgs{BroadcastID: b.ID, ProjectID: f.project}, jobs.Attempt{Number: 1, MaxAttempts: 25})
-	if d, ok := jobs.SnoozeDelay(err); !ok || d < time.Minute {
-		t.Fatalf("disabled project: %v", err)
+	fo := f.fanout(t, nil, nil)
+	args := jobs.BroadcastFanoutArgs{BroadcastID: b.ID, ProjectID: f.project}
+	if err := fo.Run(f.ctx, args, jobs.Attempt{Number: 1, MaxAttempts: 25}); err != nil {
+		t.Fatalf("disabled project: %v (want the job to end)", err)
 	}
 	if n := f.count(t, "SELECT count(*) FROM emails"); n != 0 {
 		t.Fatalf("emails for a disabled project: %d", n)
+	}
+	// Re-enabling does not resume it by itself; it stays open to cancel.
+	if _, err := f.pool.Exec(f.ctx, "UPDATE projects SET status = 'active' WHERE id = $1", f.project); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := f.store.Get(f.ctx, f.project, b.ID); got.Status == broadcasts.StatusCompleted || got.Status == broadcasts.StatusCanceled {
+		t.Fatalf("status %s", got.Status)
+	}
+	if _, err := f.store.Cancel(f.ctx, f.project, b.ID); err != nil {
+		t.Fatal(err)
 	}
 }
