@@ -132,6 +132,10 @@ test-e2e: ## Dashboard browser E2E (Playwright, Chromium) against real API + wor
 load: ## Load measurement against real binaries (needs `make up migrate`; LOAD_ARGS="-c 20 -n 2000")
 	./scripts/load.sh
 
+.PHONY: load-broadcast
+load-broadcast: ## Broadcast load measurement: 50k recipients + transactional sends (needs `make up migrate`; LOAD_ARGS="-contacts 50000")
+	./scripts/load-broadcast.sh
+
 .PHONY: resilience
 resilience: ## Mailpit outage, worker SIGKILL and PostgreSQL restart against real binaries (needs `make up migrate`, minutes)
 	./scripts/resilience.sh

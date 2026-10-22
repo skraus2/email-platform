@@ -3,6 +3,7 @@
 // Command loadtest measures the send path under load: it posts emails with
 // a fixed concurrency against a running API, then waits until the worker has
 // finished all of them, sampling database lock waits and process memory.
+// "loadtest broadcast" measures a large broadcast instead (broadcast.go).
 // It is not part of the shipped binaries (build tag "load"); run it through
 // `make load`.
 //
@@ -34,7 +35,11 @@ import (
 )
 
 func main() {
-	if err := run(); err != nil {
+	runFn := run
+	if len(os.Args) > 1 && os.Args[1] == "broadcast" {
+		runFn = func() error { return runBroadcast(os.Args[2:]) }
+	}
+	if err := runFn(); err != nil {
 		fmt.Fprintln(os.Stderr, "loadtest:", err)
 		os.Exit(1)
 	}
