@@ -168,7 +168,7 @@ func TestListEmailsRejects(t *testing.T) {
 		{"cursor=a&cursor=b", "invalid_cursor"},
 		{"status=" + secret, "invalid_filter"},
 		{"status=", "invalid_filter"},
-		{"status=a&status=b&status=c&status=d&status=e&status=f&status=g&status=h&status=queued", "invalid_filter"},
+		{"status=queued&status=sending&status=captured&status=submitted&status=delivered&status=bounced&status=complained&status=failed&status=canceled&status=queued", "invalid_filter"},
 		{"recipient=" + secret, "invalid_filter"},
 		{"recipient=a@example.test&recipient=b@example.test", "invalid_filter"},
 		{"created_after=" + secret, "invalid_filter"},

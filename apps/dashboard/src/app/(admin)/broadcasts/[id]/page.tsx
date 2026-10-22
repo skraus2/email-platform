@@ -13,6 +13,11 @@ import { broadcastName, RECIPIENT_STATUSES } from "@/lib/broadcasts";
 import { emailsHref, isUUID } from "@/lib/email-filters";
 import { shorten } from "@/lib/format";
 
+/** A count with digit grouping (50,000). */
+function count(n: number): string {
+  return n.toLocaleString("en");
+}
+
 const loadBroadcast = cache((id: string) =>
   adminFetch<BroadcastDetail>(`/admin/v1/broadcasts/${encodeURIComponent(id)}`),
 );
@@ -109,7 +114,7 @@ export default async function BroadcastPage({
           <dd className="wrap">
             <code>{b.unsubscribe_url}</code>
           </dd>
-          <dt>Starts</dt>
+          <dt>Planned start</dt>
           <dd>
             <Timestamp iso={b.scheduled_at} />
           </dd>
@@ -132,45 +137,56 @@ export default async function BroadcastPage({
         <h2 id="progress-h">Progress</h2>
         <dl className="meta">
           <dt>Recipient emails created</dt>
-          <dd>{c.recipients}</dd>
+          <dd>{count(c.recipients)}</dd>
           <dt>Members skipped</dt>
           <dd>
-            {skipped} ({c.skipped_unsubscribed} unsubscribed,{" "}
-            {c.skipped_suppressed} suppressed, {c.skipped_invalid} not
-            renderable)
+            {count(skipped)} ({count(c.skipped_unsubscribed)} unsubscribed,{" "}
+            {count(c.skipped_suppressed)} suppressed, {count(c.skipped_invalid)}{" "}
+            not renderable)
           </dd>
         </dl>
-        <div
-          className="table-wrap"
-          role="region"
-          aria-labelledby="by-status-caption"
-          tabIndex={0}
-        >
-          <table>
-            <caption id="by-status-caption">Recipient emails by status</caption>
-            <thead>
-              <tr>
-                <th scope="col">Status</th>
-                <th scope="col">Emails</th>
-              </tr>
-            </thead>
-            <tbody>
-              {RECIPIENT_STATUSES.map((st) => (
-                <tr key={st}>
-                  <th scope="row">
-                    <Status value={st} />
-                  </th>
-                  <td>{c.by_status[st] ?? 0}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-        <p>
-          <Link href={emailsHref({ status: [], broadcast_id: b.id })}>
-            Show the recipient emails
-          </Link>
-        </p>
+        {c.recipients === 0 &&
+        (b.status === "draft" || b.status === "scheduled") ? (
+          <p className="empty">
+            No recipient emails yet; they are created when the broadcast starts.
+          </p>
+        ) : (
+          <>
+            <div
+              className="table-wrap"
+              role="region"
+              aria-labelledby="by-status-caption"
+              tabIndex={0}
+            >
+              <table>
+                <caption id="by-status-caption">
+                  Recipient emails by status
+                </caption>
+                <thead>
+                  <tr>
+                    <th scope="col">Status</th>
+                    <th scope="col">Emails</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {RECIPIENT_STATUSES.map((st) => (
+                    <tr key={st}>
+                      <th scope="row">
+                        <Status value={st} />
+                      </th>
+                      <td>{count(c.by_status[st] ?? 0)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <p>
+              <Link href={emailsHref({ status: [], broadcast_id: b.id })}>
+                Show the recipient emails
+              </Link>
+            </p>
+          </>
+        )}
       </section>
     </>
   );

@@ -18,6 +18,10 @@ export default function Overview() {
           not be sent.
         </li>
         <li>
+          <Link href="/broadcasts">Broadcasts</Link>: newsletters to an audience
+          and how far their recipient emails got.
+        </li>
+        <li>
           <Link href="/templates">Templates</Link>: published versions, their
           source and a preview with sample values.
         </li>

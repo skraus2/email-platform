@@ -27,7 +27,9 @@ test("the broadcast list and detail show progress and lead to the recipient emai
   const progress = page
     .getByRole("region", { name: "Progress" })
     .or(page.locator("section", { has: page.locator("#progress-h") }));
-  await expect(progress).toContainText("Recipient emails created2");
+  await expect(
+    progress.locator("dt:text-is('Recipient emails created') + dd"),
+  ).toHaveText("2");
   await expect(progress).toContainText(
     "1 (1 unsubscribed, 0 suppressed, 0 not renderable)",
   );
@@ -54,7 +56,7 @@ test("the broadcast list and detail show progress and lead to the recipient emai
   // A recipient email links back to its broadcast.
   await rows(page).first().getByRole("link").first().click();
   await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
-  const back = page.getByRole("link", { name: s.broadcast.id });
+  const back = page.getByRole("link", { name: `Broadcast ${s.broadcast.id}` });
   await expect(back).toBeVisible();
   await back.click();
   await expect(page).toHaveURL(new RegExp(`/broadcasts/${s.broadcast.id}$`));
@@ -74,14 +76,22 @@ test("a cancelled planned email is filterable and shows its planned time", async
 
   await page.goto(`/emails/${s.emails.plannedId}`);
   const details = page.locator("dl.meta").first();
-  await expect(details).toContainText("Planned for");
-  await expect(details.locator("time").first()).toBeVisible();
+  const plannedFor = details.locator("dt:text-is('Planned for') + dd");
+  await expect(plannedFor.locator("time")).toBeVisible();
+  await expect(plannedFor).not.toContainText("not planned");
   await expect(details).toContainText("none (single send)");
 });
 
-test("an unknown broadcast is not found", async ({ page }) => {
-  const res = await page.goto(
-    "/broadcasts/0199f0a2-7c1e-7d3a-9b1e-2f5c8a9d0e99",
-  );
-  expect(res?.status()).toBe(404);
+test("an unknown broadcast is not found inside the console", async ({
+  page,
+}) => {
+  // The loading state streams first, so the status is 200 (as for emails).
+  await page.goto("/broadcasts/0199f0a2-7c1e-7d3a-9b1e-2f5c8a9d0e99");
+  await expect(
+    page.getByRole("heading", { name: "Broadcast not found" }),
+  ).toBeVisible();
+  await expect(page.getByRole("navigation", { name: "Main" })).toBeVisible();
+  await expect(page).toHaveTitle(/Broadcast not found/);
+  await page.getByRole("link", { name: "All broadcasts" }).click();
+  await expect(page).toHaveURL(/\/broadcasts$/);
 });

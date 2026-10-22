@@ -83,6 +83,7 @@ const NEWSLETTER = {
   variables: {
     name: { type: "string", required: true },
     unsubscribe_url: { type: "string", required: true },
+    campaign: { type: "string" },
   },
 };
 
@@ -256,8 +257,12 @@ async function seedAll() {
     name: "E2E newsletter",
   });
   await v1(apiKey, `/v1/templates/${newsletter.id}/versions`, NEWSLETTER);
+  // A shared value no page or log may show.
+  const shared = `e2e-shared-${randomBytes(6).toString("hex")}`;
+  needles(shared);
   const broadcast = await v1<{ id: string }>(apiKey, "/v1/broadcasts", {
     name: "E2E October newsletter",
+    variables: { campaign: shared },
     audience_id: audience.id,
     from: FROM,
     template_id: newsletter.id,
@@ -265,6 +270,14 @@ async function seedAll() {
     unsubscribe_url: "https://app.e2e-shop.test/unsubscribe?t={token}",
   });
   await v1(apiKey, `/v1/broadcasts/${broadcast.id}/schedule`, {});
+
+  // A planned email the worker sends once it is due (during "wait").
+  const plannedSent = await send({
+    to: TEMPLATE_RECIPIENT,
+    subject: "E2E planned and sent",
+    text: "Sent when due",
+    scheduled_at: new Date(Date.now() + 12_000).toISOString(),
+  });
 
   // A planned email, cancelled before it was due.
   const planned = await send({
@@ -290,9 +303,11 @@ async function seedAll() {
       recipients: READERS,
     },
     emails: {
-      // + 2 newsletter recipients, + 1 cancelled planned email.
-      total: n + 6,
+      // + 2 newsletter recipients, + 2 planned emails (one cancelled),
+      // + 1 follow-up recipient (created by "check").
+      total: n + 8,
       plannedId: planned.id,
+      plannedSentId: plannedSent.id,
       searchId,
       searchSubject,
       templateEmailId: templateEmail.id,
@@ -440,6 +455,144 @@ async function checkTemplateSends() {
   }
 }
 
+/** Mailpit messages (with ids) sent to an address. */
+async function mailpitTo(address: string): Promise<{ ID: string }[]> {
+  const res = await fetch(
+    `${MAILPIT}/api/v1/search?query=${encodeURIComponent(`to:"${address}"`)}`,
+    { signal: AbortSignal.timeout(5_000) },
+  );
+  if (!res.ok) {
+    throw new Error(`mailpit search: ${res.status}`);
+  }
+  return ((await res.json()) as { messages: { ID: string }[] }).messages;
+}
+
+async function mailpitHeaders(id: string): Promise<Record<string, string[]>> {
+  const res = await fetch(
+    `${MAILPIT}/api/v1/message/${encodeURIComponent(id)}/headers`,
+    { signal: AbortSignal.timeout(5_000) },
+  );
+  if (!res.ok) {
+    throw new Error(`mailpit headers: ${res.status}`);
+  }
+  return (await res.json()) as Record<string, string[]>;
+}
+
+/**
+ * Broadcasts and planned sends through the real binaries: one newsletter
+ * message per subscribed member with one-click unsubscribe headers and a
+ * personal link; an unsubscribe reported with that link's token keeps the
+ * reader out of the next broadcast; the planned email arrived after it was
+ * due, the cancelled one never.
+ */
+async function checkBroadcasts() {
+  const s = JSON.parse(readFileSync(SEED, "utf8")) as Seed;
+  const fail = (msg: string): never => {
+    throw new Error(`broadcast check: ${msg}`);
+  };
+  const listed = await v1<{
+    data: { id: string; to: string; status: string }[];
+  }>(s.apiKey, `/v1/emails?broadcast_id=${s.broadcast.id}`);
+  if (listed.data.length !== s.broadcast.recipients.length) {
+    fail(`${listed.data.length} recipient emails`);
+  }
+  const tokens = new Map<string, string>();
+  for (const e of listed.data) {
+    const msgs = await mailpitMessages(e.id);
+    if (e.status !== "captured" || msgs.length !== 1) {
+      fail(`${e.to}: status ${e.status}, ${msgs.length} messages`);
+    }
+    const found = await mailpitTo(e.to);
+    const headers = await mailpitHeaders(found[0].ID);
+    const link =
+      /^<(https:\/\/app\.e2e-shop\.test\/unsubscribe\?t=([A-Za-z0-9_-]{43}))>$/.exec(
+        headers["List-Unsubscribe"]?.[0] ?? "",
+      );
+    if (
+      !link ||
+      headers["List-Unsubscribe-Post"]?.[0] !== "List-Unsubscribe=One-Click"
+    ) {
+      fail(`${e.to}: unsubscribe headers missing or malformed`);
+    }
+    if (!msgs[0].Text.includes(link![1]) || !msgs[0].HTML.includes(link![1])) {
+      fail(`${e.to}: the body does not carry the personal unsubscribe link`);
+    }
+    tokens.set(e.to, link![2]);
+  }
+  if (new Set(tokens.values()).size !== tokens.size) {
+    fail("unsubscribe tokens are not personal");
+  }
+  if ((await mailpitTo(FORMER_READER)).length !== 0) {
+    fail("the unsubscribed reader got the newsletter");
+  }
+
+  // The app's unsubscribe page reports the first reader's token.
+  const [first, second] = s.broadcast.recipients;
+  needles(...tokens.values());
+  const un = await v1<{ status: string }>(s.apiKey, "/v1/unsubscribes", {
+    token: tokens.get(first),
+  });
+  if (un.status !== "unsubscribed") {
+    fail("unsubscribe report not taken");
+  }
+  const original = await v1<{ audience_id: string; template_id: string }>(
+    s.apiKey,
+    `/v1/broadcasts/${s.broadcast.id}`,
+  );
+  const followUp = await v1<{ id: string }>(s.apiKey, "/v1/broadcasts", {
+    name: "E2E follow-up",
+    audience_id: original.audience_id,
+    from: FROM,
+    template_id: original.template_id,
+    template_version: "published",
+    unsubscribe_url: "https://app.e2e-shop.test/unsubscribe?t={token}",
+  });
+  await v1(s.apiKey, `/v1/broadcasts/${followUp.id}/schedule`, {});
+  const deadline = Date.now() + 30_000;
+  let done: { data: { to: string; status: string }[] } = { data: [] };
+  while (Date.now() < deadline) {
+    const b = await v1<{ status: string }>(
+      s.apiKey,
+      `/v1/broadcasts/${followUp.id}`,
+    );
+    done = await v1(s.apiKey, `/v1/emails?broadcast_id=${followUp.id}`);
+    if (
+      b.status === "completed" &&
+      done.data.every((e) => e.status === "captured")
+    ) {
+      break;
+    }
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  if (
+    done.data.length !== 1 ||
+    done.data[0].to !== second ||
+    done.data[0].status !== "captured"
+  ) {
+    fail(
+      `follow-up went to ${done.data.map((e) => `${e.to}:${e.status}`).join(",")}, want only ${second}`,
+    );
+  }
+
+  const planned = await v1<{
+    status: string;
+    scheduled_at: string;
+    finished_at: string;
+  }>(s.apiKey, `/v1/emails/${s.emails.plannedSentId}`);
+  if (
+    planned.status !== "captured" ||
+    Date.parse(planned.finished_at) < Date.parse(planned.scheduled_at) ||
+    (await mailpitMessages(s.emails.plannedSentId)).length !== 1
+  ) {
+    fail(
+      `planned email: ${planned.status}, finished ${planned.finished_at} before due ${planned.scheduled_at}?`,
+    );
+  }
+  if ((await mailpitMessages(s.emails.plannedId)).length !== 0) {
+    fail("the cancelled planned email reached Mailpit");
+  }
+}
+
 const step = process.argv[2];
 if (step === "seed") {
   await seedAll();
@@ -447,6 +600,7 @@ if (step === "seed") {
   await waitFinal();
 } else if (step === "check") {
   await checkTemplateSends();
+  await checkBroadcasts();
 } else {
   throw new Error("usage: node e2e/seed.mts seed|wait|check");
 }

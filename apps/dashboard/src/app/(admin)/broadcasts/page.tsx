@@ -48,7 +48,7 @@ export default async function BroadcastsPage() {
                 <th scope="col">Name</th>
                 <th scope="col">Project</th>
                 <th scope="col">Status</th>
-                <th scope="col">Starts</th>
+                <th scope="col">Planned start</th>
                 <th scope="col">Created</th>
               </tr>
             </thead>

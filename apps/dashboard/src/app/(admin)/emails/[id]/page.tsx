@@ -5,6 +5,7 @@ import { cache } from "react";
 import { None } from "@/components/none";
 import { Status } from "@/components/status";
 import { Timestamp } from "@/components/timestamp";
+import { formatUTC } from "@/lib/format";
 import {
   AdminAPIError,
   adminFetch,
@@ -134,6 +135,7 @@ export default async function EmailPage({ params }: PageProps<"/emails/[id]">) {
               <Link
                 href={`/broadcasts/${encodeURIComponent(email.broadcast_id)}`}
                 prefetch={false}
+                aria-label={`Broadcast ${email.broadcast_id}`}
               >
                 <code>{email.broadcast_id}</code>
               </Link>
@@ -143,7 +145,15 @@ export default async function EmailPage({ params }: PageProps<"/emails/[id]">) {
           </dd>
           <dt>Planned for</dt>
           <dd>
-            {email.scheduled_at ? (
+            {email.scheduled_at && email.status === "canceled" ? (
+              // No "in 59 minutes": a cancelled email is not coming.
+              <>
+                <time dateTime={email.scheduled_at}>
+                  {formatUTC(email.scheduled_at)}
+                </time>{" "}
+                <span className="muted">(cancelled)</span>
+              </>
+            ) : email.scheduled_at ? (
               <Timestamp iso={email.scheduled_at} />
             ) : (
               <span className="muted">not planned (sent when accepted)</span>

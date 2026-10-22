@@ -25,6 +25,8 @@ export type Seed = {
     total: number;
     /** A planned email cancelled before it was due. */
     plannedId: string;
+    /** A planned email sent once it was due. */
+    plannedSentId: string;
     searchId: string;
     searchSubject: string;
     templateEmailId: string;

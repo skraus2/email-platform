@@ -120,6 +120,7 @@ var adminRoutes = []struct{ method, path string }{
 	{"GET", "/admin/v1/templates/" + uuid.NewString() + "/versions/1"},
 	{"POST", "/admin/v1/templates/" + uuid.NewString() + "/versions/1/preview"},
 	{"GET", "/admin/v1/senders"}, {"GET", "/admin/v1/webhook-endpoints"},
+	{"GET", "/admin/v1/broadcasts"}, {"GET", "/admin/v1/broadcasts/" + uuid.NewString()},
 }
 
 func TestAdminAPIIsSeparateFromTheProjectAPI(t *testing.T) {
@@ -578,9 +579,12 @@ func TestAdminBroadcasts(t *testing.T) {
 	resp, detail, raw := call(t, a.admin.URL, "GET", "/admin/v1/broadcasts/"+idA, session, "")
 	counts, _ := detail["counts"].(map[string]any)
 	byStatus, _ := counts["by_status"].(map[string]any)
-	if resp.StatusCode != 200 || byStatus["queued"] != 1.0 || len(byStatus) != 9 || strings.Contains(raw, "variables") {
+	if resp.StatusCode != 200 || byStatus["queued"] != 1.0 || len(byStatus) != 9 || counts["recipients"] != 0.0 {
 		t.Fatalf("detail: %d %s", resp.StatusCode, raw)
 	}
+	assertKeys(t, "BroadcastDetail", detail, "id", "project_id", "project_name", "name", "status", "audience_id", "from", "template_id",
+		"template_version", "unsubscribe_url", "scheduled_at", "started_at", "finished_at", "created_at", "counts")
+	assertKeys(t, "BroadcastDetail.counts", counts, "recipients", "skipped_unsubscribed", "skipped_suppressed", "skipped_invalid", "by_status")
 	for _, q := range []string{"/admin/v1/broadcasts?status=sent", "/admin/v1/broadcasts?project_id=x", "/admin/v1/emails?broadcast_id=x"} {
 		if resp, m, _ := call(t, a.admin.URL, "GET", q, session, ""); resp.StatusCode != 400 || errorCode(m) != "invalid_filter" {
 			t.Errorf("%s: %d %v", q, resp.StatusCode, m)
@@ -605,5 +609,8 @@ func TestAdminBroadcasts(t *testing.T) {
 	all := "/admin/v1/emails?status=queued&status=sending&status=captured&status=submitted&status=delivered&status=bounced&status=complained&status=failed&status=canceled"
 	if resp, _, _ := call(t, a.admin.URL, "GET", all, session, ""); resp.StatusCode != 200 {
 		t.Fatalf("every status: %d", resp.StatusCode)
+	}
+	if resp, m, _ := call(t, a.admin.URL, "GET", all+"&status=queued", session, ""); resp.StatusCode != 400 || errorCode(m) != "invalid_filter" {
+		t.Fatalf("10 statuses: %d %v", resp.StatusCode, m)
 	}
 }

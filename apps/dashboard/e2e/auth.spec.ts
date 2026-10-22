@@ -11,6 +11,8 @@ const EXPIRED = /\/login\?expired=1$/;
 test("a data page without a session redirects to the login page", async ({
   page,
 }) => {
+  await page.goto(`/broadcasts/${seed().broadcast.id}`);
+  await expect(page).toHaveURL(LOGIN);
   await page.goto("/emails?status=failed");
   await expect(page).toHaveURL(LOGIN);
   await expect(page.getByRole("heading", { name: "Sign in" })).toBeVisible();
@@ -147,6 +149,8 @@ test("sign-in sets a strict session cookie and every page carries a nonce CSP", 
     `/templates/${s.order.id}/versions/1`,
     "/projects",
     `/projects/${s.projectId}`,
+    "/broadcasts",
+    `/broadcasts/${s.broadcast.id}`,
     "/login",
   ];
   for (const path of paths) {

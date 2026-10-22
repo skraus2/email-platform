@@ -443,8 +443,11 @@ func (v *Views) Broadcast(ctx context.Context, id uuid.UUID) (Broadcast, error) 
 		counts, err = q.CountBroadcastEmails(ctx, &id)
 		return err
 	})
-	if err != nil {
+	if errors.Is(err, ErrViewBusy) {
 		return Broadcast{}, err
+	}
+	if err != nil {
+		return Broadcast{}, fmt.Errorf("count broadcast emails: %w", err)
 	}
 	for _, c := range counts {
 		b.ByStatus[c.Status] = int(c.N)

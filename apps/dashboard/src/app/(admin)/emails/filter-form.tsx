@@ -208,6 +208,8 @@ export function FilterForm({
           Only recipient emails of broadcast{" "}
           <Link
             href={`/broadcasts/${encodeURIComponent(filters.broadcast_id)}`}
+            prefetch={false}
+            aria-label={`Broadcast ${filters.broadcast_id}`}
           >
             <code>{filters.broadcast_id}</code>
           </Link>
