@@ -92,14 +92,15 @@ func run() error {
 		logger.Info("webhook endpoint registration through the API is enabled")
 	}
 	api := httpapi.New(httpapi.Deps{
-		Logger:      logger,
-		Emails:      service,
-		Webhooks:    registrar,
-		Templates:   templates.NewStore(pool, cfg.TemplateMaxPerProject, cfg.TemplateMaxVersions, int64(cfg.TemplateMaxStorageBytes), cfg.TemplateWritesPerMinute),
-		Contacts:    contacts.NewStore(pool, cfg.ContactMaxPerProject),
-		Audiences:   contacts.NewAudiences(pool, cfg.AudienceMaxPerProject, cfg.AudienceMaxContacts),
-		Broadcasts:  broadcastStore,
-		Automations: automationStore,
+		Logger:        logger,
+		Emails:        service,
+		Webhooks:      registrar,
+		Templates:     templates.NewStore(pool, cfg.TemplateMaxPerProject, cfg.TemplateMaxVersions, int64(cfg.TemplateMaxStorageBytes), cfg.TemplateWritesPerMinute),
+		Contacts:      contacts.NewStore(pool, cfg.ContactMaxPerProject),
+		Audiences:     contacts.NewAudiences(pool, cfg.AudienceMaxPerProject, cfg.AudienceMaxContacts),
+		Broadcasts:    broadcastStore,
+		Automations:   automationStore,
+		ContactEvents: automations.NewEvents(pool, enqueuer, logger, cfg.ContactEventRatePerMinute),
 		Authenticate: func(ctx context.Context, token string) (auth.Principal, error) {
 			return auth.Authenticate(ctx, queries.GetActiveKeyByPrefix, token)
 		},

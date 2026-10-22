@@ -100,6 +100,7 @@ func run() error {
 	pruner := retention.Pruner{
 		Pool: pool, Logger: logger, EventRetention: cfg.EventRetention,
 		DeliveryRetention: cfg.WebhookDeliveryRetention, EmailRetention: cfg.EmailRetention,
+		ContactEventRetention: cfg.ContactEventRetention,
 	}
 	fanout := broadcasts.NewFanout(pool, enqueuer, logger, templates.NewCache(emails.CompiledCacheBytes, emails.CompiledCacheEntryBytes))
 	worker, err := jobs.NewWorker(jobs.WorkerConfig{
@@ -112,7 +113,8 @@ func run() error {
 			AutomationArchive: automations.CancelArchivedRuns(pool),
 			Cleanup: func(ctx context.Context) error {
 				// Expiry first, so retention sees the final states.
-				return errors.Join(dispatcher.Cleanup(ctx), deliverer.Cleanup(ctx), pruner.Run(ctx))
+				return errors.Join(dispatcher.Cleanup(ctx), deliverer.Cleanup(ctx), pruner.Run(ctx),
+					automations.DeleteOldEventWindows(ctx, pool))
 			},
 		},
 		Retry:       jobs.RetryPolicy{Base: cfg.RetryBaseDelay, Max: cfg.RetryMaxDelay},

@@ -77,3 +77,56 @@ func TestAutomationLifecycleOverHTTP(t *testing.T) {
 		t.Fatalf("no send step: %d %v", code, body)
 	}
 }
+
+func TestContactEventsOverHTTP(t *testing.T) {
+	t.Parallel()
+	s := newStack(t)
+	_, token := s.project(t, "automations:write", "events:write", "templates:write", "contacts:write")
+	_, other := s.project(t, "events:write", "contacts:write")
+
+	_, body := s.do(t, "POST", "/v1/templates", token, `{"slug":"welcome"}`)
+	tmpl := body["id"].(string)
+	s.do(t, "POST", "/v1/templates/"+tmpl+"/versions", token, jsonBody(t, map[string]any{
+		"subject": "Welcome", "text": "Hi {{.order}} - {{.unsubscribe_url}}",
+		"variables": map[string]any{"unsubscribe_url": map[string]any{"type": "string", "required": true}, "order": map[string]any{"type": "string"}},
+	}))
+	code, body := s.do(t, "POST", "/v1/automations", token, jsonBody(t, map[string]any{
+		"name": "Welcome", "trigger": map[string]any{"event": "user.signed_up"},
+		"steps": []any{map[string]any{"type": "send", "from": "news@example.test", "template_id": tmpl, "template_version": 1,
+			"unsubscribe_url": "https://app.example.test/u?t={token}"}},
+	}))
+	if code != 201 {
+		t.Fatalf("automation: %d %v", code, body)
+	}
+	automation := body["id"].(string)
+	_, body = s.do(t, "POST", "/v1/contacts", token, `{"email":"ann@example.test","status":"subscribed","consent_source":"signup"}`)
+	contact := body["id"].(string)
+	_, body = s.do(t, "POST", "/v1/contacts", other, `{"email":"bob@example.test","status":"subscribed","consent_source":"signup"}`)
+	foreign := body["id"].(string)
+
+	report := `{"name":"user.signed_up","email":"Ann@example.test","data":{"order":"A-1"}}`
+	code, first := s.doWith(t, "POST", "/v1/contact-events", token, report, map[string]string{"Idempotency-Key": "signup-ann"})
+	runs, _ := first["runs"].([]any)
+	if code != 202 || first["contact_id"] != contact || len(runs) != 1 || runs[0].(map[string]any)["automation_id"] != automation {
+		t.Fatalf("report: %d %v", code, first)
+	}
+	// A retried request (lost response) starts nothing new.
+	code, again := s.doWith(t, "POST", "/v1/contact-events", token, report, map[string]string{"Idempotency-Key": "signup-ann"})
+	if code != 202 || again["id"] != first["id"] || len(again["runs"].([]any)) != 1 || again["runs"].([]any)[0].(map[string]any)["id"] != runs[0].(map[string]any)["id"] {
+		t.Fatalf("replay: %d %v", code, again)
+	}
+	if code, body := s.doWith(t, "POST", "/v1/contact-events", token, `{"name":"user.signed_up","email":"ann@example.test"}`,
+		map[string]string{"Idempotency-Key": "signup-ann"}); code != 409 || errorCode(body) != "idempotency_key_reused" {
+		t.Fatalf("reused key: %d %v", code, body)
+	}
+	// Contacts of other projects are unknown.
+	for _, body := range []string{`{"name":"e","contact_id":"` + foreign + `"}`, `{"name":"e","email":"bob@example.test"}`} {
+		if code, resp := s.do(t, "POST", "/v1/contact-events", token, body); code != 422 || errorCode(resp) != "contact_not_found" {
+			t.Fatalf("foreign contact: %d %v", code, resp)
+		}
+	}
+	// Another project's event never starts this project's automation.
+	if code, body := s.do(t, "POST", "/v1/contact-events", other, `{"name":"user.signed_up","contact_id":"`+foreign+`"}`); code != 202 || len(body["runs"].([]any)) != 0 {
+		t.Fatalf("other project: %d %v", code, body)
+	}
+}

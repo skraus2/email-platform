@@ -1,5 +1,6 @@
 // Package retention deletes data past its retention period: email events,
-// finished webhook deliveries, expired admin sessions and, only when
+// finished webhook deliveries, expired admin sessions, contact events and
+// finished runs of automations that allow re-entry and, only when
 // configured, finished emails. Nothing a pending webhook delivery or an
 // unfinished email still needs is deleted.
 package retention
@@ -24,6 +25,9 @@ const (
 	MinEventRetention    = 15 * 24 * time.Hour
 	MinDeliveryRetention = 24 * time.Hour
 	MinEmailRetention    = 30 * 24 * time.Hour
+	// MinContactEventRetention keeps idempotency keys of contact events at
+	// least as long as those of emails.
+	MinContactEventRetention = 24 * time.Hour
 )
 
 // Pruner runs the retention deletes. EmailRetention 0 keeps emails.
@@ -33,6 +37,9 @@ type Pruner struct {
 	EventRetention    time.Duration
 	DeliveryRetention time.Duration
 	EmailRetention    time.Duration
+	// ContactEventRetention also applies to finished runs of automations
+	// that allow re-entry (zero: MinContactEventRetention is not met).
+	ContactEventRetention time.Duration
 }
 
 func (p Pruner) validate() error {
@@ -41,6 +48,8 @@ func (p Pruner) validate() error {
 		return fmt.Errorf("event retention %v is below the minimum %v", p.EventRetention, MinEventRetention)
 	case p.DeliveryRetention < MinDeliveryRetention:
 		return fmt.Errorf("webhook delivery retention %v is below the minimum %v", p.DeliveryRetention, MinDeliveryRetention)
+	case p.ContactEventRetention < MinContactEventRetention:
+		return fmt.Errorf("contact event retention %v is below the minimum %v", p.ContactEventRetention, MinContactEventRetention)
 	case p.EmailRetention != 0 && p.EmailRetention < MinEmailRetention:
 		return fmt.Errorf("email retention %v is below the minimum %v", p.EmailRetention, MinEmailRetention)
 	}
@@ -97,11 +106,18 @@ func (p Pruner) Run(ctx context.Context) error {
 	sessions := prune("admin sessions", func(ctx context.Context) (int64, error) {
 		return q.DeleteExpiredAdminSessions(ctx, database.BatchSize)
 	})
+	contactEvents := prune("contact events", func(ctx context.Context) (int64, error) {
+		return q.DeleteOldContactEvents(ctx, store.DeleteOldContactEventsParams{Before: now.Add(-p.ContactEventRetention), BatchSize: database.BatchSize})
+	})
+	runs := prune("automation runs", func(ctx context.Context) (int64, error) {
+		return q.DeleteOldReentryRuns(ctx, store.DeleteOldReentryRunsParams{Before: now.Add(-p.ContactEventRetention), BatchSize: database.BatchSize})
+	})
 
-	if deliveries > 0 || events > 0 || emails > 0 || sessions > 0 {
+	if deliveries > 0 || events > 0 || emails > 0 || sessions > 0 || contactEvents > 0 || runs > 0 {
 		p.Logger.InfoContext(ctx, "retention",
 			slog.Int64("events_deleted", events), slog.Int64("deliveries_deleted", deliveries),
-			slog.Int64("emails_deleted", emails), slog.Int64("sessions_deleted", sessions))
+			slog.Int64("emails_deleted", emails), slog.Int64("sessions_deleted", sessions),
+			slog.Int64("contact_events_deleted", contactEvents), slog.Int64("automation_runs_deleted", runs))
 	}
 	return errors.Join(errs...)
 }

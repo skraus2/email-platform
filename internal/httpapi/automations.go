@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strconv"
 	"time"
 
 	"github.com/google/uuid"
@@ -225,5 +226,105 @@ func (s *Server) writeAutomationError(w http.ResponseWriter, r *http.Request, op
 		s.logger.ErrorContext(r.Context(), op+" failed",
 			slog.String("project_id", principalFrom(r.Context()).ProjectID.String()), slog.Any("error", err))
 		writeError(w, http.StatusInternalServerError, "internal_error", "internal error")
+	}
+}
+
+// ContactEventService records contact events and starts automation runs.
+type ContactEventService interface {
+	Report(ctx context.Context, projectID uuid.UUID, in automations.EventInput) (automations.Event, error)
+}
+
+type createContactEventRequest struct {
+	Name      string          `json:"name"`
+	ContactID *string         `json:"contact_id"`
+	Email     *string         `json:"email"`
+	Data      json.RawMessage `json:"data"`
+}
+
+// contactEventResponse mirrors ContactEvent in api/openapi.yaml.
+type contactEventResponse struct {
+	ID        string           `json:"id"`
+	Name      string           `json:"name"`
+	ContactID string           `json:"contact_id"`
+	CreatedAt time.Time        `json:"created_at"`
+	Runs      []startedRunJSON `json:"runs"`
+}
+
+type startedRunJSON struct {
+	ID           string `json:"id"`
+	AutomationID string `json:"automation_id"`
+}
+
+func (s *Server) handleCreateContactEvent(w http.ResponseWriter, r *http.Request) {
+	if !requireJSON(w, r) {
+		return
+	}
+	// As for emails: a present but empty, repeated or malformed key is
+	// refused rather than treated as "no key".
+	var key string
+	if vals, ok := r.Header["Idempotency-Key"]; ok {
+		if len(vals) != 1 || emails.ValidateIdempotencyKey(vals[0]) != nil {
+			writeInvalidIdempotencyKey(w)
+			return
+		}
+		key = vals[0]
+	}
+	var req createContactEventRequest
+	if status, code, msg := decodeStrict(w, r, &req); status != 0 {
+		writeError(w, status, code, msg)
+		return
+	}
+	in := automations.EventInput{Name: req.Name, Data: req.Data, IdempotencyKey: key}
+	if req.ContactID != nil {
+		id, err := uuid.Parse(*req.ContactID)
+		if err != nil || len(*req.ContactID) != 36 {
+			s.writeContactEventError(w, r, &automations.Error{Field: "contact_id", Reason: "must be a UUID"})
+			return
+		}
+		in.ContactID = id
+	}
+	if req.Email != nil {
+		if *req.Email == "" {
+			s.writeContactEventError(w, r, &automations.Error{Field: "email", Reason: "must be a single plain ASCII email address"})
+			return
+		}
+		in.Email = *req.Email
+	}
+	if string(req.Data) == "null" {
+		in.Data = nil
+	}
+	ev, err := s.contactEvents.Report(r.Context(), principalFrom(r.Context()).ProjectID, in)
+	if err != nil {
+		s.writeContactEventError(w, r, err)
+		return
+	}
+	resp := contactEventResponse{ID: ev.ID.String(), Name: ev.Name, ContactID: ev.ContactID.String(), CreatedAt: ev.CreatedAt.UTC(), Runs: make([]startedRunJSON, 0, len(ev.Runs))}
+	for _, run := range ev.Runs {
+		resp.Runs = append(resp.Runs, startedRunJSON{ID: run.ID.String(), AutomationID: run.AutomationID.String()})
+	}
+	writeJSON(w, http.StatusAccepted, resp)
+}
+
+func (s *Server) writeContactEventError(w http.ResponseWriter, r *http.Request, err error) {
+	var ae *automations.Error
+	var rl *automations.RateLimitError
+	switch {
+	case errors.As(err, &ae):
+		writeError(w, http.StatusUnprocessableEntity, "validation_failed", ae.Error())
+	case errors.Is(err, emails.ErrInvalidIdempotencyKey):
+		writeInvalidIdempotencyKey(w)
+	case errors.Is(err, automations.ErrContactNotFound):
+		writeError(w, http.StatusUnprocessableEntity, "contact_not_found", "no such contact in this project; nothing was stored")
+	case errors.Is(err, automations.ErrKeyReused):
+		writeError(w, http.StatusConflict, "idempotency_key_reused",
+			"this Idempotency-Key was already used with a different request; use a new key for a new event")
+	case errors.As(err, &rl):
+		w.Header().Set("Retry-After", strconv.Itoa(int(rl.RetryAfter/time.Second)))
+		writeError(w, http.StatusTooManyRequests, "rate_limited",
+			"the project's contact event rate limit is exhausted; retry after the time in Retry-After")
+	default:
+		// The outcome is unknown if the connection broke during commit; a
+		// retry with the same Idempotency-Key is safe.
+		s.writeAutomationError(w, r, "report contact event", err)
 	}
 }

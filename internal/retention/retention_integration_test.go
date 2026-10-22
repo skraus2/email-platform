@@ -111,7 +111,7 @@ func (f *fixture) count(sql string, args ...any) int {
 func (f *fixture) pruner(logs *bytes.Buffer, emailRetention time.Duration) Pruner {
 	return Pruner{
 		Pool: f.pool, Logger: slog.New(slog.NewJSONHandler(logs, nil)),
-		EventRetention: 90 * day, DeliveryRetention: 30 * day, EmailRetention: emailRetention,
+		EventRetention: 90 * day, DeliveryRetention: 30 * day, EmailRetention: emailRetention, ContactEventRetention: 90 * day,
 	}
 }
 
@@ -378,7 +378,8 @@ func TestPruneRefusesShortRetention(t *testing.T) {
 	for _, p := range []Pruner{
 		{Pool: f.pool, Logger: slog.New(slog.DiscardHandler), DeliveryRetention: 30 * day},
 		{Pool: f.pool, Logger: slog.New(slog.DiscardHandler), EventRetention: 90 * day},
-		{Pool: f.pool, Logger: slog.New(slog.DiscardHandler), EventRetention: 90 * day, DeliveryRetention: 30 * day, EmailRetention: day},
+		{Pool: f.pool, Logger: slog.New(slog.DiscardHandler), EventRetention: 90 * day, DeliveryRetention: 30 * day, EmailRetention: day, ContactEventRetention: 90 * day},
+		{Pool: f.pool, Logger: slog.New(slog.DiscardHandler), EventRetention: 90 * day, DeliveryRetention: 30 * day, ContactEventRetention: day - time.Second},
 	} {
 		if err := p.Run(context.Background()); err == nil {
 			t.Errorf("%+v: no error", p)

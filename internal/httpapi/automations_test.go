@@ -184,3 +184,101 @@ func TestAutomationRequests(t *testing.T) {
 		t.Errorf("get with write scope: %d", rec.Code)
 	}
 }
+
+type fakeContactEvents struct {
+	err    error
+	in     automations.EventInput
+	called bool
+	ev     automations.Event
+}
+
+func (f *fakeContactEvents) Report(_ context.Context, _ uuid.UUID, in automations.EventInput) (automations.Event, error) {
+	f.in, f.called = in, true
+	return f.ev, f.err
+}
+
+func eventCall(t *testing.T, svc ContactEventService, scopes []string, headers map[string][]string, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	s := New(Deps{
+		Logger: slog.New(slog.DiscardHandler),
+		Authenticate: func(context.Context, string) (auth.Principal, error) {
+			return auth.Principal{ProjectID: uuid.New(), Scopes: scopes}, nil
+		},
+		Emails:        &fakeEmails{},
+		ContactEvents: svc,
+	})
+	req := httptest.NewRequest("POST", "/v1/contact-events", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer ep_test_x")
+	req.Header.Set("Content-Type", "application/json")
+	for k, v := range headers {
+		req.Header[k] = v
+	}
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	return rec
+}
+
+func TestContactEventRequests(t *testing.T) {
+	events := []string{auth.ScopeEventsWrite}
+	contact, run, automation := uuid.New(), uuid.New(), uuid.New()
+	f := &fakeContactEvents{ev: automations.Event{ID: uuid.New(), Name: "user.signed_up", ContactID: contact,
+		Runs: []automations.RunRef{{ID: run, AutomationID: automation}}}}
+	rec := eventCall(t, f, events, map[string][]string{"Idempotency-Key": {"k-1"}},
+		`{"name":"user.signed_up","contact_id":"`+contact.String()+`","data":{"order":"A-1"}}`)
+	if rec.Code != 202 || f.in.ContactID != contact || f.in.IdempotencyKey != "k-1" || string(f.in.Data) != `{"order":"A-1"}` {
+		t.Fatalf("report: %d %+v", rec.Code, f.in)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil || len(got) != 5 || got["data"] != nil {
+		t.Fatalf("response: %s", rec.Body)
+	}
+	if runs := got["runs"].([]any); len(runs) != 1 || runs[0].(map[string]any)["automation_id"] != automation.String() {
+		t.Fatalf("runs: %v", got["runs"])
+	}
+	f = &fakeContactEvents{}
+	if rec := eventCall(t, f, events, nil, `{"name":"e","email":"a@example.test","data":null}`); rec.Code != 202 || f.in.Email != "a@example.test" || f.in.Data != nil {
+		t.Fatalf("by email: %d %+v", rec.Code, f.in)
+	}
+	if !strings.Contains(eventCall(t, &fakeContactEvents{}, events, nil, `{"name":"e","email":"a@example.test"}`).Body.String(), `"runs":[]`) {
+		t.Fatal("runs must be an empty array, not null")
+	}
+	for name, tc := range map[string]struct {
+		headers map[string][]string
+		body    string
+		status  int
+	}{
+		"empty key":      {map[string][]string{"Idempotency-Key": {""}}, `{"name":"e","email":"a@example.test"}`, 400},
+		"two keys":       {map[string][]string{"Idempotency-Key": {"a", "b"}}, `{"name":"e","email":"a@example.test"}`, 400},
+		"unknown field":  {nil, `{"name":"e","email":"a@example.test","x":1}`, 400},
+		"bad contact id": {nil, `{"name":"e","contact_id":"nope"}`, 422},
+		"empty email":    {nil, `{"name":"e","email":""}`, 422},
+	} {
+		f := &fakeContactEvents{}
+		if rec := eventCall(t, f, events, tc.headers, tc.body); rec.Code != tc.status || f.called {
+			t.Errorf("%s: %d %s", name, rec.Code, rec.Body)
+		}
+	}
+	for _, tc := range []struct {
+		err    error
+		status int
+		code   string
+	}{
+		{&automations.Error{Field: "name", Reason: "bad"}, 422, "validation_failed"},
+		{automations.ErrContactNotFound, 422, "contact_not_found"},
+		{automations.ErrKeyReused, 409, "idempotency_key_reused"},
+		{&automations.RateLimitError{RetryAfter: 7e9}, 429, "rate_limited"},
+		{automations.ErrBusy, 503, "service_unavailable"},
+		{errors.New("boom secret-detail"), 500, "internal_error"},
+	} {
+		rec := eventCall(t, &fakeContactEvents{err: tc.err}, events, nil, `{"name":"e","email":"a@example.test"}`)
+		if rec.Code != tc.status || !strings.Contains(rec.Body.String(), `"code":"`+tc.code+`"`) || strings.Contains(rec.Body.String(), "secret-detail") {
+			t.Errorf("%v: %d %s", tc.err, rec.Code, rec.Body)
+		}
+		if tc.status == 429 && rec.Header().Get("Retry-After") != "7" {
+			t.Errorf("Retry-After %q", rec.Header().Get("Retry-After"))
+		}
+	}
+	if rec := eventCall(t, &fakeContactEvents{}, []string{auth.ScopeAutomationsWrite}, nil, `{"name":"e","email":"a@example.test"}`); rec.Code != 403 {
+		t.Errorf("without events:write: %d", rec.Code)
+	}
+}

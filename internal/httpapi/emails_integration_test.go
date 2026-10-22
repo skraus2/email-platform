@@ -63,13 +63,14 @@ func newStackWith(t *testing.T, perMinute int, requireSender bool) *stack {
 		svc.RequireVerifiedSenders()
 	}
 	api := httpapi.New(httpapi.Deps{
-		Logger:      logger,
-		Emails:      svc,
-		Templates:   templates.NewStore(pool, 200, 500, 50<<20, 1_000_000),
-		Contacts:    contacts.NewStore(pool, 1000),
-		Audiences:   contacts.NewAudiences(pool, 100, 1000),
-		Broadcasts:  broadcasts.NewStore(pool, enq, 20),
-		Automations: automations.NewStore(pool, enq, 50),
+		Logger:        logger,
+		Emails:        svc,
+		Templates:     templates.NewStore(pool, 200, 500, 50<<20, 1_000_000),
+		Contacts:      contacts.NewStore(pool, 1000),
+		Audiences:     contacts.NewAudiences(pool, 100, 1000),
+		Broadcasts:    broadcasts.NewStore(pool, enq, 20),
+		Automations:   automations.NewStore(pool, enq, 50),
+		ContactEvents: automations.NewEvents(pool, enq, logger, 1_000_000),
 		Authenticate: func(ctx context.Context, token string) (auth.Principal, error) {
 			return auth.Authenticate(ctx, q.GetActiveKeyByPrefix, token)
 		},
@@ -99,6 +100,12 @@ func (s *stack) project(t *testing.T, scopes ...string) (uuid.UUID, string) {
 
 func (s *stack) do(t *testing.T, method, path, token, body string) (int, map[string]any) {
 	t.Helper()
+	return s.doWith(t, method, path, token, body, nil)
+}
+
+// doWith is do with extra request headers.
+func (s *stack) doWith(t *testing.T, method, path, token, body string, headers map[string]string) (int, map[string]any) {
+	t.Helper()
 	req, err := http.NewRequestWithContext(context.Background(), method, s.srv.URL+path, strings.NewReader(body))
 	if err != nil {
 		t.Fatal(err)
@@ -108,6 +115,9 @@ func (s *stack) do(t *testing.T, method, path, token, body string) (int, map[str
 	}
 	if body != "" {
 		req.Header.Set("Content-Type", "application/json")
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

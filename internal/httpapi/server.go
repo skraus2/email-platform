@@ -34,32 +34,34 @@ type Deps struct {
 	Templates    TemplateService
 	// Webhooks registers webhook endpoints; nil turns the route into
 	// 503 webhook_registration_disabled.
-	Webhooks    WebhookRegistrar
-	Contacts    ContactService
-	Audiences   AudienceService
-	Broadcasts  BroadcastService
-	Automations AutomationService
+	Webhooks      WebhookRegistrar
+	Contacts      ContactService
+	Audiences     AudienceService
+	Broadcasts    BroadcastService
+	Automations   AutomationService
+	ContactEvents ContactEventService
 }
 
 // Server holds the HTTP handler and readiness state.
 type Server struct {
-	logger       *slog.Logger
-	checks       []Check
-	authenticate Authenticator
-	emails       EmailService
-	templates    TemplateService
-	webhooks     WebhookRegistrar
-	contacts     ContactService
-	audiences    AudienceService
-	broadcasts   BroadcastService
-	automations  AutomationService
-	draining     atomic.Bool
-	handler      http.Handler
+	logger        *slog.Logger
+	checks        []Check
+	authenticate  Authenticator
+	emails        EmailService
+	templates     TemplateService
+	webhooks      WebhookRegistrar
+	contacts      ContactService
+	audiences     AudienceService
+	broadcasts    BroadcastService
+	automations   AutomationService
+	contactEvents ContactEventService
+	draining      atomic.Bool
+	handler       http.Handler
 }
 
 // New builds the API handler.
 func New(d Deps) *Server {
-	s := &Server{logger: d.Logger, checks: d.Checks, authenticate: d.Authenticate, emails: d.Emails, templates: d.Templates, webhooks: d.Webhooks, contacts: d.Contacts, audiences: d.Audiences, broadcasts: d.Broadcasts, automations: d.Automations}
+	s := &Server{logger: d.Logger, checks: d.Checks, authenticate: d.Authenticate, emails: d.Emails, templates: d.Templates, webhooks: d.Webhooks, contacts: d.Contacts, audiences: d.Audiences, broadcasts: d.Broadcasts, automations: d.Automations, contactEvents: d.ContactEvents}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
@@ -122,6 +124,8 @@ func New(d Deps) *Server {
 	mux.HandleFunc("GET /v1/automations/{id}", s.requireScope(auth.ScopeAutomationsRead, s.handleGetAutomation))
 	mux.HandleFunc("PATCH /v1/automations/{id}", s.requireScope(auth.ScopeAutomationsWrite, s.handleUpdateAutomation))
 	mux.HandleFunc("/v1/automations/{id}", methodNotAllowed(http.MethodGet+", "+http.MethodPatch))
+	mux.HandleFunc("POST /v1/contact-events", s.requireScope(auth.ScopeEventsWrite, s.handleCreateContactEvent))
+	mux.HandleFunc("/v1/contact-events", methodNotAllowed(http.MethodPost))
 	mux.HandleFunc("/", handleNotFound)
 
 	s.handler = requestLogger(s.logger, mux)
