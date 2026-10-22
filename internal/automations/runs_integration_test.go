@@ -5,6 +5,7 @@ package automations_test
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -84,5 +85,60 @@ func TestRunsGetListCancel(t *testing.T) {
 	}
 	if page, _, _ := runs.List(f.ctx, f.project, automation, automations.RunFilter{Status: automations.RunCanceled}, uuid.Nil, 10); len(page) != 1 {
 		t.Fatalf("status filter: %+v", page)
+	}
+}
+
+// A cancel waits for a step job holding the run: it cancels a run the job
+// left waiting, refuses one the job ended, and gives up (busy) when the lock
+// outlasts its lock timeout.
+func TestRunCancelWaitsForStepJob(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t, 50)
+	runs := automations.NewRuns(f.pool)
+	for name, tc := range map[string]struct {
+		change string // what the "step job" does before it commits
+		hold   time.Duration
+		want   error
+	}{
+		"job leaves the run waiting": {`UPDATE automation_runs SET step = 2, next_step_at = now() + interval '1 hour' WHERE id = $1`, 300 * time.Millisecond, nil},
+		"job ends the run": {`UPDATE automation_runs SET status = 'completed', step = 3, next_step_at = NULL, trigger_data = NULL, finished_at = now() WHERE id = $1`,
+			300 * time.Millisecond, automations.ErrRunNotCancelable},
+		"job holds the lock too long": {`SELECT $1::uuid`, 4 * time.Second, automations.ErrBusy},
+	} {
+		t.Run(name, func(t *testing.T) {
+			run, _ := f.startRun(t, "", f.sendStep(f.template, "1"), wait60, f.sendStep(f.template, "1"))
+			tx, err := f.pool.Begin(f.ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback(f.ctx) //nolint:errcheck // committed below
+			if _, err := tx.Exec(f.ctx, `SELECT id FROM automation_runs WHERE id = $1 FOR NO KEY UPDATE`, run); err != nil {
+				t.Fatal(err)
+			}
+			done := make(chan error, 1)
+			go func() {
+				_, err := runs.Cancel(f.ctx, f.project, run)
+				done <- err
+			}()
+			time.Sleep(tc.hold)
+			if _, err := tx.Exec(f.ctx, tc.change, run); err != nil {
+				t.Fatal(err)
+			}
+			if err := tx.Commit(f.ctx); err != nil {
+				t.Fatal(err)
+			}
+			err = <-done
+			switch {
+			case tc.want == nil && err != nil:
+				t.Fatalf("cancel: %v", err)
+			case tc.want != nil && !errors.Is(err, tc.want):
+				t.Fatalf("cancel: %v, want %v", err, tc.want)
+			}
+			if tc.want == nil {
+				if s := f.run(t, run); s.status != automations.RunCanceled {
+					t.Fatalf("run %+v", s)
+				}
+			}
+		})
 	}
 }

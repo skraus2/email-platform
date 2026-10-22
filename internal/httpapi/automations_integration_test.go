@@ -192,6 +192,9 @@ func TestRunsOverHTTP(t *testing.T) {
 	if code, body := s.do(t, "GET", "/v1/emails/"+email, token, ""); code != 200 || body["automation_id"] != automation || body["automation_run_id"] != run {
 		t.Fatalf("email: %d %v", code, body)
 	}
+	if code, body := s.do(t, "GET", "/v1/emails", token, ""); code != 200 || body["data"].([]any)[0].(map[string]any)["automation_run_id"] != run {
+		t.Fatalf("email list: %d %v", code, body)
+	}
 	code, body = s.do(t, "GET", "/v1/automations/"+automation+"/runs?status=active", token, "")
 	if data, _ := body["data"].([]any); code != 200 || len(data) != 1 || data[0].(map[string]any)["emails"] != nil {
 		t.Fatalf("list runs: %d %v", code, body)
