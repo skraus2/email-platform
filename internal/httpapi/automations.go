@@ -332,3 +332,144 @@ func (s *Server) writeContactEventError(w http.ResponseWriter, r *http.Request, 
 		s.writeAutomationError(w, r, "report contact event", err)
 	}
 }
+
+// AutomationRunService reads and cancels automation runs.
+type AutomationRunService interface {
+	Get(ctx context.Context, projectID, id uuid.UUID) (automations.Run, error)
+	List(ctx context.Context, projectID, automationID uuid.UUID, f automations.RunFilter, after uuid.UUID, limit int) ([]automations.Run, bool, error)
+	Cancel(ctx context.Context, projectID, id uuid.UUID) (automations.Run, error)
+}
+
+// runResponse mirrors AutomationRun / AutomationRunWithEmails in
+// api/openapi.yaml; the trigger event's data is never part of it.
+type runResponse struct {
+	ID           string     `json:"id"`
+	AutomationID string     `json:"automation_id"`
+	ContactID    string     `json:"contact_id"`
+	Status       string     `json:"status"`
+	Reason       *string    `json:"reason"`
+	Step         int        `json:"step"`
+	NextStepAt   *time.Time `json:"next_step_at"`
+	CreatedAt    time.Time  `json:"created_at"`
+	UpdatedAt    time.Time  `json:"updated_at"`
+	FinishedAt   *time.Time `json:"finished_at"`
+}
+
+// runWithEmailsResponse is a single run with the emails it created.
+type runWithEmailsResponse struct {
+	runResponse
+	Emails []runEmailResult `json:"emails"`
+}
+
+type runEmailResult struct {
+	ID     string `json:"id"`
+	Step   int    `json:"step"`
+	Status string `json:"status"`
+}
+
+func toRunResponse(r automations.Run) runResponse {
+	return runResponse{
+		ID: r.ID.String(), AutomationID: r.AutomationID.String(), ContactID: r.ContactID.String(), Status: r.Status,
+		Reason: r.Reason, Step: r.Step, NextStepAt: utcPtr(r.NextStepAt), CreatedAt: r.CreatedAt.UTC(),
+		UpdatedAt: r.UpdatedAt.UTC(), FinishedAt: utcPtr(r.FinishedAt),
+	}
+}
+
+func toRunWithEmailsResponse(r automations.Run) runWithEmailsResponse {
+	resp := runWithEmailsResponse{runResponse: toRunResponse(r), Emails: make([]runEmailResult, 0, len(r.Emails))}
+	for _, e := range r.Emails {
+		resp.Emails = append(resp.Emails, runEmailResult{ID: e.ID.String(), Step: e.Step, Status: e.Status})
+	}
+	return resp
+}
+
+type runListResponse struct {
+	Data       []runResponse `json:"data"`
+	NextCursor *string       `json:"next_cursor"`
+}
+
+func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	run, err := s.runs.Get(r.Context(), principalFrom(r.Context()).ProjectID, id)
+	if err != nil {
+		s.writeRunError(w, r, "get run", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toRunWithEmailsResponse(run))
+}
+
+var runListParams = map[string]bool{"status": true, "contact_id": true, "limit": true, "cursor": true}
+
+func (s *Server) handleListRuns(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	query, err := url.ParseQuery(r.URL.RawQuery)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_filter", "the query string is malformed")
+		return
+	}
+	limit, after, status, code, msg := parsePage(query, runListParams, defaultPage, automations.MaxPage)
+	if status != 0 {
+		writeError(w, status, code, msg)
+		return
+	}
+	var f automations.RunFilter
+	if v, ok := query["status"]; ok {
+		if len(v) != 1 || !automations.IsRunStatus(v[0]) {
+			writeError(w, http.StatusBadRequest, "invalid_filter", "status must be a run status")
+			return
+		}
+		f.Status = v[0]
+	}
+	if v, ok := query["contact_id"]; ok {
+		c, err := uuid.Parse(v[0])
+		if len(v) != 1 || err != nil || len(v[0]) != 36 {
+			writeError(w, http.StatusBadRequest, "invalid_filter", "contact_id must be a single UUID")
+			return
+		}
+		f.ContactID = c
+	}
+	page, more, err := s.runs.List(r.Context(), principalFrom(r.Context()).ProjectID, id, f, after, limit)
+	if err != nil {
+		s.writeRunError(w, r, "list runs", err)
+		return
+	}
+	resp := runListResponse{Data: make([]runResponse, 0, len(page))}
+	for _, run := range page {
+		resp.Data = append(resp.Data, toRunResponse(run))
+	}
+	if more {
+		c := encodeCursor(page[len(page)-1].ID)
+		resp.NextCursor = &c
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) handleCancelRun(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	run, err := s.runs.Cancel(r.Context(), principalFrom(r.Context()).ProjectID, id)
+	if err != nil {
+		s.writeRunError(w, r, "cancel run", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toRunResponse(run))
+}
+
+func (s *Server) writeRunError(w http.ResponseWriter, r *http.Request, op string, err error) {
+	switch {
+	case errors.Is(err, automations.ErrRunNotFound):
+		writeError(w, http.StatusNotFound, "not_found", "resource not found")
+	case errors.Is(err, automations.ErrRunNotCancelable):
+		writeError(w, http.StatusConflict, "run_not_cancelable", "the run already ended; GET it for its final state")
+	default:
+		s.writeAutomationError(w, r, op, err)
+	}
+}

@@ -284,3 +284,89 @@ func TestContactEventRequests(t *testing.T) {
 		t.Errorf("without events:write: %d", rec.Code)
 	}
 }
+
+type fakeRuns struct {
+	err    error
+	filter automations.RunFilter
+}
+
+func (f *fakeRuns) Get(context.Context, uuid.UUID, uuid.UUID) (automations.Run, error) {
+	return automations.Run{Status: "active"}, f.err
+}
+
+func (f *fakeRuns) List(_ context.Context, _, _ uuid.UUID, filter automations.RunFilter, _ uuid.UUID, _ int) ([]automations.Run, bool, error) {
+	f.filter = filter
+	return nil, false, f.err
+}
+
+func (f *fakeRuns) Cancel(context.Context, uuid.UUID, uuid.UUID) (automations.Run, error) {
+	return automations.Run{Status: "canceled"}, f.err
+}
+
+func runCall(t *testing.T, svc AutomationRunService, scopes []string, method, path string) *httptest.ResponseRecorder {
+	t.Helper()
+	s := New(Deps{
+		Logger: slog.New(slog.DiscardHandler),
+		Authenticate: func(context.Context, string) (auth.Principal, error) {
+			return auth.Principal{ProjectID: uuid.New(), Scopes: scopes}, nil
+		},
+		Emails: &fakeEmails{},
+		Runs:   svc,
+	})
+	req := httptest.NewRequest(method, path, nil)
+	req.Header.Set("Authorization", "Bearer ep_test_x")
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	return rec
+}
+
+func TestRunRequests(t *testing.T) {
+	id := uuid.NewString()
+	for _, tc := range []struct {
+		err    error
+		status int
+		code   string
+	}{
+		{automations.ErrRunNotFound, 404, "not_found"},
+		{automations.ErrNotFound, 404, "not_found"},
+		{automations.ErrRunNotCancelable, 409, "run_not_cancelable"},
+		{automations.ErrBusy, 503, "service_unavailable"},
+		{errors.New("boom secret-detail"), 500, "internal_error"},
+	} {
+		for _, call := range []struct{ method, path string }{
+			{"GET", "/v1/automation-runs/" + id}, {"POST", "/v1/automation-runs/" + id + "/cancel"}, {"GET", "/v1/automations/" + id + "/runs"},
+		} {
+			rec := runCall(t, &fakeRuns{err: tc.err}, automationScopes, call.method, call.path)
+			if rec.Code != tc.status || !strings.Contains(rec.Body.String(), `"code":"`+tc.code+`"`) || strings.Contains(rec.Body.String(), "secret-detail") {
+				t.Errorf("%v %s %s: %d %s", tc.err, call.method, call.path, rec.Code, rec.Body)
+			}
+		}
+	}
+	rec := runCall(t, &fakeRuns{}, automationScopes, "GET", "/v1/automation-runs/"+id)
+	if !strings.Contains(rec.Body.String(), `"emails":[]`) {
+		t.Fatalf("single run without emails array: %s", rec.Body)
+	}
+	if rec := runCall(t, &fakeRuns{}, automationScopes, "POST", "/v1/automation-runs/"+id+"/cancel"); strings.Contains(rec.Body.String(), "emails") {
+		t.Fatalf("cancel response has emails: %s", rec.Body)
+	}
+	contact := uuid.New()
+	f := &fakeRuns{}
+	if rec := runCall(t, f, automationScopes, "GET", "/v1/automations/"+id+"/runs?status=exited&contact_id="+contact.String()); rec.Code != 200 ||
+		f.filter.Status != "exited" || f.filter.ContactID != contact {
+		t.Fatalf("filters: %d %+v", rec.Code, f.filter)
+	}
+	for _, q := range []string{"?status=done", "?status=active&status=exited", "?contact_id=" + contact.String() + "&contact_id=" + contact.String(), "?contact_id=nope", "?limit=0"} {
+		if rec := runCall(t, &fakeRuns{}, automationScopes, "GET", "/v1/automations/"+id+"/runs"+q); rec.Code != 400 {
+			t.Errorf("%s: %d", q, rec.Code)
+		}
+	}
+	if rec := runCall(t, &fakeRuns{}, []string{auth.ScopeAutomationsRead}, "POST", "/v1/automation-runs/"+id+"/cancel"); rec.Code != 403 {
+		t.Errorf("cancel with read scope: %d", rec.Code)
+	}
+	if rec := runCall(t, &fakeRuns{}, []string{auth.ScopeAutomationsWrite}, "GET", "/v1/automation-runs/"+id); rec.Code != 403 {
+		t.Errorf("get with write scope: %d", rec.Code)
+	}
+	if rec := runCall(t, &fakeRuns{}, automationScopes, "GET", "/v1/automation-runs/nope"); rec.Code != 404 {
+		t.Errorf("malformed id: %d", rec.Code)
+	}
+}

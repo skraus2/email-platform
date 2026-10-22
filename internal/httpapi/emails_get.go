@@ -29,6 +29,8 @@ type emailResponse struct {
 	TemplateVersion *int       `json:"template_version"`
 	ScheduledAt     *time.Time `json:"scheduled_at"`
 	BroadcastID     *string    `json:"broadcast_id"`
+	AutomationID    *string    `json:"automation_id"`
+	AutomationRunID *string    `json:"automation_run_id"`
 }
 
 func (s *Server) handleGetEmail(w http.ResponseWriter, r *http.Request) {
@@ -71,6 +73,14 @@ func toEmailResponse(e emails.Email) emailResponse {
 	if e.BroadcastID != nil {
 		id := e.BroadcastID.String()
 		resp.BroadcastID = &id
+	}
+	if e.AutomationID != nil {
+		id := e.AutomationID.String()
+		resp.AutomationID = &id
+	}
+	if e.AutomationRunID != nil {
+		id := e.AutomationRunID.String()
+		resp.AutomationRunID = &id
 	}
 	if e.ScheduledAt != nil {
 		at := e.ScheduledAt.UTC()

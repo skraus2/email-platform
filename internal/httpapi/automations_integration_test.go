@@ -3,7 +3,17 @@
 package httpapi_test
 
 import (
+	"context"
+	"fmt"
+	"log/slog"
+	"strings"
 	"testing"
+
+	"github.com/google/uuid"
+
+	"github.com/skraus2/email-platform/internal/automations"
+	"github.com/skraus2/email-platform/internal/jobs"
+	"github.com/skraus2/email-platform/internal/templates"
 )
 
 func TestAutomationLifecycleOverHTTP(t *testing.T) {
@@ -128,5 +138,85 @@ func TestContactEventsOverHTTP(t *testing.T) {
 	// Another project's event never starts this project's automation.
 	if code, body := s.do(t, "POST", "/v1/contact-events", other, `{"name":"user.signed_up","contact_id":"`+foreign+`"}`); code != 202 || len(body["runs"].([]any)) != 0 {
 		t.Fatalf("other project: %d %v", code, body)
+	}
+}
+
+func TestRunsOverHTTP(t *testing.T) {
+	t.Parallel()
+	s := newStack(t)
+	_, token := s.project(t, "automations:read", "automations:write", "events:write", "templates:write", "contacts:write", "emails:read")
+	_, other := s.project(t, "automations:read", "automations:write")
+
+	_, body := s.do(t, "POST", "/v1/templates", token, `{"slug":"welcome"}`)
+	tmpl := body["id"].(string)
+	s.do(t, "POST", "/v1/templates/"+tmpl+"/versions", token, jsonBody(t, map[string]any{
+		"subject": "Welcome", "text": "Hi - {{.unsubscribe_url}}",
+		"variables": map[string]any{"unsubscribe_url": map[string]any{"type": "string", "required": true}},
+	}))
+	send := map[string]any{"type": "send", "from": "news@example.test", "template_id": tmpl, "template_version": 1,
+		"unsubscribe_url": "https://app.example.test/u?t={token}"}
+	_, body = s.do(t, "POST", "/v1/automations", token, jsonBody(t, map[string]any{
+		"name": "Welcome", "trigger": map[string]any{"event": "user.signed_up"},
+		"steps": []any{send, map[string]any{"type": "wait", "seconds": 3600}, send},
+	}))
+	automation := body["id"].(string)
+	_, body = s.do(t, "POST", "/v1/contacts", token, `{"email":"ann@example.test","status":"subscribed","consent_source":"signup"}`)
+	contact := body["id"].(string)
+	_, body = s.do(t, "POST", "/v1/contact-events", token, `{"name":"user.signed_up","contact_id":"`+contact+`","data":{"secret":"x"}}`)
+	run := body["runs"].([]any)[0].(map[string]any)["id"].(string)
+
+	// Run the first step as the worker would.
+	enq, err := jobs.NewEnqueuer(s.pool, slog.New(slog.DiscardHandler), 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := automations.NewEngine(s.pool, enq, slog.New(slog.DiscardHandler), templates.NewCache(1<<20, 1<<20))
+	project := uuid.Nil
+	if err := s.pool.QueryRow(context.Background(), `SELECT project_id FROM automation_runs WHERE id = $1`, run).Scan(&project); err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.Step(context.Background(), jobs.AutomationStepArgs{RunID: uuid.MustParse(run), ProjectID: project, Step: 0}, jobs.Attempt{Number: 1, MaxAttempts: 25}); err != nil {
+		t.Fatal(err)
+	}
+
+	code, body := s.do(t, "GET", "/v1/automation-runs/"+run, token, "")
+	emailsOfRun, _ := body["emails"].([]any)
+	if code != 200 || body["status"] != "active" || body["step"] != 2.0 || body["next_step_at"] == nil || body["reason"] != nil ||
+		body["contact_id"] != contact || body["automation_id"] != automation || len(emailsOfRun) != 1 || len(body) != 11 {
+		t.Fatalf("get run: %d %v", code, body)
+	}
+	if strings.Contains(fmt.Sprint(body), "secret") {
+		t.Fatalf("run shows trigger data: %v", body)
+	}
+	email := emailsOfRun[0].(map[string]any)["id"].(string)
+	if code, body := s.do(t, "GET", "/v1/emails/"+email, token, ""); code != 200 || body["automation_id"] != automation || body["automation_run_id"] != run {
+		t.Fatalf("email: %d %v", code, body)
+	}
+	code, body = s.do(t, "GET", "/v1/automations/"+automation+"/runs?status=active", token, "")
+	if data, _ := body["data"].([]any); code != 200 || len(data) != 1 || data[0].(map[string]any)["emails"] != nil {
+		t.Fatalf("list runs: %d %v", code, body)
+	}
+	for _, q := range []string{"?status=done", "?contact_id=x", "?x=1"} {
+		if code, _ := s.do(t, "GET", "/v1/automations/"+automation+"/runs"+q, token, ""); code != 400 {
+			t.Fatalf("%s: %d", q, code)
+		}
+	}
+	// Other projects see nothing.
+	for _, call := range []struct{ method, path string }{
+		{"GET", "/v1/automation-runs/" + run}, {"POST", "/v1/automation-runs/" + run + "/cancel"}, {"GET", "/v1/automations/" + automation + "/runs"},
+	} {
+		if code, _ := s.do(t, call.method, call.path, other, ""); code != 404 {
+			t.Fatalf("foreign %s %s: %d", call.method, call.path, code)
+		}
+	}
+	code, body = s.do(t, "POST", "/v1/automation-runs/"+run+"/cancel", token, "")
+	if code != 200 || body["status"] != "canceled" || body["reason"] != "canceled" || body["next_step_at"] != nil {
+		t.Fatalf("cancel: %d %v", code, body)
+	}
+	if code, body := s.do(t, "POST", "/v1/automation-runs/"+run+"/cancel", token, ""); code != 409 || errorCode(body) != "run_not_cancelable" {
+		t.Fatalf("second cancel: %d %v", code, body)
+	}
+	if code, body := s.do(t, "GET", "/v1/automations/"+automation, token, ""); code != 200 || body["run_counts"].(map[string]any)["canceled"] != 1.0 {
+		t.Fatalf("run counts: %d %v", code, body)
 	}
 }

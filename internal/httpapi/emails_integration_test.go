@@ -71,6 +71,7 @@ func newStackWith(t *testing.T, perMinute int, requireSender bool) *stack {
 		Broadcasts:    broadcasts.NewStore(pool, enq, 20),
 		Automations:   automations.NewStore(pool, enq, 50),
 		ContactEvents: automations.NewEvents(pool, enq, logger, 1_000_000),
+		Runs:          automations.NewRuns(pool),
 		Authenticate: func(ctx context.Context, token string) (auth.Principal, error) {
 			return auth.Authenticate(ctx, q.GetActiveKeyByPrefix, token)
 		},

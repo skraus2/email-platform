@@ -51,6 +51,10 @@ type Email struct {
 	ScheduledAt *time.Time
 	// BroadcastID names the broadcast of a recipient email (nil otherwise).
 	BroadcastID *uuid.UUID
+	// AutomationID and AutomationRunID name the automation and run that
+	// sent the email (nil otherwise; the run is nil once deleted).
+	AutomationID    *uuid.UUID
+	AutomationRunID *uuid.UUID
 	// Replayed is set by Create when the request repeated an earlier one
 	// with the same idempotency key: the email is that earlier one.
 	Replayed bool
@@ -61,6 +65,7 @@ func fromRow(r store.Email) Email {
 		ID: r.ID, ProjectID: r.ProjectID, Status: r.Status, From: r.Sender, To: r.Recipient,
 		Subject: r.Subject, CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt, FinishedAt: r.FinishedAt,
 		Attempts: int(r.Attempts), ErrorCode: r.ErrorCode, TemplateID: r.TemplateID, ScheduledAt: r.ScheduledAt, BroadcastID: r.BroadcastID,
+		AutomationID: r.AutomationID, AutomationRunID: r.AutomationRunID,
 	}
 	if r.TemplateVersion != nil {
 		v := int(*r.TemplateVersion)

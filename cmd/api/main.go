@@ -101,6 +101,7 @@ func run() error {
 		Broadcasts:    broadcastStore,
 		Automations:   automationStore,
 		ContactEvents: automations.NewEvents(pool, enqueuer, logger, cfg.ContactEventRatePerMinute),
+		Runs:          automations.NewRuns(pool),
 		Authenticate: func(ctx context.Context, token string) (auth.Principal, error) {
 			return auth.Authenticate(ctx, queries.GetActiveKeyByPrefix, token)
 		},
