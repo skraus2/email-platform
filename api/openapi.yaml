@@ -1238,7 +1238,9 @@ paths:
         returns the original response, with a different payload
         `409 idempotency_key_reused`. Keys are remembered as long as the
         event is retained (90 days by default). At most 1200 events per
-        project and minute by default (`429 rate_limited`, `Retry-After`).
+        project and minute by default (`429 rate_limited`, `Retry-After`);
+        reports refused as `contact_not_found` count too. Request bodies are
+        limited to 64 KiB.
       parameters:
         - name: Idempotency-Key
           in: header
