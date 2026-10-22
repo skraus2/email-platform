@@ -146,12 +146,12 @@ export default async function EmailPage({ params }: PageProps<"/emails/[id]">) {
           <dt>Planned for</dt>
           <dd>
             {email.scheduled_at && email.status === "canceled" ? (
-              // No "in 59 minutes": a cancelled email is not coming.
+              // No "in 59 minutes": a canceled email is not coming.
               <>
                 <time dateTime={email.scheduled_at}>
                   {formatUTC(email.scheduled_at)}
                 </time>{" "}
-                <span className="muted">(cancelled)</span>
+                <span className="muted">(canceled)</span>
               </>
             ) : email.scheduled_at ? (
               <Timestamp iso={email.scheduled_at} />

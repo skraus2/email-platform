@@ -150,6 +150,11 @@ export default async function BroadcastPage({
           <p className="empty">
             No recipient emails yet; they are created when the broadcast starts.
           </p>
+        ) : c.recipients === 0 && b.status === "canceled" ? (
+          <p className="empty">
+            No recipient emails; the broadcast was canceled before it created
+            any.
+          </p>
         ) : (
           <>
             <div
