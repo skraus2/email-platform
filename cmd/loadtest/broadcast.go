@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -153,7 +154,6 @@ func runBroadcast(args []string) error {
 		return err
 	}
 	getLatency := time.Since(getStart)
-	s := sampler.stop()
 
 	report, err := broadcastReport(ctx, pool, broadcast)
 	if err != nil {
@@ -164,22 +164,29 @@ func runBroadcast(args []string) error {
 		return err
 	}
 
+	txStatuses, txFailed, err := statusCounts(ctx, pool, ids)
+	if err != nil {
+		return err
+	}
+
 	var cancelLine string
 	if *cancelSize > 0 {
 		if cancelLine, err = measureCancel(ctx, pool, api, createBroadcast, *cancelSize); err != nil {
 			return err
 		}
 	}
+	s := sampler.stop() // lock waits and memory cover the cancel phase too
 
 	fmt.Printf("parameters      contacts=%d tx-rate=%.1f/s (seeded in %v)\n", *contacts, *txRate, seeded.Round(time.Millisecond))
 	fmt.Printf("fan-out         %v (%d recipient emails, %.0f/s)\n", report.fanout.Round(time.Millisecond), report.recipients,
 		float64(report.recipients)/report.fanout.Seconds())
-	fmt.Printf("broadcast drain first→last hand-off %v, %.1f emails/s; end to end %v\n",
+	fmt.Printf("broadcast drain first→last hand-off %v; %.1f emails/s counted from the start; end to end %v\n",
 		report.dispatchSpan.Round(time.Millisecond), report.rate, endToEnd.Round(time.Millisecond))
-	fmt.Printf("broadcast final %s; snoozes=%d\n", report.statuses, report.snoozes)
+	fmt.Printf("broadcast final %s; snoozes=%s\n", report.statuses, report.snoozes)
+	fmt.Printf("transactional   %d accepted (%s), %d API errors\n", len(ids), txStatuses, txErrs)
 	if len(txLat) > 0 {
-		fmt.Printf("transactional   %d sent, %d API errors; accept→hand-off p50=%v p95=%v p99=%v max=%v\n",
-			len(txLat), txErrs, pct(txLat, 50), pct(txLat, 95), pct(txLat, 99), pct(txLat, 100))
+		fmt.Printf("                accept→hand-off of the sent ones p50=%v p95=%v p99=%v max=%v\n",
+			pct(txLat, 50), pct(txLat, 95), pct(txLat, 99), pct(txLat, 100))
 	}
 	fmt.Printf("GET broadcast   %v with counts over %d emails\n", getLatency.Round(time.Millisecond), report.recipients)
 	fmt.Printf("db lock waits   max %d sessions waiting on locks at once (%d samples)\n", s.maxLockWaits, s.samples)
@@ -188,10 +195,14 @@ func runBroadcast(args []string) error {
 		fmt.Printf("cancel          %s\n", cancelLine)
 	}
 	p95 := pct(txLat, 95)
-	ok := report.rate >= targetRate && p95 < targetP95 && txErrs == 0 && report.failed == 0
-	fmt.Printf("verdict         target ≥ %.0f/s and transactional p95 < %v: %s\n", targetRate, targetP95, map[bool]string{true: "MET", false: "MISSED"}[ok])
-	if txErrs > 0 || report.failed > 0 {
-		return fmt.Errorf("%d API errors, %d failed broadcast emails", txErrs, report.failed)
+	complete := report.recipients == *contacts
+	ok := report.rate >= targetRate && len(txLat) > 0 && p95 < targetP95 && complete &&
+		txErrs == 0 && txFailed == 0 && report.failed == 0
+	fmt.Printf("verdict         target ≥ %.0f/s, transactional p95 < %v, every member reached, no errors: %s\n",
+		targetRate, targetP95, map[bool]string{true: "MET", false: "MISSED"}[ok])
+	if txErrs > 0 || txFailed > 0 || report.failed > 0 || !complete {
+		return fmt.Errorf("%d API errors, %d failed transactional and %d failed broadcast emails, %d of %d members reached",
+			txErrs, txFailed, report.failed, report.recipients, *contacts)
 	}
 	return nil
 }
@@ -267,7 +278,7 @@ func seedAudience(ctx context.Context, pool *pgxpool.Pool, audience string, n in
 		INSERT INTO contacts (project_id, email, status, consent_source, attributes, unsubscribe_token)
 		SELECT $1, 'reader-' || i || '-' || $3 || '@example.test', 'subscribed', 'load',
 		       jsonb_build_object('name', 'Reader ' || i),
-		       translate(rtrim(encode(sha256(convert_to($3 || ':' || i, 'UTF8')), 'base64'), '='), '+/', '-_')
+		       translate(rtrim(encode(sha256(convert_to(gen_random_uuid()::text || gen_random_uuid()::text, 'UTF8')), 'base64'), '='), '+/', '-_')
 		FROM generate_series(1, $2) AS i`, project, n, audience); err != nil {
 		return fmt.Errorf("seed contacts: %w", err)
 	}
@@ -304,7 +315,7 @@ type broadcastResult struct {
 	recipients, failed   int
 	rate                 float64
 	statuses             string
-	snoozes              int64
+	snoozes              string
 }
 
 func broadcastReport(ctx context.Context, pool *pgxpool.Pool, id string) (broadcastResult, error) {
@@ -338,16 +349,43 @@ func broadcastReport(ctx context.Context, pool *pgxpool.Pool, id string) (broadc
 	}
 	rows.Close()
 	r.statuses = strings.Join(parts, " ")
-	_ = pool.QueryRow(ctx, `SELECT coalesce(sum((j.metadata->>'snoozes')::int), 0) FROM river_job j
-		JOIN emails e ON e.id::text = j.args->>'email_id' WHERE j.kind = 'send_email' AND e.broadcast_id = $1`, id).Scan(&r.snoozes)
+	r.snoozes = "unknown"
+	var n int64
+	if err := pool.QueryRow(ctx, `SELECT coalesce(sum((j.metadata->>'snoozes')::int), 0) FROM river_job j
+		JOIN emails e ON e.id::text = j.args->>'email_id' WHERE j.kind = 'send_email' AND e.broadcast_id = $1`, id).Scan(&n); err == nil {
+		r.snoozes = strconv.FormatInt(n, 10)
+	}
 	return r, nil
 }
 
+// statusCounts returns the final statuses of the emails and how many failed.
+func statusCounts(ctx context.Context, pool *pgxpool.Pool, ids []string) (string, int, error) {
+	rows, err := pool.Query(ctx, "SELECT status, count(*) FROM emails WHERE id = ANY($1::uuid[]) GROUP BY status ORDER BY status", ids)
+	if err != nil {
+		return "", 0, fmt.Errorf("final states: %w", err)
+	}
+	defer rows.Close()
+	var parts []string
+	failed := 0
+	for rows.Next() {
+		var st string
+		var n int
+		if err := rows.Scan(&st, &n); err != nil {
+			return "", 0, err
+		}
+		parts = append(parts, fmt.Sprintf("%s=%d", st, n))
+		if st == "failed" {
+			failed = n
+		}
+	}
+	return strings.Join(parts, " "), failed, rows.Err()
+}
+
 // handoffLatencies returns accept→hand-off times of the transactional
-// emails, sorted.
+// emails that were sent, sorted.
 func handoffLatencies(ctx context.Context, pool *pgxpool.Pool, ids []string) ([]time.Duration, error) {
 	rows, err := pool.Query(ctx, `SELECT extract(epoch FROM finished_at - created_at) FROM emails
-		WHERE id = ANY($1::uuid[]) AND finished_at IS NOT NULL`, ids)
+		WHERE id = ANY($1::uuid[]) AND status IN ('captured', 'submitted', 'delivered')`, ids)
 	if err != nil {
 		return nil, err
 	}
@@ -409,10 +447,13 @@ func measureCancel(ctx context.Context, pool *pgxpool.Pool, api *apiClient, crea
 			return "", err
 		}
 		if open == 0 {
-			var events int
-			_ = pool.QueryRow(ctx, `SELECT count(*) FROM email_events ev JOIN emails e ON e.id = ev.email_id
-				WHERE e.broadcast_id = $1 AND ev.type = 'canceled'`, id).Scan(&events)
-			return fmt.Sprintf("broadcast of %d cancelled after fan-out: API call %v, queued emails ended in %v (%d canceled with %d events, %d already sent)",
+			events := "unknown"
+			var n int
+			if err := pool.QueryRow(ctx, `SELECT count(*) FROM email_events ev JOIN emails e ON e.id = ev.email_id
+				WHERE e.broadcast_id = $1 AND ev.type = 'canceled'`, id).Scan(&n); err == nil {
+				events = strconv.Itoa(n)
+			}
+			return fmt.Sprintf("broadcast of %d cancelled after fan-out: API call %v, queued emails ended in %v (%d canceled with %s events, %d already sent)",
 				size, cancelCall.Round(time.Millisecond), time.Since(start).Round(time.Millisecond), canceled, events, sent), nil
 		}
 		if time.Since(start) > 10*time.Minute {

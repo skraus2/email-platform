@@ -56,7 +56,7 @@ if grep -q '"level":"ERROR"' "$TMP/api.log" "$TMP/worker.log"; then
 fi
 # Needles from a file: the key must not appear in grep's command line.
 # Recipients appear masked (domain kept); the needles are full local parts.
-printf '%s\n' "$LOADTEST_API_KEY" "reader-1-" "tx-1@" "Reader 1" "unsubscribe?t=" "email_platform:email_platform@" >"$TMP/needles"
+printf '%s\n' "$LOADTEST_API_KEY" "reader-1-" "tx-1@" "Reader 1" "example.test/u?t=" "email_platform:email_platform@" >"$TMP/needles"
 if grep -qiFf "$TMP/needles" "$TMP/api.log" "$TMP/worker.log"; then
   echo "LOAD FAIL: logs contain a secret, address, attribute or unsubscribe link" >&2; exit 1
 fi

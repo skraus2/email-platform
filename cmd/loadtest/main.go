@@ -70,21 +70,9 @@ func run() error {
 		return errors.New("LOADTEST_API_KEY is required")
 	}
 	ctx := context.Background()
-	cfg, err := pgxpool.ParseConfig(os.Getenv("DATABASE_URL"))
+	pool, err := localPool(ctx)
 	if err != nil {
-		return errors.New("DATABASE_URL is not a valid PostgreSQL URL")
-	}
-	if !loopbackHost(cfg.ConnConfig.Host) {
-		return errors.New("DATABASE_URL must point at a local database")
-	}
-	for _, fb := range cfg.ConnConfig.Fallbacks {
-		if !loopbackHost(fb.Host) {
-			return errors.New("DATABASE_URL must point at a local database (all hosts)")
-		}
-	}
-	pool, err := pgxpool.NewWithConfig(ctx, cfg)
-	if err != nil {
-		return errors.New("cannot connect to DATABASE_URL")
+		return err
 	}
 	defer pool.Close()
 
