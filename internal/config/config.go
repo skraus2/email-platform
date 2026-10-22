@@ -89,6 +89,16 @@ type Config struct {
 	// BroadcastCreatesPerHour caps a project's broadcast creates per hour.
 	BroadcastCreatesPerHour int
 
+	// AutomationMaxPerProject caps a project's automations that are not
+	// archived; ContactEventRatePerMinute caps reported contact events per
+	// project and minute; ContactEventRetention is how long contact events
+	// (and finished runs of automations allowing re-entry) are kept;
+	// AutomationConcurrency sizes the worker's automation queue.
+	AutomationMaxPerProject   int
+	ContactEventRatePerMinute int
+	ContactEventRetention     time.Duration
+	AutomationConcurrency     int
+
 	// Admin sessions end after AdminSessionIdle without use or
 	// AdminSessionMax after login.
 	AdminSessionIdle time.Duration
@@ -286,6 +296,10 @@ func Load(lookup LookupFunc) (Config, error) {
 	cfg.BroadcastMaxOpen, errs = intInRange(get, "BROADCAST_MAX_OPEN", "20", 1, 1000, errs)
 	cfg.BroadcastCreatesPerHour, errs = intInRange(get, "BROADCAST_CREATES_PER_HOUR", "100", 1, 100_000, errs)
 	cfg.ScheduleMaxOpen, errs = intInRange(get, "SCHEDULE_MAX_OPEN", "10000", 1, 1_000_000, errs)
+	cfg.AutomationMaxPerProject, errs = intInRange(get, "AUTOMATION_MAX_PER_PROJECT", "50", 1, 1000, errs)
+	cfg.ContactEventRatePerMinute, errs = intInRange(get, "CONTACT_EVENT_RATE_PER_MINUTE", "1200", 1, 1_000_000, errs)
+	cfg.ContactEventRetention, errs = minDuration(get, "CONTACT_EVENT_RETENTION", "2160h", 24*time.Hour, "", errs)
+	cfg.AutomationConcurrency, errs = intInRange(get, "AUTOMATION_CONCURRENCY", "4", 1, 100, errs)
 	cfg.ScheduleMaxAhead, errs = positiveDuration(get, "SCHEDULE_MAX_AHEAD", "720h", errs)
 	if cfg.ScheduleMaxAhead > 720*time.Hour || (cfg.ScheduleMaxAhead > 0 && cfg.ScheduleMaxAhead < time.Minute) {
 		errs = append(errs, errors.New("SCHEDULE_MAX_AHEAD must be between 1m and 720h"))

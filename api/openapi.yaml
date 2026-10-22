@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Email Platform API
-  version: 0.5.0
+  version: 0.6.0
   description: |
     Internal email sending API. Every request is authenticated with a
     project API key and only ever sees data of that project.
@@ -30,9 +30,15 @@ info:
     unsubscribe link to the app's own page. The app reports unsubscribes
     with `POST /v1/unsubscribes`.
 
+    Automations react to events the app reports for a contact
+    (`POST /v1/contact-events`): each run waits, checks conditions and
+    sends template emails to the contact (consent-gated like broadcasts),
+    step by step, with its state visible through `/v1/automation-runs`.
+
     Key scopes: `emails:send`, `emails:read`, `templates:read`,
     `templates:write`, `webhooks:write`, `contacts:read`,
-    `contacts:write`, `broadcasts:read`, `broadcasts:write`. A key only has
+    `contacts:write`, `broadcasts:read`, `broadcasts:write`,
+    `automations:read`, `automations:write`, `events:write`. A key only has
     the scopes it was created with.
 servers:
   - url: http://127.0.0.1:8080
@@ -962,6 +968,316 @@ paths:
           $ref: "#/components/responses/InternalError"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
+  /v1/automations:
+    post:
+      operationId: createAutomation
+      summary: Create an automation
+      description: |
+        Requires scope `automations:write`. An automation starts a run for a
+        contact each time the app reports its trigger event for that contact
+        (`POST /v1/contact-events`) and executes its steps in order:
+
+        - `wait`: pause `seconds` (60 to 2592000, i.e. 30 days);
+        - `condition`: continue only if the contact's attribute matches
+          (`eq`, `neq`, `exists`, `not_exists`) or an event of that name was
+          (`occurred`) or was not (`not_occurred`) reported for the contact
+          after the run started; otherwise the run ends `exited`;
+        - `send`: one email from a template version to the contact — only to
+          `subscribed` contacts whose address is not suppressed, with an
+          unsubscribe link and List-Unsubscribe headers, validated exactly
+          like a broadcast (`template_missing_unsubscribe`,
+          `template_not_found`, `sender_not_verified`). Variables: the
+          step's `variables`, overlaid by the contact's attributes, then by
+          the trigger event's `data`, plus `unsubscribe_url`.
+
+        Steps cannot be changed later (create a new automation and archive
+        the old one). A contact has at most one active run per automation;
+        with `allow_reentry: false` (default) at most one run ever. A project
+        has at most 50 automations that are not archived by default
+        (`422 automation_limit_reached`). A retried create makes a second
+        automation.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateAutomationRequest"
+      responses:
+        "201":
+          description: The automation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Automation"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+    get:
+      operationId: listAutomations
+      summary: List automations of the authenticated project, newest first
+      description: Requires scope `automations:read`. Without run counts (see `GET /v1/automations/{id}`).
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema:
+            $ref: "#/components/schemas/AutomationStatus"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: One page of automations.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AutomationList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /v1/automations/{id}:
+    get:
+      operationId: getAutomation
+      summary: Get an automation with its run counts
+      description: Requires scope `automations:read`.
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      responses:
+        "200":
+          description: The automation with run counts.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AutomationWithCounts"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+    patch:
+      operationId: updateAutomation
+      summary: Rename an automation or change its status
+      description: |
+        Requires scope `automations:write`. Only `name` and `status` can
+        change. `active` ↔ `paused`: a paused automation starts no new runs;
+        runs in flight continue. `archived` is final: every active run is
+        cancelled (reason `automation_archived`) — in the background, within
+        seconds; no further step of them runs meanwhile — and queued emails of
+        those runs become `canceled` instead of being sent. Any change to an
+        archived automation gives `409 automation_archived`.
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateAutomationRequest"
+      responses:
+        "200":
+          description: The automation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Automation"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /v1/automations/{id}/runs:
+    get:
+      operationId: listAutomationRuns
+      summary: List runs of an automation, newest first
+      description: Requires scope `automations:read`. Without emails (see `GET /v1/automation-runs/{id}`).
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+        - name: status
+          in: query
+          required: false
+          schema:
+            $ref: "#/components/schemas/AutomationRunStatus"
+        - name: contact_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: One page of runs.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AutomationRunList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /v1/automation-runs/{id}:
+    get:
+      operationId: getAutomationRun
+      summary: Get a run with the emails it created
+      description: Requires scope `automations:read`. The trigger event's `data` is never returned.
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      responses:
+        "200":
+          description: The run.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AutomationRunWithEmails"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /v1/automation-runs/{id}/cancel:
+    post:
+      operationId: cancelAutomationRun
+      summary: Cancel an active run
+      description: |
+        Requires scope `automations:write`. An `active` run becomes
+        `canceled` (reason `canceled`): no further step runs, and its queued
+        emails become `canceled` instead of being sent (an email already
+        handed to the provider is not recalled). Any other status gives
+        `409 run_not_cancelable`. No request body.
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      responses:
+        "200":
+          description: The cancelled run.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AutomationRun"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /v1/contact-events:
+    post:
+      operationId: createContactEvent
+      summary: Report an event of a contact (starts automation runs)
+      description: |
+        Requires scope `events:write`. Reports that something happened for an
+        existing contact of the project (by `contact_id` or `email`; unknown
+        contacts give `422 contact_not_found`, contacts are never created).
+        Every `active` automation whose trigger is `name` starts a run for
+        the contact (subject to its re-entry rule); the response lists the
+        started runs. The event is stored (name, contact, time) for
+        `occurred`/`not_occurred` conditions; `data` is kept only on the
+        started runs, for rendering their emails, and never returned.
+
+        Send an `Idempotency-Key` so a retry after a lost response or a
+        timeout starts nothing new: the same key with the same payload
+        returns the original response, with a different payload
+        `409 idempotency_key_reused`. Keys are remembered as long as the
+        event is retained (90 days by default). At most 1200 events per
+        project and minute by default (`429 rate_limited`, `Retry-After`).
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: false
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 255
+            pattern: "^[\\x21-\\x7E]+$"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateContactEventRequest"
+      responses:
+        "202":
+          description: The event and the runs it started.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContactEvent"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
   /v1/templates:
     post:
       operationId: createTemplate
@@ -1243,7 +1559,7 @@ components:
     projectKey:
       type: http
       scheme: bearer
-      description: "Project API key, format `ep_<prefix>_<secret>`. Shown once at creation. Scopes: `emails:send`, `emails:read`, `templates:read`, `templates:write`, `webhooks:write`, `contacts:read`, `contacts:write`, `broadcasts:read`, `broadcasts:write`."
+      description: "Project API key, format `ep_<prefix>_<secret>`. Shown once at creation. Scopes: `emails:send`, `emails:read`, `templates:read`, `templates:write`, `webhooks:write`, `contacts:read`, `contacts:write`, `broadcasts:read`, `broadcasts:write`, `automations:read`, `automations:write`, `events:write`."
   schemas:
     CreateEmailRequest:
       type: object
@@ -1356,7 +1672,10 @@ components:
         and for broadcast emails `unsubscribed` (the contact unsubscribed
         before the send), `contact_deleted`, `broadcast_canceled` (the
         broadcast was cancelled after an attempt with unknown outcome),
-        `render_failed` (the contact's attributes no longer render).
+        `render_failed` (the contact's attributes no longer render); for
+        automation emails `unsubscribed`, `contact_deleted` and
+        `automation_canceled` (the run was cancelled after an attempt with
+        unknown outcome).
 
         `provider_timeout` and `provider_protocol_error` mean the outcome of
         that attempt is unknown: a `failed` email with one of these codes may
@@ -1384,6 +1703,7 @@ components:
         - contact_deleted
         - broadcast_canceled
         - render_failed
+        - automation_canceled
         - internal_error
     Email:
       type: object
@@ -1403,6 +1723,8 @@ components:
           template_version,
           scheduled_at,
           broadcast_id,
+          automation_id,
+          automation_run_id,
         ]
       properties:
         id:
@@ -1455,6 +1777,14 @@ components:
           type: [string, "null"]
           format: uuid
           description: The broadcast this email belongs to; `null` otherwise.
+        automation_id:
+          type: [string, "null"]
+          format: uuid
+          description: The automation whose run sent this email; `null` otherwise.
+        automation_run_id:
+          type: [string, "null"]
+          format: uuid
+          description: The run that sent this email; `null` otherwise (also once the run was deleted with its contact or by retention).
     EmailList:
       type: object
       required: [data, next_cursor]
@@ -2059,6 +2389,344 @@ components:
             $ref: "#/components/schemas/Broadcast"
         next_cursor:
           type: [string, "null"]
+    AutomationStatus:
+      type: string
+      description: "`active`: starts runs. `paused`: starts no new runs; runs in flight continue. `archived`: final; all runs cancelled."
+      enum: [active, paused, archived]
+    EventName:
+      type: string
+      pattern: "^[a-z0-9][a-z0-9_.:-]{0,99}$"
+      description: Event name, e.g. `user.signed_up`.
+    AutomationStep:
+      description: One step; `type` selects the shape.
+      oneOf:
+        - $ref: "#/components/schemas/WaitStep"
+        - $ref: "#/components/schemas/AttributeConditionStep"
+        - $ref: "#/components/schemas/EventConditionStep"
+        - $ref: "#/components/schemas/SendStep"
+    WaitStep:
+      type: object
+      additionalProperties: false
+      required: [type, seconds]
+      properties:
+        type:
+          const: wait
+        seconds:
+          type: integer
+          minimum: 60
+          maximum: 2592000
+    AttributeConditionStep:
+      type: object
+      additionalProperties: false
+      required: [type, attribute, op]
+      description: |
+        Compares the contact's current attribute. `eq`/`neq` need `value` of
+        the same JSON type (`"1"` is not `1`; numbers compare numerically); a
+        missing attribute fails `eq` and passes `neq`. `exists`/`not_exists`
+        take no `value`.
+      properties:
+        type:
+          const: condition
+        attribute:
+          type: string
+          pattern: "^[a-z][a-z0-9_]{0,39}$"
+        op:
+          type: string
+          enum: [eq, neq, exists, not_exists]
+        value:
+          type: [string, number, boolean]
+    EventConditionStep:
+      type: object
+      additionalProperties: false
+      required: [type, event, op]
+      description: Checks whether an event of that name was reported for the contact after the run started (the trigger event itself does not count).
+      properties:
+        type:
+          const: condition
+        event:
+          $ref: "#/components/schemas/EventName"
+        op:
+          type: string
+          enum: [occurred, not_occurred]
+    SendStep:
+      type: object
+      additionalProperties: false
+      required: [type, from, template_id, template_version, unsubscribe_url]
+      properties:
+        type:
+          const: send
+        from:
+          type: string
+          format: email
+          maxLength: 254
+        template_id:
+          type: string
+          format: uuid
+        template_version:
+          description: In requests a positive integer or `"published"` (resolved at create); in responses always the number.
+          oneOf:
+            - type: integer
+              minimum: 1
+            - type: string
+              const: published
+        variables:
+          type: object
+          description: Shared values for declared variables (at most 16 KiB); contact attributes and event data override them.
+          additionalProperties:
+            type: [string, number, boolean]
+        unsubscribe_url:
+          type: string
+          maxLength: 900
+          description: "Absolute `https` URL of the app's unsubscribe page containing `{token}` exactly once."
+    CreateAutomationRequest:
+      type: object
+      additionalProperties: false
+      required: [name, trigger, steps]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        trigger:
+          $ref: "#/components/schemas/AutomationTrigger"
+        allow_reentry:
+          type: boolean
+          default: false
+        status:
+          type: string
+          enum: [active, paused]
+          default: active
+        steps:
+          type: array
+          minItems: 1
+          maxItems: 20
+          description: At least one `send` step; at most 64 KiB as stored.
+          items:
+            $ref: "#/components/schemas/AutomationStep"
+    AutomationTrigger:
+      type: object
+      additionalProperties: false
+      required: [event]
+      properties:
+        event:
+          $ref: "#/components/schemas/EventName"
+    UpdateAutomationRequest:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        status:
+          $ref: "#/components/schemas/AutomationStatus"
+    Automation:
+      type: object
+      required:
+        [
+          id,
+          name,
+          status,
+          trigger,
+          allow_reentry,
+          steps,
+          created_at,
+          updated_at,
+        ]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        status:
+          $ref: "#/components/schemas/AutomationStatus"
+        trigger:
+          $ref: "#/components/schemas/AutomationTrigger"
+        allow_reentry:
+          type: boolean
+        steps:
+          type: array
+          items:
+            $ref: "#/components/schemas/AutomationStep"
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    AutomationWithCounts:
+      allOf:
+        - $ref: "#/components/schemas/Automation"
+        - type: object
+          required: [run_counts]
+          properties:
+            run_counts:
+              type: object
+              required: [active, completed, exited, canceled, failed]
+              properties:
+                active: { type: integer, minimum: 0 }
+                completed: { type: integer, minimum: 0 }
+                exited: { type: integer, minimum: 0 }
+                canceled: { type: integer, minimum: 0 }
+                failed: { type: integer, minimum: 0 }
+    AutomationList:
+      type: object
+      required: [data, next_cursor]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Automation"
+        next_cursor:
+          type: [string, "null"]
+    AutomationRunStatus:
+      type: string
+      description: |
+        `active` (waiting for its next step) → `completed` (all steps done),
+        `exited` (a condition did not hold, the contact unsubscribed, the
+        address is suppressed or the project was disabled), `canceled` (by
+        `POST /v1/automation-runs/{id}/cancel` or by archiving the
+        automation) or `failed` (the email could not be rendered, or an
+        internal error persisted). All but `active` are final.
+      enum: [active, completed, exited, canceled, failed]
+    AutomationRunReason:
+      type: [string, "null"]
+      description: Why a run ended; `null` for `active` and `completed`.
+      enum:
+        [
+          condition_not_met,
+          unsubscribed,
+          suppressed,
+          project_disabled,
+          canceled,
+          automation_archived,
+          render_failed,
+          internal_error,
+          null,
+        ]
+    AutomationRun:
+      type: object
+      required:
+        [
+          id,
+          automation_id,
+          contact_id,
+          status,
+          reason,
+          step,
+          next_step_at,
+          created_at,
+          updated_at,
+          finished_at,
+        ]
+      properties:
+        id:
+          type: string
+          format: uuid
+        automation_id:
+          type: string
+          format: uuid
+        contact_id:
+          type: string
+          format: uuid
+        status:
+          $ref: "#/components/schemas/AutomationRunStatus"
+        reason:
+          $ref: "#/components/schemas/AutomationRunReason"
+        step:
+          type: integer
+          minimum: 0
+          description: Index of the next step to run (equals the number of steps once completed).
+        next_step_at:
+          type: [string, "null"]
+          format: date-time
+          description: When the next step is due; `null` once the run ended.
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        finished_at:
+          type: [string, "null"]
+          format: date-time
+    AutomationRunWithEmails:
+      allOf:
+        - $ref: "#/components/schemas/AutomationRun"
+        - type: object
+          required: [emails]
+          properties:
+            emails:
+              type: array
+              items:
+                type: object
+                required: [id, step, status]
+                properties:
+                  id:
+                    type: string
+                    format: uuid
+                  step:
+                    type: integer
+                    minimum: 0
+                  status:
+                    $ref: "#/components/schemas/EmailStatus"
+    AutomationRunList:
+      type: object
+      required: [data, next_cursor]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/AutomationRun"
+        next_cursor:
+          type: [string, "null"]
+    CreateContactEventRequest:
+      type: object
+      additionalProperties: false
+      required: [name]
+      description: Exactly one of `contact_id` and `email`.
+      properties:
+        name:
+          $ref: "#/components/schemas/EventName"
+        contact_id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+          maxLength: 254
+        data:
+          $ref: "#/components/schemas/ContactAttributes"
+    ContactEvent:
+      type: object
+      required: [id, name, contact_id, created_at, runs]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          $ref: "#/components/schemas/EventName"
+        contact_id:
+          type: string
+          format: uuid
+        created_at:
+          type: string
+          format: date-time
+        runs:
+          type: array
+          description: Runs this event started (empty when no active automation has this trigger or re-entry rules prevented it).
+          items:
+            type: object
+            required: [id, automation_id]
+            properties:
+              id:
+                type: string
+                format: uuid
+              automation_id:
+                type: string
+                format: uuid
     Error:
       type: object
       required: [error]
@@ -2132,7 +2800,7 @@ components:
           schema:
             $ref: "#/components/schemas/Error"
     Conflict:
-      description: "`idempotency_key_reused` (the key was already used with a different payload), `slug_taken` (the project already has a template with this slug), `contact_exists`, `audience_exists`, `email_not_cancelable`, `broadcast_not_draft` or `broadcast_not_cancelable`."
+      description: "`idempotency_key_reused` (the key was already used with a different payload), `slug_taken` (the project already has a template with this slug), `contact_exists`, `audience_exists`, `email_not_cancelable`, `broadcast_not_draft`, `broadcast_not_cancelable`, `automation_archived` or `run_not_cancelable`."
       content:
         application/json:
           schema:
@@ -2169,7 +2837,7 @@ components:
           schema:
             $ref: "#/components/schemas/Error"
     UnprocessableEntity:
-      description: "`validation_failed` (message names the field), `recipient_suppressed` (the recipient is on the project's suppression list), `sender_not_verified` (`from` is not a verified sender address or domain of the project), `template_not_found`, `variables_invalid`, `render_failed`, `template_invalid`, `template_limit_reached`, `version_limit_reached`, `template_storage_limit_reached`, `invalid_url`, `endpoint_limit_reached`, `contact_limit_reached`, `audience_limit_reached`, `audience_full`, `audience_not_found`, `broadcast_limit_reached`, `template_missing_unsubscribe` or `schedule_limit_reached`. Messages name fields or variables, never their values."
+      description: "`validation_failed` (message names the field), `recipient_suppressed` (the recipient is on the project's suppression list), `sender_not_verified` (`from` is not a verified sender address or domain of the project), `template_not_found`, `variables_invalid`, `render_failed`, `template_invalid`, `template_limit_reached`, `version_limit_reached`, `template_storage_limit_reached`, `invalid_url`, `endpoint_limit_reached`, `contact_limit_reached`, `audience_limit_reached`, `audience_full`, `audience_not_found`, `broadcast_limit_reached`, `template_missing_unsubscribe`, `schedule_limit_reached`, `automation_limit_reached` or `contact_not_found`. Messages name fields or variables, never their values."
       content:
         application/json:
           schema:

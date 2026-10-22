@@ -200,9 +200,9 @@ func validateName(name string) error {
 	return nil
 }
 
-// sharedVariables checks the shared values against the version's schema and
+// SharedVariables checks the shared values against the version's schema and
 // returns them as compact JSON.
-func sharedVariables(schema templates.Schema, raw json.RawMessage) ([]byte, error) {
+func SharedVariables(schema templates.Schema, raw json.RawMessage) ([]byte, error) {
 	if len(bytes.TrimSpace(raw)) == 0 {
 		return []byte(`{}`), nil
 	}
@@ -226,11 +226,11 @@ func sharedVariables(schema templates.Schema, raw json.RawMessage) ([]byte, erro
 	return b.Bytes(), nil
 }
 
-// checkVersion requires the version to declare unsubscribe_url as a string
+// CheckVersion requires the version to declare unsubscribe_url as a string
 // long enough for the URL with a token, to print it outside conditions in
 // its text part, and (if it has one) to use it as an <a>/<area> href outside
 // conditions in its HTML part.
-func checkVersion(v templates.Version, urlTemplate string) error {
+func CheckVersion(v templates.Version, urlTemplate string) error {
 	c, err := v.Compile()
 	if err != nil {
 		return fmt.Errorf("compile template version: %w", err)
@@ -283,14 +283,14 @@ func (s *Store) Create(ctx context.Context, projectID uuid.UUID, in CreateInput)
 	if err != nil {
 		return Broadcast{}, fmt.Errorf("resolve template: %w", err)
 	}
-	if err := checkVersion(v, in.UnsubscribeURL); err != nil {
+	if err := CheckVersion(v, in.UnsubscribeURL); err != nil {
 		return Broadcast{}, err
 	}
 	schema, err := templates.ParseSchema(v.Schema)
 	if err != nil {
 		return Broadcast{}, fmt.Errorf("stored schema: %w", err)
 	}
-	vars, err := sharedVariables(schema, in.Variables)
+	vars, err := SharedVariables(schema, in.Variables)
 	if err != nil {
 		return Broadcast{}, err
 	}

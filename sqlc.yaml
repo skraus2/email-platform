@@ -31,6 +31,8 @@ sql:
       - db/migrations/00028_audiences.sql
       - db/migrations/00029_scheduled_sends.sql
       - db/migrations/00030_broadcasts.sql
+      - db/migrations/00034_automations.sql
+      - db/migrations/00035_automation_runs.sql
     queries: db/queries
     gen:
       go:

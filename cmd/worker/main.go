@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/skraus2/email-platform/internal/automations"
 	"github.com/skraus2/email-platform/internal/broadcasts"
 	"github.com/skraus2/email-platform/internal/config"
 	"github.com/skraus2/email-platform/internal/database"
@@ -105,9 +106,10 @@ func run() error {
 		Pool:   pool,
 		Logger: logger,
 		Handlers: jobs.Handlers{
-			SendEmail:       dispatcher.SendEmail,
-			DeliverWebhook:  deliverer.Deliver,
-			BroadcastFanout: fanout.Run,
+			SendEmail:         dispatcher.SendEmail,
+			DeliverWebhook:    deliverer.Deliver,
+			BroadcastFanout:   fanout.Run,
+			AutomationArchive: automations.CancelArchivedRuns(pool),
 			Cleanup: func(ctx context.Context) error {
 				// Expiry first, so retention sees the final states.
 				return errors.Join(dispatcher.Cleanup(ctx), deliverer.Cleanup(ctx), pruner.Run(ctx))
@@ -117,10 +119,11 @@ func run() error {
 		Concurrency: workerConcurrency,
 		// A job may run for one provider call plus a few DB round trips; a job
 		// still "running" well past that belongs to a dead worker.
-		JobTimeout:           jobs.AttemptBudget(cfg.ProviderTimeout),
-		RescueStuckJobsAfter: cfg.JobRescueAfter,
-		WebhookConcurrency:   cfg.WebhookConcurrency,
-		WebhookTimeout:       cfg.WebhookTimeout,
+		JobTimeout:            jobs.AttemptBudget(cfg.ProviderTimeout),
+		RescueStuckJobsAfter:  cfg.JobRescueAfter,
+		WebhookConcurrency:    cfg.WebhookConcurrency,
+		WebhookTimeout:        cfg.WebhookTimeout,
+		AutomationConcurrency: cfg.AutomationConcurrency,
 	})
 	if err != nil {
 		return err

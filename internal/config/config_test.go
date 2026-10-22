@@ -116,6 +116,10 @@ func TestLoadRejectsInvalid(t *testing.T) {
 		{"schedule cap zero", map[string]string{"DATABASE_URL": devURL, "SCHEDULE_MAX_OPEN": "0"}, "SCHEDULE_MAX_OPEN"},
 		{"broadcast rate zero", map[string]string{"DATABASE_URL": devURL, "BROADCAST_CREATES_PER_HOUR": "0"}, "BROADCAST_CREATES_PER_HOUR"},
 		{"broadcast cap zero", map[string]string{"DATABASE_URL": devURL, "BROADCAST_MAX_OPEN": "0"}, "BROADCAST_MAX_OPEN"},
+		{"automation cap zero", map[string]string{"DATABASE_URL": devURL, "AUTOMATION_MAX_PER_PROJECT": "0"}, "AUTOMATION_MAX_PER_PROJECT"},
+		{"event rate zero", map[string]string{"DATABASE_URL": devURL, "CONTACT_EVENT_RATE_PER_MINUTE": "0"}, "CONTACT_EVENT_RATE_PER_MINUTE"},
+		{"event retention short", map[string]string{"DATABASE_URL": devURL, "CONTACT_EVENT_RETENTION": "23h"}, "CONTACT_EVENT_RETENTION"},
+		{"automation concurrency zero", map[string]string{"DATABASE_URL": devURL, "AUTOMATION_CONCURRENCY": "0"}, "AUTOMATION_CONCURRENCY"},
 		{"schedule too far", map[string]string{"DATABASE_URL": devURL, "SCHEDULE_MAX_AHEAD": "721h"}, "SCHEDULE_MAX_AHEAD"},
 		{"schedule too short", map[string]string{"DATABASE_URL": devURL, "SCHEDULE_MAX_AHEAD": "30s"}, "SCHEDULE_MAX_AHEAD"},
 		{"audience cap zero", map[string]string{"DATABASE_URL": devURL, "AUDIENCE_MAX_PER_PROJECT": "0"}, "AUDIENCE_MAX_PER_PROJECT"},
@@ -215,6 +219,9 @@ func TestLoadRetryDefaults(t *testing.T) {
 	}
 	if cfg.ScheduleMaxAhead != 720*time.Hour || cfg.BroadcastMaxOpen != 20 || cfg.ScheduleMaxOpen != 10_000 || cfg.BroadcastCreatesPerHour != 100 {
 		t.Errorf("schedule/broadcast limits = %v %d %d %d", cfg.ScheduleMaxAhead, cfg.BroadcastMaxOpen, cfg.ScheduleMaxOpen, cfg.BroadcastCreatesPerHour)
+	}
+	if cfg.AutomationMaxPerProject != 50 || cfg.ContactEventRatePerMinute != 1200 || cfg.ContactEventRetention != 2160*time.Hour || cfg.AutomationConcurrency != 4 {
+		t.Errorf("automation limits = %d %d %v %d", cfg.AutomationMaxPerProject, cfg.ContactEventRatePerMinute, cfg.ContactEventRetention, cfg.AutomationConcurrency)
 	}
 	if cfg.ContactMaxPerProject != 250_000 || cfg.AudienceMaxPerProject != 100 || cfg.AudienceMaxContacts != 100_000 {
 		t.Errorf("contact caps = %d %d %d", cfg.ContactMaxPerProject, cfg.AudienceMaxPerProject, cfg.AudienceMaxContacts)

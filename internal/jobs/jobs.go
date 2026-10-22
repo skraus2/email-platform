@@ -47,6 +47,33 @@ type BroadcastFanoutArgs struct {
 // Kind implements river.JobArgs.
 func (BroadcastFanoutArgs) Kind() string { return "broadcast_fanout" }
 
+// AutomationStepArgs identifies the step of an automation run that is due.
+// The step index makes a repeated or stale job a no-op.
+type AutomationStepArgs struct {
+	RunID     uuid.UUID `json:"run_id"`
+	ProjectID uuid.UUID `json:"project_id"`
+	Step      int       `json:"step"`
+}
+
+// Kind implements river.JobArgs.
+func (AutomationStepArgs) Kind() string { return "automation_step" }
+
+// AutomationArchiveArgs identifies an archived automation whose active runs
+// are to be cancelled.
+type AutomationArchiveArgs struct {
+	AutomationID uuid.UUID `json:"automation_id"`
+	ProjectID    uuid.UUID `json:"project_id"`
+}
+
+// Kind implements river.JobArgs.
+func (AutomationArchiveArgs) Kind() string { return "automation_archive" }
+
+// QueueAutomations runs automation steps apart from email dispatch.
+const QueueAutomations = "automations"
+
+// automationJobAttempts bounds internal failures of one automation job.
+const automationJobAttempts = 25
+
 // QueueBroadcasts runs broadcast fan-out apart from email dispatch.
 const QueueBroadcasts = "broadcasts"
 
@@ -111,6 +138,11 @@ type Handlers struct {
 	// BroadcastFanout creates the recipient emails of one broadcast batch
 	// (nil: the process runs no broadcast queue).
 	BroadcastFanout func(ctx context.Context, args BroadcastFanoutArgs, a Attempt) error
+	// AutomationStep runs the due step of an automation run and
+	// AutomationArchive cancels runs of an archived automation (both nil:
+	// the process runs no automation queue; a worker process sets both).
+	AutomationStep    func(ctx context.Context, args AutomationStepArgs, a Attempt) error
+	AutomationArchive func(ctx context.Context, args AutomationArchiveArgs, a Attempt) error
 }
 
 // Enqueuer inserts jobs. The API process uses it insert-only.
@@ -191,6 +223,31 @@ func (e *Enqueuer) EnqueueBroadcastFanout(ctx context.Context, tx pgx.Tx, args B
 	return nil
 }
 
+// EnqueueAutomationStep inserts the job of a run's step in tx, to run not
+// before at (zero: now). A job with the same args that is not yet finished
+// (or finished but not yet cleaned up) makes this a no-op, so re-enqueueing a
+// step that still has its job is harmless.
+func (e *Enqueuer) EnqueueAutomationStep(ctx context.Context, tx pgx.Tx, args AutomationStepArgs, at time.Time) error {
+	if _, err := e.client.InsertTx(ctx, tx, args, &river.InsertOpts{
+		Queue: QueueAutomations, MaxAttempts: automationJobAttempts, ScheduledAt: at,
+		UniqueOpts: river.UniqueOpts{ByArgs: true},
+	}); err != nil {
+		return fmt.Errorf("enqueue automation_step: %w", err)
+	}
+	return nil
+}
+
+// EnqueueAutomationArchive inserts the job that cancels the active runs of
+// an archived automation, in tx.
+func (e *Enqueuer) EnqueueAutomationArchive(ctx context.Context, tx pgx.Tx, args AutomationArchiveArgs) error {
+	if _, err := e.client.InsertTx(ctx, tx, args, &river.InsertOpts{
+		Queue: QueueAutomations, MaxAttempts: automationJobAttempts,
+	}); err != nil {
+		return fmt.Errorf("enqueue automation_archive: %w", err)
+	}
+	return nil
+}
+
 // EnqueueWebhooks inserts delivery jobs in tx, in the webhook queue.
 func (e *Enqueuer) EnqueueWebhooks(ctx context.Context, tx pgx.Tx, args []DeliverWebhookArgs) error {
 	if len(args) == 0 {
@@ -218,7 +275,9 @@ type WorkerConfig struct {
 	// delivery job may run WebhookTimeout plus a database margin.
 	WebhookConcurrency int
 	WebhookTimeout     time.Duration
-	CleanupInterval    time.Duration
+	// AutomationConcurrency sizes the automation queue.
+	AutomationConcurrency int
+	CleanupInterval       time.Duration
 	// RescueStuckJobsAfter: a job still "running" this long after its attempt
 	// started (e.g. the worker crashed) is made available again. Zero = River
 	// default.
@@ -247,6 +306,15 @@ func NewWorker(cfg WorkerConfig) (*Worker, error) {
 		// One fan-out at a time per process: batches are database-heavy and
 		// each broadcast is processed in order anyway.
 		queues[QueueBroadcasts] = river.QueueConfig{MaxWorkers: 1}
+	}
+	if cfg.Handlers.AutomationStep != nil {
+		river.AddWorker(workers, &automationWorker[AutomationStepArgs]{fn: cfg.Handlers.AutomationStep, retry: cfg.Retry})
+	}
+	if cfg.Handlers.AutomationArchive != nil {
+		river.AddWorker(workers, &automationWorker[AutomationArchiveArgs]{fn: cfg.Handlers.AutomationArchive, retry: cfg.Retry})
+	}
+	if cfg.Handlers.AutomationStep != nil || cfg.Handlers.AutomationArchive != nil {
+		queues[QueueAutomations] = river.QueueConfig{MaxWorkers: max(cfg.AutomationConcurrency, 1)}
 	}
 	if cfg.Handlers.DeliverWebhook != nil {
 		river.AddWorker(workers, &deliverWebhookWorker{
@@ -352,6 +420,33 @@ func (w *broadcastFanoutWorker) NextRetry(job *river.Job[BroadcastFanoutArgs]) t
 }
 
 func (w *broadcastFanoutWorker) Work(ctx context.Context, job *river.Job[BroadcastFanoutArgs]) error {
+	err := w.fn(ctx, job.Args, Attempt{JobID: job.ID, Number: job.Attempt, MaxAttempts: job.MaxAttempts})
+	var snooze *snoozeError
+	if errors.As(err, &snooze) {
+		return river.JobSnooze(snoozeFor(snooze.d))
+	}
+	return err
+}
+
+type automationWorker[T river.JobArgs] struct {
+	river.WorkerDefaults[T]
+	fn    func(context.Context, T, Attempt) error
+	retry RetryPolicy
+}
+
+// automationTimeout bounds one automation job run (a few steps, or one
+// batch of cancellations).
+const automationTimeout = time.Minute
+
+// Timeout gives automation jobs their own budget.
+func (w *automationWorker[T]) Timeout(*river.Job[T]) time.Duration { return automationTimeout }
+
+// NextRetry spaces retries after internal errors (continuation snoozes).
+func (w *automationWorker[T]) NextRetry(job *river.Job[T]) time.Time {
+	return time.Now().Add(w.retry.Delay(len(job.Errors)+1, rand.Float64))
+}
+
+func (w *automationWorker[T]) Work(ctx context.Context, job *river.Job[T]) error {
 	err := w.fn(ctx, job.Args, Attempt{JobID: job.ID, Number: job.Attempt, MaxAttempts: job.MaxAttempts})
 	var snooze *snoozeError
 	if errors.As(err, &snooze) {

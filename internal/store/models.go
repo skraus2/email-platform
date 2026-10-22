@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 type AdminSession struct {
@@ -54,6 +55,35 @@ type AudienceMember struct {
 	CreatedAt  time.Time
 }
 
+type Automation struct {
+	ID           uuid.UUID
+	ProjectID    uuid.UUID
+	Name         string
+	Status       string
+	TriggerEvent string
+	AllowReentry bool
+	Steps        []byte
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+	ArchivedAt   *time.Time
+}
+
+type AutomationRun struct {
+	ID             uuid.UUID
+	ProjectID      uuid.UUID
+	AutomationID   uuid.UUID
+	ContactID      uuid.UUID
+	TriggerEventID *uuid.UUID
+	Status         string
+	Reason         *string
+	Step           int16
+	NextStepAt     *time.Time
+	TriggerData    []byte
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+	FinishedAt     *time.Time
+}
+
 type Broadcast struct {
 	ID                  uuid.UUID
 	ProjectID           uuid.UUID
@@ -90,6 +120,22 @@ type Contact struct {
 	UpdatedAt        time.Time
 }
 
+type ContactEvent struct {
+	ID             uuid.UUID
+	ProjectID      uuid.UUID
+	ContactID      uuid.UUID
+	Name           string
+	IdempotencyKey *string
+	Fingerprint    []byte
+	CreatedAt      time.Time
+}
+
+type ContactEventWindow struct {
+	ProjectID   uuid.UUID
+	WindowStart time.Time
+	Count       int32
+}
+
 type Email struct {
 	ID              uuid.UUID
 	ProjectID       uuid.UUID
@@ -110,14 +156,18 @@ type Email struct {
 	ScheduledAt     *time.Time
 	BroadcastID     *uuid.UUID
 	ContactID       *uuid.UUID
+	AutomationID    *uuid.UUID
+	AutomationRunID *uuid.UUID
+	AutomationStep  pgtype.Int2
 }
 
 type EmailContent struct {
-	EmailID   uuid.UUID
-	ProjectID uuid.UUID
-	TextBody  *string
-	HtmlBody  *string
-	CreatedAt time.Time
+	EmailID            uuid.UUID
+	ProjectID          uuid.UUID
+	TextBody           *string
+	HtmlBody           *string
+	CreatedAt          time.Time
+	ListUnsubscribeUrl *string
 }
 
 type EmailEvent struct {

@@ -15,7 +15,7 @@ import (
 const cancelEmail = `-- name: CancelEmail :one
 UPDATE emails SET status = 'canceled', error_code = NULL, last_error = NULL, finished_at = now(), updated_at = now()
 WHERE id = $1 AND project_id = $2 AND status = 'queued'
-RETURNING id, project_id, sender, recipient, subject, status, provider, provider_id, attempts, last_error, created_at, updated_at, finished_at, error_code, template_id, template_version, scheduled_at, broadcast_id, contact_id
+RETURNING id, project_id, sender, recipient, subject, status, provider, provider_id, attempts, last_error, created_at, updated_at, finished_at, error_code, template_id, template_version, scheduled_at, broadcast_id, contact_id, automation_id, automation_run_id, automation_step
 `
 
 type CancelEmailParams struct {
@@ -48,6 +48,9 @@ func (q *Queries) CancelEmail(ctx context.Context, arg CancelEmailParams) (Email
 		&i.ScheduledAt,
 		&i.BroadcastID,
 		&i.ContactID,
+		&i.AutomationID,
+		&i.AutomationRunID,
+		&i.AutomationStep,
 	)
 	return i, err
 }
@@ -163,7 +166,7 @@ func (q *Queries) ExpireOpenEmails(ctx context.Context, cutoff time.Time) ([]Exp
 }
 
 const getEmail = `-- name: GetEmail :one
-SELECT id, project_id, sender, recipient, subject, status, provider, provider_id, attempts, last_error, created_at, updated_at, finished_at, error_code, template_id, template_version, scheduled_at, broadcast_id, contact_id FROM emails WHERE id = $1 AND project_id = $2
+SELECT id, project_id, sender, recipient, subject, status, provider, provider_id, attempts, last_error, created_at, updated_at, finished_at, error_code, template_id, template_version, scheduled_at, broadcast_id, contact_id, automation_id, automation_run_id, automation_step FROM emails WHERE id = $1 AND project_id = $2
 `
 
 type GetEmailParams struct {
@@ -194,6 +197,9 @@ func (q *Queries) GetEmail(ctx context.Context, arg GetEmailParams) (Email, erro
 		&i.ScheduledAt,
 		&i.BroadcastID,
 		&i.ContactID,
+		&i.AutomationID,
+		&i.AutomationRunID,
+		&i.AutomationStep,
 	)
 	return i, err
 }
@@ -309,7 +315,7 @@ func (q *Queries) HandoffLeavesWindowIn(ctx context.Context, arg HandoffLeavesWi
 const insertEmail = `-- name: InsertEmail :one
 INSERT INTO emails (project_id, sender, recipient, subject, template_id, template_version, scheduled_at)
 VALUES ($1, $2, $3, $4, $5, $6, $7)
-RETURNING id, project_id, sender, recipient, subject, status, provider, provider_id, attempts, last_error, created_at, updated_at, finished_at, error_code, template_id, template_version, scheduled_at, broadcast_id, contact_id
+RETURNING id, project_id, sender, recipient, subject, status, provider, provider_id, attempts, last_error, created_at, updated_at, finished_at, error_code, template_id, template_version, scheduled_at, broadcast_id, contact_id, automation_id, automation_run_id, automation_step
 `
 
 type InsertEmailParams struct {
@@ -353,6 +359,9 @@ func (q *Queries) InsertEmail(ctx context.Context, arg InsertEmailParams) (Email
 		&i.ScheduledAt,
 		&i.BroadcastID,
 		&i.ContactID,
+		&i.AutomationID,
+		&i.AutomationRunID,
+		&i.AutomationStep,
 	)
 	return i, err
 }
@@ -380,7 +389,7 @@ func (q *Queries) InsertEmailContent(ctx context.Context, arg InsertEmailContent
 }
 
 const listEmails = `-- name: ListEmails :many
-SELECT id, project_id, sender, recipient, subject, status, provider, provider_id, attempts, last_error, created_at, updated_at, finished_at, error_code, template_id, template_version, scheduled_at, broadcast_id, contact_id FROM emails
+SELECT id, project_id, sender, recipient, subject, status, provider, provider_id, attempts, last_error, created_at, updated_at, finished_at, error_code, template_id, template_version, scheduled_at, broadcast_id, contact_id, automation_id, automation_run_id, automation_step FROM emails
 WHERE project_id = $1 AND ($3::text IS NULL OR status = $3)
 ORDER BY created_at DESC, id DESC
 LIMIT $2
@@ -422,6 +431,9 @@ func (q *Queries) ListEmails(ctx context.Context, arg ListEmailsParams) ([]Email
 			&i.ScheduledAt,
 			&i.BroadcastID,
 			&i.ContactID,
+			&i.AutomationID,
+			&i.AutomationRunID,
+			&i.AutomationStep,
 		); err != nil {
 			return nil, err
 		}
@@ -434,7 +446,7 @@ func (q *Queries) ListEmails(ctx context.Context, arg ListEmailsParams) ([]Email
 }
 
 const listProjectEmails = `-- name: ListProjectEmails :many
-SELECT id, project_id, sender, recipient, subject, status, provider, provider_id, attempts, last_error, created_at, updated_at, finished_at, error_code, template_id, template_version, scheduled_at, broadcast_id, contact_id FROM emails
+SELECT id, project_id, sender, recipient, subject, status, provider, provider_id, attempts, last_error, created_at, updated_at, finished_at, error_code, template_id, template_version, scheduled_at, broadcast_id, contact_id, automation_id, automation_run_id, automation_step FROM emails
 WHERE project_id = $1
   AND id < $2::uuid
   AND id >= $3::uuid
@@ -503,6 +515,9 @@ func (q *Queries) ListProjectEmails(ctx context.Context, arg ListProjectEmailsPa
 			&i.ScheduledAt,
 			&i.BroadcastID,
 			&i.ContactID,
+			&i.AutomationID,
+			&i.AutomationRunID,
+			&i.AutomationStep,
 		); err != nil {
 			return nil, err
 		}
@@ -515,7 +530,7 @@ func (q *Queries) ListProjectEmails(ctx context.Context, arg ListProjectEmailsPa
 }
 
 const listProjectEmailsByRecipient = `-- name: ListProjectEmailsByRecipient :many
-SELECT id, project_id, sender, recipient, subject, status, provider, provider_id, attempts, last_error, created_at, updated_at, finished_at, error_code, template_id, template_version, scheduled_at, broadcast_id, contact_id FROM emails
+SELECT id, project_id, sender, recipient, subject, status, provider, provider_id, attempts, last_error, created_at, updated_at, finished_at, error_code, template_id, template_version, scheduled_at, broadcast_id, contact_id, automation_id, automation_run_id, automation_step FROM emails
 WHERE project_id = $1
   AND lower(recipient) = lower($2::text)
   AND id < $3::uuid
@@ -583,6 +598,9 @@ func (q *Queries) ListProjectEmailsByRecipient(ctx context.Context, arg ListProj
 			&i.ScheduledAt,
 			&i.BroadcastID,
 			&i.ContactID,
+			&i.AutomationID,
+			&i.AutomationRunID,
+			&i.AutomationStep,
 		); err != nil {
 			return nil, err
 		}

@@ -34,10 +34,11 @@ type Deps struct {
 	Templates    TemplateService
 	// Webhooks registers webhook endpoints; nil turns the route into
 	// 503 webhook_registration_disabled.
-	Webhooks   WebhookRegistrar
-	Contacts   ContactService
-	Audiences  AudienceService
-	Broadcasts BroadcastService
+	Webhooks    WebhookRegistrar
+	Contacts    ContactService
+	Audiences   AudienceService
+	Broadcasts  BroadcastService
+	Automations AutomationService
 }
 
 // Server holds the HTTP handler and readiness state.
@@ -51,13 +52,14 @@ type Server struct {
 	contacts     ContactService
 	audiences    AudienceService
 	broadcasts   BroadcastService
+	automations  AutomationService
 	draining     atomic.Bool
 	handler      http.Handler
 }
 
 // New builds the API handler.
 func New(d Deps) *Server {
-	s := &Server{logger: d.Logger, checks: d.Checks, authenticate: d.Authenticate, emails: d.Emails, templates: d.Templates, webhooks: d.Webhooks, contacts: d.Contacts, audiences: d.Audiences, broadcasts: d.Broadcasts}
+	s := &Server{logger: d.Logger, checks: d.Checks, authenticate: d.Authenticate, emails: d.Emails, templates: d.Templates, webhooks: d.Webhooks, contacts: d.Contacts, audiences: d.Audiences, broadcasts: d.Broadcasts, automations: d.Automations}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
@@ -114,6 +116,12 @@ func New(d Deps) *Server {
 	mux.HandleFunc("/v1/broadcasts/{id}/schedule", methodNotAllowed(http.MethodPost))
 	mux.HandleFunc("POST /v1/broadcasts/{id}/cancel", s.requireScope(auth.ScopeBroadcastsWrite, s.handleCancelBroadcast))
 	mux.HandleFunc("/v1/broadcasts/{id}/cancel", methodNotAllowed(http.MethodPost))
+	mux.HandleFunc("POST /v1/automations", s.requireScope(auth.ScopeAutomationsWrite, s.handleCreateAutomation))
+	mux.HandleFunc("GET /v1/automations", s.requireScope(auth.ScopeAutomationsRead, s.handleListAutomations))
+	mux.HandleFunc("/v1/automations", methodNotAllowed(http.MethodGet+", "+http.MethodPost))
+	mux.HandleFunc("GET /v1/automations/{id}", s.requireScope(auth.ScopeAutomationsRead, s.handleGetAutomation))
+	mux.HandleFunc("PATCH /v1/automations/{id}", s.requireScope(auth.ScopeAutomationsWrite, s.handleUpdateAutomation))
+	mux.HandleFunc("/v1/automations/{id}", methodNotAllowed(http.MethodGet+", "+http.MethodPatch))
 	mux.HandleFunc("/", handleNotFound)
 
 	s.handler = requestLogger(s.logger, mux)

@@ -16,6 +16,7 @@ import (
 
 	"github.com/skraus2/email-platform/internal/admin"
 	"github.com/skraus2/email-platform/internal/auth"
+	"github.com/skraus2/email-platform/internal/automations"
 	"github.com/skraus2/email-platform/internal/broadcasts"
 	"github.com/skraus2/email-platform/internal/config"
 	"github.com/skraus2/email-platform/internal/contacts"
@@ -78,6 +79,10 @@ func run() error {
 	if cfg.RequireVerifiedSender {
 		broadcastStore.RequireVerifiedSenders()
 	}
+	automationStore := automations.NewStore(pool, enqueuer, cfg.AutomationMaxPerProject)
+	if cfg.RequireVerifiedSender {
+		automationStore.RequireVerifiedSenders()
+	}
 	// Registration through the API is opt-in: only an API process given the
 	// webhook key-encryption keys can store new endpoint secrets.
 	var registrar httpapi.WebhookRegistrar
@@ -86,13 +91,14 @@ func run() error {
 		logger.Info("webhook endpoint registration through the API is enabled")
 	}
 	api := httpapi.New(httpapi.Deps{
-		Logger:     logger,
-		Emails:     service,
-		Webhooks:   registrar,
-		Templates:  templates.NewStore(pool, cfg.TemplateMaxPerProject, cfg.TemplateMaxVersions, int64(cfg.TemplateMaxStorageBytes), cfg.TemplateWritesPerMinute),
-		Contacts:   contacts.NewStore(pool, cfg.ContactMaxPerProject),
-		Audiences:  contacts.NewAudiences(pool, cfg.AudienceMaxPerProject, cfg.AudienceMaxContacts),
-		Broadcasts: broadcastStore,
+		Logger:      logger,
+		Emails:      service,
+		Webhooks:    registrar,
+		Templates:   templates.NewStore(pool, cfg.TemplateMaxPerProject, cfg.TemplateMaxVersions, int64(cfg.TemplateMaxStorageBytes), cfg.TemplateWritesPerMinute),
+		Contacts:    contacts.NewStore(pool, cfg.ContactMaxPerProject),
+		Audiences:   contacts.NewAudiences(pool, cfg.AudienceMaxPerProject, cfg.AudienceMaxContacts),
+		Broadcasts:  broadcastStore,
+		Automations: automationStore,
 		Authenticate: func(ctx context.Context, token string) (auth.Principal, error) {
 			return auth.Authenticate(ctx, queries.GetActiveKeyByPrefix, token)
 		},

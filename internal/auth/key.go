@@ -29,21 +29,25 @@ const (
 
 // Scopes a key can carry.
 const (
-	ScopeEmailsSend      = "emails:send"
-	ScopeEmailsRead      = "emails:read"
-	ScopeTemplatesRead   = "templates:read"
-	ScopeTemplatesWrite  = "templates:write"
-	ScopeWebhooksWrite   = "webhooks:write"
-	ScopeContactsRead    = "contacts:read"
-	ScopeContactsWrite   = "contacts:write"
-	ScopeBroadcastsRead  = "broadcasts:read"
-	ScopeBroadcastsWrite = "broadcasts:write"
+	ScopeEmailsSend       = "emails:send"
+	ScopeEmailsRead       = "emails:read"
+	ScopeTemplatesRead    = "templates:read"
+	ScopeTemplatesWrite   = "templates:write"
+	ScopeWebhooksWrite    = "webhooks:write"
+	ScopeContactsRead     = "contacts:read"
+	ScopeContactsWrite    = "contacts:write"
+	ScopeBroadcastsRead   = "broadcasts:read"
+	ScopeBroadcastsWrite  = "broadcasts:write"
+	ScopeAutomationsRead  = "automations:read"
+	ScopeAutomationsWrite = "automations:write"
+	ScopeEventsWrite      = "events:write"
 )
 
 // KnownScopes lists every scope a key may carry.
 var KnownScopes = []string{
 	ScopeEmailsSend, ScopeEmailsRead, ScopeTemplatesRead, ScopeTemplatesWrite, ScopeWebhooksWrite,
 	ScopeContactsRead, ScopeContactsWrite, ScopeBroadcastsRead, ScopeBroadcastsWrite,
+	ScopeAutomationsRead, ScopeAutomationsWrite, ScopeEventsWrite,
 }
 
 // DefaultScopes is what a new key gets unless the admin narrows it.
