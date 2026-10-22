@@ -3,6 +3,7 @@
 package automations_test
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"strings"
@@ -28,8 +29,7 @@ func (f *fixture) startRun(t *testing.T, data string, steps ...string) (uuid.UUI
 	t.Helper()
 	in := f.input(steps...)
 	in.TriggerEvent = "go." + uuid.NewString()[:8]
-	a, err := f.store.Create(f.ctx, f.project, in)
-	if err != nil {
+	if _, err := f.store.Create(f.ctx, f.project, in); err != nil {
 		t.Fatal(err)
 	}
 	c := f.contact(t, f.project, uuid.NewString()[:8]+"@example.test")
@@ -40,7 +40,6 @@ func (f *fixture) startRun(t *testing.T, data string, steps ...string) (uuid.UUI
 	if err != nil || len(ev.Runs) != 1 {
 		t.Fatalf("start run: %+v %v", ev, err)
 	}
-	_ = a
 	return ev.Runs[0].ID, c
 }
 
@@ -271,7 +270,9 @@ func TestEngineFinalAttempt(t *testing.T) {
 	// A stale job's final failure never touches a run at another step.
 	other, _ := f.startRun(t, "", f.sendStep(f.template, "1"), wait60, f.sendStep(f.template, "1"))
 	f.step(t, e, other, 0)
-	automations.FailRun(e, f.ctx, jobs.AutomationStepArgs{RunID: other, ProjectID: f.project, Step: 0}, errors.New("boom"))
+	if err := automations.FailRun(e, f.ctx, jobs.AutomationStepArgs{RunID: other, ProjectID: f.project, Step: 0}, errors.New("boom")); err != nil {
+		t.Fatal(err)
+	}
 	if s := f.run(t, other); s.status != automations.RunActive || s.step != 2 {
 		t.Fatalf("stale failure touched the run: %+v", s)
 	}
@@ -331,5 +332,155 @@ func TestEngineRacesContactDeletion(t *testing.T) {
 	}
 	if n := f.count(t, `SELECT count(*) FROM automation_runs`); n != 0 {
 		t.Fatalf("%d runs left after their contacts were deleted", n)
+	}
+}
+
+// A step job whose project id does not match its run does nothing, and so
+// does a final-attempt failure mark.
+func TestEngineIgnoresForeignProject(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t, 50)
+	e := f.engine()
+	run, _ := f.startRun(t, `{"order":"A-1"}`, f.sendStep(f.template, "1"))
+	jobsBefore := f.count(t, `SELECT count(*) FROM river_job`)
+	for _, args := range []jobs.AutomationStepArgs{
+		{RunID: run, ProjectID: f.other, Step: 0},
+		{RunID: uuid.New(), ProjectID: f.project, Step: 0},
+	} {
+		if err := e.Step(f.ctx, args, jobs.Attempt{Number: 1, MaxAttempts: 25}); err != nil {
+			t.Fatalf("%+v: %v", args, err)
+		}
+		if err := automations.FailRun(e, f.ctx, args, errors.New("boom")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if s := f.run(t, run); s.status != automations.RunActive || s.step != 0 || !s.due || !s.data {
+		t.Fatalf("run changed by a foreign job: %+v", s)
+	}
+	if n := f.count(t, `SELECT count(*) FROM emails`); n != 0 {
+		t.Fatalf("%d emails from a foreign job", n)
+	}
+	if n := f.count(t, `SELECT count(*) FROM river_job`); n != jobsBefore {
+		t.Fatalf("foreign job enqueued %d jobs", n-jobsBefore)
+	}
+}
+
+// Even if a version whose subject prints the unsubscribe URL got into a
+// definition, the token never reaches a stored subject.
+func TestEngineKeepsTokenOutOfSubject(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t, 50)
+	e := f.engine()
+	tmpl, err := f.templates.Create(f.ctx, f.project, "leaky", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.templates.Publish(f.ctx, f.project, tmpl.ID, templates.Source{Subject: "Hi {{.unsubscribe_url}}", Text: "x {{.unsubscribe_url}}"},
+		[]byte(`{"unsubscribe_url":{"type":"string","required":true}}`)); err != nil {
+		t.Fatal(err)
+	}
+	run, _ := f.startRun(t, "", f.sendStep(f.template, "1"))
+	f.exec(t, `UPDATE automations SET steps = jsonb_set(steps, '{0,template_id}', to_jsonb($2::text))
+		WHERE id = (SELECT automation_id FROM automation_runs WHERE id = $1)`, run, tmpl.ID.String())
+	f.step(t, e, run, 0)
+	if s := f.run(t, run); s.status != automations.RunFailed || s.reason != automations.ReasonRenderFailed {
+		t.Fatalf("run: %+v", s)
+	}
+	if n := f.count(t, `SELECT count(*) FROM emails`); n != 0 {
+		t.Fatalf("%d emails stored", n)
+	}
+}
+
+// Ended runs are final: no step job, final-attempt mark or overdue pass
+// changes them.
+func TestEngineTerminalRunsAreFinal(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t, 50)
+	e := f.engine()
+	for _, end := range []struct{ status, reason string }{
+		{"completed", ""}, {"exited", "condition_not_met"}, {"canceled", "canceled"}, {"failed", "internal_error"},
+	} {
+		t.Run(end.status, func(t *testing.T) {
+			run, _ := f.startRun(t, "", f.sendStep(f.template, "1"))
+			var reason *string
+			if end.reason != "" {
+				reason = &end.reason
+			}
+			f.exec(t, `UPDATE automation_runs SET status = $2, reason = $3, next_step_at = NULL, trigger_data = NULL,
+				finished_at = now() - interval '1 hour' WHERE id = $1`, run, end.status, reason)
+			var before string
+			if err := f.pool.QueryRow(f.ctx, `SELECT row_to_json(r)::text FROM automation_runs r WHERE id = $1`, run).Scan(&before); err != nil {
+				t.Fatal(err)
+			}
+			jobsBefore := f.count(t, `SELECT count(*) FROM river_job`)
+			args := jobs.AutomationStepArgs{RunID: run, ProjectID: f.project, Step: 0}
+			if err := e.Step(f.ctx, args, jobs.Attempt{Number: 1, MaxAttempts: 25}); err != nil {
+				t.Fatal(err)
+			}
+			if err := automations.FailRun(e, f.ctx, args, errors.New("boom")); err != nil {
+				t.Fatal(err)
+			}
+			if err := e.Requeue(f.ctx); err != nil {
+				t.Fatal(err)
+			}
+			var after string
+			if err := f.pool.QueryRow(f.ctx, `SELECT row_to_json(r)::text FROM automation_runs r WHERE id = $1`, run).Scan(&after); err != nil {
+				t.Fatal(err)
+			}
+			if after != before {
+				t.Fatalf("ended run changed:\n%s\n%s", before, after)
+			}
+			if n := f.count(t, `SELECT count(*) FROM emails WHERE automation_run_id = $1`, run); n != 0 {
+				t.Fatalf("%d emails", n)
+			}
+			if n := f.count(t, `SELECT count(*) FROM river_job`); n != jobsBefore {
+				t.Fatalf("%d new jobs", n-jobsBefore)
+			}
+		})
+	}
+}
+
+// A hard shutdown (cancelled context) on the final attempt marks nothing;
+// a timed-out final attempt fails the run.
+func TestEngineFinalAttemptContext(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t, 50)
+	e := f.engine()
+	run, _ := f.startRun(t, "", f.sendStep(f.template, "1"))
+	canceled, cancel := context.WithCancel(f.ctx)
+	cancel()
+	final := jobs.Attempt{Number: 25, MaxAttempts: 25}
+	if err := e.Step(canceled, jobs.AutomationStepArgs{RunID: run, ProjectID: f.project, Step: 0}, final); err == nil {
+		t.Fatal("cancelled final attempt returned no error")
+	}
+	if s := f.run(t, run); s.status != automations.RunActive || s.step != 0 {
+		t.Fatalf("hard shutdown marked the run: %+v", s)
+	}
+	expired, cancel2 := context.WithDeadline(f.ctx, time.Now().Add(-time.Second))
+	defer cancel2()
+	if err := e.Step(expired, jobs.AutomationStepArgs{RunID: run, ProjectID: f.project, Step: 0}, final); err != nil {
+		t.Fatalf("timed-out final attempt: %v", err)
+	}
+	if s := f.run(t, run); s.status != automations.RunFailed || s.reason != automations.ReasonInternalError {
+		t.Fatalf("timed-out final attempt: %+v", s)
+	}
+}
+
+// Variables: shared values < contact attributes < trigger event data <
+// unsubscribe URL.
+func TestEngineVariablePrecedence(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t, 50)
+	e := f.engine()
+	send := strings.Replace(f.sendStep(f.template, "1"), `{"plan":"pro"}`, `{"name":"Shared","order":"shared"}`, 1)
+	run, contact := f.startRun(t, `{"order":"event"}`, send)
+	f.exec(t, `UPDATE contacts SET attributes = '{"name":"Attr","order":"attr"}' WHERE id = $1`, contact)
+	f.step(t, e, run, 0)
+	var text string
+	if err := f.pool.QueryRow(f.ctx, `SELECT c.text_body FROM emails e JOIN email_contents c ON c.email_id = e.id WHERE e.automation_run_id = $1`, run).Scan(&text); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(text, "Hi Attr event\n") {
+		t.Fatalf("text %q, want the attribute's name and the event's order", text)
 	}
 }

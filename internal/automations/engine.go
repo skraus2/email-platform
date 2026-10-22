@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -55,7 +57,8 @@ type outcome struct {
 	status, reason string
 	step           int
 	waitUntil      time.Time
-	emails         int
+	emails         []uuid.UUID // created in this job run
+	recipient      string
 }
 
 // Step is the automation_step job handler. In one transaction it locks the
@@ -77,18 +80,23 @@ func (e *Engine) Step(ctx context.Context, args jobs.AutomationStepArgs, at jobs
 	})
 	if err != nil {
 		if at.Final() && !errors.Is(ctx.Err(), context.Canceled) {
-			e.failRun(ctx, log, args, err)
-			return nil
+			// If even the mark fails, the job is discarded with the error
+			// and the overdue net picks the run up again.
+			return e.failRun(ctx, log, args, err)
 		}
 		return err
 	}
-	switch {
-	case out.status == "":
+	// Logged only now: a rolled-back job run created nothing.
+	for _, id := range out.emails {
+		log.InfoContext(ctx, "automation email queued", slog.String("email_id", id.String()), slog.String("recipient", logging.MaskEmail(out.recipient)))
+	}
+	switch out.status {
+	case "":
 		// No-op: duplicate, stale or ended run.
-	case out.status == RunActive:
-		log.DebugContext(ctx, "automation run waiting", slog.Int("next_step", out.step), slog.Time("until", out.waitUntil), slog.Int("emails", out.emails))
+	case RunActive:
+		log.DebugContext(ctx, "automation run waiting", slog.Int("next_step", out.step), slog.Time("until", out.waitUntil), slog.Int("emails", len(out.emails)))
 	default:
-		log.InfoContext(ctx, "automation run ended", slog.String("status", out.status), slog.String("reason", out.reason), slog.Int("emails", out.emails))
+		log.InfoContext(ctx, "automation run ended", slog.String("status", out.status), slog.String("reason", out.reason), slog.Int("emails", len(out.emails)))
 	}
 	return nil
 }
@@ -112,27 +120,27 @@ func (e *Engine) execute(ctx context.Context, tx pgx.Tx, args jobs.AutomationSte
 	if r.Status != RunActive || int(r.Step) != args.Step {
 		return outcome{}, nil
 	}
-	end := func(status, reason string, step int, emails int) (outcome, error) {
+	end := func(status, reason string, step int, emails []uuid.UUID) (outcome, error) {
 		if err := q.EndRun(ctx, store.EndRunParams{
 			ID: r.ID, ProjectID: r.ProjectID, Status: status, Reason: nonEmpty(reason), Step: int16(step), //nolint:gosec // ≤ MaxSteps
 		}); err != nil {
 			return outcome{}, fmt.Errorf("end run: %w", err)
 		}
-		return outcome{status: status, reason: reason, step: step, emails: emails}, nil
+		return outcome{status: status, reason: reason, step: step, emails: emails, recipient: c.Email}, nil
 	}
 	switch {
 	case r.AutomationStatus == StatusArchived:
 		// A trigger can race the archive; its run ends here.
-		return end(RunCanceled, ReasonAutomationArchived, args.Step, 0)
+		return end(RunCanceled, ReasonAutomationArchived, args.Step, nil)
 	case r.ProjectStatus != "active":
 		// Re-enabling the project must not silently resume the run.
-		return end(RunExited, ReasonProjectDisabled, args.Step, 0)
+		return end(RunExited, ReasonProjectDisabled, args.Step, nil)
 	}
 	steps, err := DecodeSteps(r.Steps)
 	if err != nil {
 		return outcome{}, err
 	}
-	emails := 0
+	var emails []uuid.UUID
 	for i := args.Step; i < len(steps); i++ {
 		s := steps[i]
 		switch s.Type {
@@ -144,9 +152,9 @@ func (e *Engine) execute(ctx context.Context, tx pgx.Tx, args jobs.AutomationSte
 			if err := e.enq.EnqueueAutomationStep(ctx, tx, jobs.AutomationStepArgs{RunID: r.ID, ProjectID: r.ProjectID, Step: i + 1}, until); err != nil {
 				return outcome{}, err
 			}
-			return outcome{status: RunActive, step: i + 1, waitUntil: until, emails: emails}, nil
+			return outcome{status: RunActive, step: i + 1, waitUntil: until, emails: emails, recipient: c.Email}, nil
 		case StepCondition:
-			ok, err := e.condition(ctx, q, s, c, r.CreatedAt)
+			ok, err := e.condition(ctx, q, s, c, r.ProjectID, r.CreatedAt)
 			if err != nil {
 				return outcome{}, err
 			}
@@ -160,7 +168,7 @@ func (e *Engine) execute(ctx context.Context, tx pgx.Tx, args jobs.AutomationSte
 			case r.Suppressed:
 				return end(RunExited, ReasonSuppressed, i, emails)
 			}
-			err := e.send(ctx, tx, q, r, c, s, i)
+			id, err := e.send(ctx, tx, q, r, c, s, i)
 			var te *templates.Error
 			if errors.As(err, &te) {
 				// The contact's attributes or the event data do not fit
@@ -170,7 +178,7 @@ func (e *Engine) execute(ctx context.Context, tx pgx.Tx, args jobs.AutomationSte
 			if err != nil {
 				return outcome{}, err
 			}
-			emails++
+			emails = append(emails, id)
 		default:
 			return outcome{}, fmt.Errorf("unknown step type %q", s.Type)
 		}
@@ -178,11 +186,11 @@ func (e *Engine) execute(ctx context.Context, tx pgx.Tx, args jobs.AutomationSte
 	return end(RunCompleted, "", len(steps), emails)
 }
 
-func (e *Engine) condition(ctx context.Context, q *store.Queries, s Step, c store.LockRunContactRow, runStart time.Time) (bool, error) {
+func (e *Engine) condition(ctx context.Context, q *store.Queries, s Step, c store.LockRunContactRow, projectID uuid.UUID, runStart time.Time) (bool, error) {
 	if s.Attribute != "" {
 		return matchAttribute(s, c.Attributes)
 	}
-	occurred, err := q.EventOccurredSince(ctx, store.EventOccurredSinceParams{ContactID: c.ID, Name: s.Event, Since: runStart})
+	occurred, err := q.EventOccurredSince(ctx, store.EventOccurredSinceParams{ContactID: c.ID, ProjectID: projectID, Name: s.Event, Since: runStart})
 	if err != nil {
 		return false, fmt.Errorf("event condition: %w", err)
 	}
@@ -191,26 +199,31 @@ func (e *Engine) condition(ctx context.Context, q *store.Queries, s Step, c stor
 
 // send renders the step's version for the contact and inserts the email,
 // its content and its dispatch job.
-func (e *Engine) send(ctx context.Context, tx pgx.Tx, q *store.Queries, r store.LockRunForStepRow, c store.LockRunContactRow, s Step, i int) error {
+func (e *Engine) send(ctx context.Context, tx pgx.Tx, q *store.Queries, r store.LockRunForStepRow, c store.LockRunContactRow, s Step, i int) (uuid.UUID, error) {
 	compiled := e.compiled.Lookup(r.ProjectID, s.TemplateID, s.TemplateVersion)
 	if compiled == nil {
 		v, err := templates.Resolve(ctx, q, r.ProjectID, s.TemplateID, s.TemplateVersion)
 		if err != nil {
-			return fmt.Errorf("load template version: %w", err)
+			return uuid.Nil, fmt.Errorf("load template version: %w", err)
 		}
 		if compiled, _, err = e.compiled.Compiled(v); err != nil {
-			return fmt.Errorf("compile template version: %v", err) //nolint:errorlint // a stored version is server state, never a client error
+			return uuid.Nil, fmt.Errorf("compile template version: %v", err) //nolint:errorlint // a stored version is server state, never a client error
 		}
 	}
 	url := contacts.UnsubscribeURL(s.UnsubscribeURL, c.UnsubscribeToken)
 	vars, err := templates.MergeLayers(compiled.Schema(), [][]byte{s.Variables, c.Attributes, r.TriggerData},
 		map[string]string{contacts.ReservedAttribute: url})
 	if err != nil {
-		return fmt.Errorf("merge variables: %w", err)
+		return uuid.Nil, fmt.Errorf("merge variables: %w", err)
 	}
 	out, err := compiled.Render(vars)
 	if err != nil {
-		return err
+		return uuid.Nil, err
+	}
+	// Subjects are stored and listed; create refuses versions whose subject
+	// uses the unsubscribe URL, and this keeps the token out regardless.
+	if strings.Contains(out.Subject, c.UnsubscribeToken) {
+		return uuid.Nil, &templates.Error{Code: templates.CodeRenderFailed, Field: "subject", Reason: "must not contain the unsubscribe link"}
 	}
 	version := int32(s.TemplateVersion) //nolint:gosec // versions are capped far below 2^31
 	step := int16(i)                    //nolint:gosec // ≤ MaxSteps
@@ -220,25 +233,23 @@ func (e *Engine) send(ctx context.Context, tx pgx.Tx, q *store.Queries, r store.
 		AutomationID: &r.AutomationID, AutomationRunID: &r.ID, AutomationStep: &step,
 	})
 	if err != nil {
-		return fmt.Errorf("insert email: %w", err)
+		return uuid.Nil, fmt.Errorf("insert email: %w", err)
 	}
 	if err := q.InsertEmailContentWithUnsubscribe(ctx, store.InsertEmailContentWithUnsubscribeParams{
 		EmailID: id, ProjectID: r.ProjectID, TextBody: nonEmpty(out.Text), HtmlBody: nonEmpty(out.HTML), ListUnsubscribeUrl: &url,
 	}); err != nil {
-		return fmt.Errorf("insert email content: %w", err)
+		return uuid.Nil, fmt.Errorf("insert email content: %w", err)
 	}
 	if err := e.enq.EnqueueSendEmail(ctx, tx, jobs.SendEmailArgs{EmailID: id, ProjectID: r.ProjectID}, jobs.SendOpts{Bulk: true}); err != nil {
-		return err
+		return uuid.Nil, err
 	}
-	e.logger.InfoContext(ctx, "automation email queued",
-		slog.String("project_id", r.ProjectID.String()), slog.String("run_id", r.ID.String()),
-		slog.String("email_id", id.String()), slog.String("recipient", logging.MaskEmail(c.Email)))
-	return nil
+	return id, nil
 }
 
 // failRun marks a run failed after its step job's final attempt, unless the
 // run moved on meanwhile (a stale job's failure never touches a healthy run).
-func (e *Engine) failRun(ctx context.Context, log *slog.Logger, args jobs.AutomationStepArgs, cause error) {
+// It returns an error only when the mark itself failed.
+func (e *Engine) failRun(ctx context.Context, log *slog.Logger, args jobs.AutomationStepArgs, cause error) error {
 	log.ErrorContext(ctx, "automation step failed on its final attempt", slog.Any("error", cause))
 	dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancel()
@@ -247,11 +258,12 @@ func (e *Engine) failRun(ctx context.Context, log *slog.Logger, args jobs.Automa
 	})
 	if err != nil {
 		log.ErrorContext(ctx, "mark automation run failed", slog.Any("error", err))
-		return
+		return fmt.Errorf("mark run failed: %w", err)
 	}
 	if n > 0 {
 		log.WarnContext(ctx, "automation run failed", slog.String("reason", ReasonInternalError))
 	}
+	return nil
 }
 
 // OverdueGrace is how long past its due time an active run may wait before

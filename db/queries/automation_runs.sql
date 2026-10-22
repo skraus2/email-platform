@@ -68,7 +68,7 @@ WHERE id = $1 AND project_id = $2 AND status = 'active' AND step = $3;
 -- Whether the contact reported an event of that name after the given time
 -- (the run's start; its trigger event is older).
 SELECT EXISTS (SELECT 1 FROM contact_events
-               WHERE contact_id = $1 AND name = $2 AND created_at > sqlc.arg(since)::timestamptz)::boolean;
+               WHERE contact_id = $1 AND project_id = $2 AND name = $3 AND created_at > sqlc.arg(since)::timestamptz)::boolean;
 
 -- name: OverdueRuns :many
 -- Active runs whose next step was due before the cutoff, oldest first.
@@ -78,7 +78,8 @@ ORDER BY next_step_at
 LIMIT sqlc.arg(row_limit);
 
 -- name: GetRun :one
-SELECT * FROM automation_runs WHERE id = $1 AND project_id = $2;
+-- Never the trigger data (personal event data for rendering only).
+SELECT id, project_id, automation_id, contact_id, trigger_event_id, status, reason, step, next_step_at, created_at, updated_at, finished_at FROM automation_runs WHERE id = $1 AND project_id = $2;
 
 -- name: EmailsOfRun :many
 SELECT id, automation_step, status FROM emails
@@ -87,7 +88,7 @@ ORDER BY automation_step;
 
 -- name: ListRuns :many
 -- One page of an automation's runs, newest first; before_id is the cursor.
-SELECT * FROM automation_runs
+SELECT id, project_id, automation_id, contact_id, trigger_event_id, status, reason, step, next_step_at, created_at, updated_at, finished_at FROM automation_runs
 WHERE project_id = sqlc.arg(project_id) AND automation_id = sqlc.arg(automation_id) AND id < sqlc.arg(before_id)::uuid
   AND (sqlc.narg(status)::text IS NULL OR status = sqlc.narg(status)::text)
   AND (sqlc.narg(contact_id)::uuid IS NULL OR contact_id = sqlc.narg(contact_id)::uuid)
@@ -101,4 +102,4 @@ UPDATE automation_runs
 SET status = 'canceled', reason = 'canceled', next_step_at = NULL, trigger_data = NULL,
     finished_at = now(), updated_at = now()
 WHERE id = $1 AND project_id = $2 AND status = 'active'
-RETURNING *;
+RETURNING id, project_id, automation_id, contact_id, trigger_event_id, status, reason, step, next_step_at, created_at, updated_at, finished_at;

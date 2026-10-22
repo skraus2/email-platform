@@ -66,7 +66,7 @@ UPDATE automation_runs
 SET status = 'canceled', reason = 'canceled', next_step_at = NULL, trigger_data = NULL,
     finished_at = now(), updated_at = now()
 WHERE id = $1 AND project_id = $2 AND status = 'active'
-RETURNING id, project_id, automation_id, contact_id, trigger_event_id, status, reason, step, next_step_at, trigger_data, created_at, updated_at, finished_at
+RETURNING id, project_id, automation_id, contact_id, trigger_event_id, status, reason, step, next_step_at, created_at, updated_at, finished_at
 `
 
 type CancelRunParams struct {
@@ -74,11 +74,26 @@ type CancelRunParams struct {
 	ProjectID uuid.UUID
 }
 
+type CancelRunRow struct {
+	ID             uuid.UUID
+	ProjectID      uuid.UUID
+	AutomationID   uuid.UUID
+	ContactID      uuid.UUID
+	TriggerEventID *uuid.UUID
+	Status         string
+	Reason         *string
+	Step           int16
+	NextStepAt     *time.Time
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+	FinishedAt     *time.Time
+}
+
 // Waits for a step job holding the run; the run's queued emails are
 // canceled by dispatch.
-func (q *Queries) CancelRun(ctx context.Context, arg CancelRunParams) (AutomationRun, error) {
+func (q *Queries) CancelRun(ctx context.Context, arg CancelRunParams) (CancelRunRow, error) {
 	row := q.db.QueryRow(ctx, cancelRun, arg.ID, arg.ProjectID)
-	var i AutomationRun
+	var i CancelRunRow
 	err := row.Scan(
 		&i.ID,
 		&i.ProjectID,
@@ -89,7 +104,6 @@ func (q *Queries) CancelRun(ctx context.Context, arg CancelRunParams) (Automatio
 		&i.Reason,
 		&i.Step,
 		&i.NextStepAt,
-		&i.TriggerData,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.FinishedAt,
@@ -200,11 +214,12 @@ func (q *Queries) EndRun(ctx context.Context, arg EndRunParams) error {
 
 const eventOccurredSince = `-- name: EventOccurredSince :one
 SELECT EXISTS (SELECT 1 FROM contact_events
-               WHERE contact_id = $1 AND name = $2 AND created_at > $3::timestamptz)::boolean
+               WHERE contact_id = $1 AND project_id = $2 AND name = $3 AND created_at > $4::timestamptz)::boolean
 `
 
 type EventOccurredSinceParams struct {
 	ContactID uuid.UUID
+	ProjectID uuid.UUID
 	Name      string
 	Since     time.Time
 }
@@ -212,7 +227,12 @@ type EventOccurredSinceParams struct {
 // Whether the contact reported an event of that name after the given time
 // (the run's start; its trigger event is older).
 func (q *Queries) EventOccurredSince(ctx context.Context, arg EventOccurredSinceParams) (bool, error) {
-	row := q.db.QueryRow(ctx, eventOccurredSince, arg.ContactID, arg.Name, arg.Since)
+	row := q.db.QueryRow(ctx, eventOccurredSince,
+		arg.ContactID,
+		arg.ProjectID,
+		arg.Name,
+		arg.Since,
+	)
 	var column_1 bool
 	err := row.Scan(&column_1)
 	return column_1, err
@@ -241,7 +261,7 @@ func (q *Queries) FailRunAtStep(ctx context.Context, arg FailRunAtStepParams) (i
 }
 
 const getRun = `-- name: GetRun :one
-SELECT id, project_id, automation_id, contact_id, trigger_event_id, status, reason, step, next_step_at, trigger_data, created_at, updated_at, finished_at FROM automation_runs WHERE id = $1 AND project_id = $2
+SELECT id, project_id, automation_id, contact_id, trigger_event_id, status, reason, step, next_step_at, created_at, updated_at, finished_at FROM automation_runs WHERE id = $1 AND project_id = $2
 `
 
 type GetRunParams struct {
@@ -249,9 +269,25 @@ type GetRunParams struct {
 	ProjectID uuid.UUID
 }
 
-func (q *Queries) GetRun(ctx context.Context, arg GetRunParams) (AutomationRun, error) {
+type GetRunRow struct {
+	ID             uuid.UUID
+	ProjectID      uuid.UUID
+	AutomationID   uuid.UUID
+	ContactID      uuid.UUID
+	TriggerEventID *uuid.UUID
+	Status         string
+	Reason         *string
+	Step           int16
+	NextStepAt     *time.Time
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+	FinishedAt     *time.Time
+}
+
+// Never the trigger data (personal event data for rendering only).
+func (q *Queries) GetRun(ctx context.Context, arg GetRunParams) (GetRunRow, error) {
 	row := q.db.QueryRow(ctx, getRun, arg.ID, arg.ProjectID)
-	var i AutomationRun
+	var i GetRunRow
 	err := row.Scan(
 		&i.ID,
 		&i.ProjectID,
@@ -262,7 +298,6 @@ func (q *Queries) GetRun(ctx context.Context, arg GetRunParams) (AutomationRun, 
 		&i.Reason,
 		&i.Step,
 		&i.NextStepAt,
-		&i.TriggerData,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.FinishedAt,
@@ -271,7 +306,7 @@ func (q *Queries) GetRun(ctx context.Context, arg GetRunParams) (AutomationRun, 
 }
 
 const listRuns = `-- name: ListRuns :many
-SELECT id, project_id, automation_id, contact_id, trigger_event_id, status, reason, step, next_step_at, trigger_data, created_at, updated_at, finished_at FROM automation_runs
+SELECT id, project_id, automation_id, contact_id, trigger_event_id, status, reason, step, next_step_at, created_at, updated_at, finished_at FROM automation_runs
 WHERE project_id = $1 AND automation_id = $2 AND id < $3::uuid
   AND ($4::text IS NULL OR status = $4::text)
   AND ($5::uuid IS NULL OR contact_id = $5::uuid)
@@ -288,8 +323,23 @@ type ListRunsParams struct {
 	RowLimit     int32
 }
 
+type ListRunsRow struct {
+	ID             uuid.UUID
+	ProjectID      uuid.UUID
+	AutomationID   uuid.UUID
+	ContactID      uuid.UUID
+	TriggerEventID *uuid.UUID
+	Status         string
+	Reason         *string
+	Step           int16
+	NextStepAt     *time.Time
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+	FinishedAt     *time.Time
+}
+
 // One page of an automation's runs, newest first; before_id is the cursor.
-func (q *Queries) ListRuns(ctx context.Context, arg ListRunsParams) ([]AutomationRun, error) {
+func (q *Queries) ListRuns(ctx context.Context, arg ListRunsParams) ([]ListRunsRow, error) {
 	rows, err := q.db.Query(ctx, listRuns,
 		arg.ProjectID,
 		arg.AutomationID,
@@ -302,9 +352,9 @@ func (q *Queries) ListRuns(ctx context.Context, arg ListRunsParams) ([]Automatio
 		return nil, err
 	}
 	defer rows.Close()
-	items := []AutomationRun{}
+	items := []ListRunsRow{}
 	for rows.Next() {
-		var i AutomationRun
+		var i ListRunsRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.ProjectID,
@@ -315,7 +365,6 @@ func (q *Queries) ListRuns(ctx context.Context, arg ListRunsParams) ([]Automatio
 			&i.Reason,
 			&i.Step,
 			&i.NextStepAt,
-			&i.TriggerData,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.FinishedAt,
