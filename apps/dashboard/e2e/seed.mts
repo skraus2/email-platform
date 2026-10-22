@@ -72,6 +72,19 @@ const TEMPLATE_RECIPIENT = `dora@${DOMAIN}`;
 /** Sent with version 1: its HTML part must show it escaped. */
 const V1_NAME = "<Ada & Co>";
 const BLOCKED = `blocked@${DOMAIN}`;
+/** Audience members: two subscribed, one unsubscribed (gets nothing). */
+const READERS = [`reader1@${DOMAIN}`, `reader2@${DOMAIN}`];
+const FORMER_READER = `former@${DOMAIN}`;
+
+const NEWSLETTER = {
+  subject: "E2E newsletter for {{.name}}",
+  text: "Hello {{.name}}\nUnsubscribe: {{.unsubscribe_url}}",
+  html: '<p>Hello {{.name}}</p><a href="{{.unsubscribe_url}}">Unsubscribe</a>',
+  variables: {
+    name: { type: "string", required: true },
+    unsubscribe_url: { type: "string", required: true },
+  },
+};
 
 const ORDER_V1 = {
   subject: "Order {{.order}}",
@@ -125,6 +138,8 @@ async function seedAll() {
   const previewValue = `e2e-preview-${randomBytes(6).toString("hex")}`;
   needles(
     ...Object.keys(RECIPIENTS),
+    ...READERS,
+    FORMER_READER,
     TEMPLATE_RECIPIENT,
     BLOCKED,
     previewValue,
@@ -140,7 +155,7 @@ async function seedAll() {
     "-project",
     projectId,
     "-scopes",
-    "emails:send,emails:read,templates:read,templates:write",
+    "emails:send,emails:read,templates:read,templates:write,contacts:write,broadcasts:read,broadcasts:write",
   ]);
   needles(apiKey);
   const accounts: Account[] = ["e2e-admin", "e2e-locked"].map((username) => ({
@@ -220,6 +235,46 @@ async function seedAll() {
     "manual",
   ]);
 
+  // A newsletter to an audience, started now: the worker fans it out.
+  const audience = await v1<{ id: string }>(apiKey, "/v1/audiences", {
+    name: "E2E readers",
+  });
+  for (const [i, email] of [...READERS, FORMER_READER].entries()) {
+    const subscribed = email !== FORMER_READER;
+    const c = await v1<{ id: string }>(apiKey, "/v1/contacts", {
+      email,
+      status: subscribed ? "subscribed" : "unsubscribed",
+      ...(subscribed ? { consent_source: "e2e-signup" } : {}),
+      attributes: { name: `Reader ${i + 1}` },
+    });
+    await v1(apiKey, `/v1/audiences/${audience.id}/contacts`, {
+      contact_ids: [c.id],
+    });
+  }
+  const newsletter = await v1<{ id: string }>(apiKey, "/v1/templates", {
+    slug: "e2e-newsletter",
+    name: "E2E newsletter",
+  });
+  await v1(apiKey, `/v1/templates/${newsletter.id}/versions`, NEWSLETTER);
+  const broadcast = await v1<{ id: string }>(apiKey, "/v1/broadcasts", {
+    name: "E2E October newsletter",
+    audience_id: audience.id,
+    from: FROM,
+    template_id: newsletter.id,
+    template_version: "published",
+    unsubscribe_url: "https://app.e2e-shop.test/unsubscribe?t={token}",
+  });
+  await v1(apiKey, `/v1/broadcasts/${broadcast.id}/schedule`, {});
+
+  // A planned email, cancelled before it was due.
+  const planned = await send({
+    to: TEMPLATE_RECIPIENT,
+    subject: "E2E planned",
+    text: "Never sent",
+    scheduled_at: new Date(Date.now() + 3_600_000).toISOString(),
+  });
+  await v1(apiKey, `/v1/emails/${planned.id}/cancel`, {});
+
   const seed: Seed = {
     projectId,
     projectName,
@@ -229,8 +284,15 @@ async function seedAll() {
     sender: { id: senderId, address: FROM },
     order: { id: order.id, v1: ORDER_V1 },
     large: { id: large.id },
+    broadcast: {
+      id: broadcast.id,
+      name: "E2E October newsletter",
+      recipients: READERS,
+    },
     emails: {
-      total: n + 3,
+      // + 2 newsletter recipients, + 1 cancelled planned email.
+      total: n + 6,
+      plannedId: planned.id,
       searchId,
       searchSubject,
       templateEmailId: templateEmail.id,
@@ -244,8 +306,19 @@ async function seedAll() {
 }
 
 async function waitFinal() {
-  const { apiKey } = JSON.parse(readFileSync(SEED, "utf8")) as Seed;
+  const { apiKey, broadcast } = JSON.parse(readFileSync(SEED, "utf8")) as Seed;
   const deadline = Date.now() + 60_000;
+  // The newsletter's recipient emails exist once its fan-out completed.
+  while (Date.now() < deadline) {
+    const b = await v1<{ status: string }>(
+      apiKey,
+      `/v1/broadcasts/${broadcast.id}`,
+    );
+    if (b.status === "completed") {
+      break;
+    }
+    await new Promise((r) => setTimeout(r, 200));
+  }
   while (Date.now() < deadline) {
     const open = await v1<{ data: unknown[] }>(
       apiKey,
