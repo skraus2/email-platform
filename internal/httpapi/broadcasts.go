@@ -269,7 +269,7 @@ func (s *Server) writeBroadcastError(w http.ResponseWriter, r *http.Request, op 
 		writeError(w, http.StatusUnprocessableEntity, "template_not_found", "no such template or version in this project")
 	case errors.Is(err, broadcasts.ErrMissingUnsubscribe):
 		writeError(w, http.StatusUnprocessableEntity, "template_missing_unsubscribe",
-			"the template version must declare unsubscribe_url as a string and print {{.unsubscribe_url}} outside conditions in its text and HTML parts")
+			"the template version must declare unsubscribe_url as a string, print {{.unsubscribe_url}} outside conditions in its text part and link it as an <a href> outside conditions in its HTML part")
 	case errors.Is(err, broadcasts.ErrRateLimited):
 		w.Header().Set("Retry-After", "60")
 		writeError(w, http.StatusTooManyRequests, "rate_limited", "the project created as many broadcasts in the last hour as it may; retry later")

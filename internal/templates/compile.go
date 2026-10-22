@@ -107,59 +107,86 @@ func (c *Compiled) Schema() Schema { return c.schema }
 // HasHTML reports whether the version has an HTML part.
 func (c *Compiled) HasHTML() bool { return c.html != nil }
 
-// PrintsTopLevel reports whether part ("text" or "html") prints the
-// variable name outside of any condition, so every rendering contains it.
+// PrintsTopLevel reports whether the text part prints the variable name
+// outside of any condition, so every rendering contains it.
 func (c *Compiled) PrintsTopLevel(part, name string) bool {
-	var root *parse.ListNode
-	switch {
-	case part == "text":
-		root = c.text.Root
-	case part == "html" && c.html != nil:
-		root = c.html.Tree.Root
-	default:
+	if part != "text" {
 		return false
 	}
-	for _, n := range root.Nodes {
-		a, ok := n.(*parse.ActionNode)
-		if !ok || a.Pipe == nil || len(a.Pipe.Cmds) == 0 || len(a.Pipe.Cmds[0].Args) != 1 {
-			continue
-		}
-		// html/template appends escaper commands to the pipe; the first
-		// command is still the printed field, and the escapers show the
-		// context it ends up in.
-		if f, ok := a.Pipe.Cmds[0].Args[0].(*parse.FieldNode); ok && len(f.Ident) == 1 && f.Ident[0] == name && visible(a.Pipe.Cmds[1:]) {
+	for _, n := range c.text.Root.Nodes {
+		if a, ok := n.(*parse.ActionNode); ok && printsField(a, name) && len(a.Pipe.Cmds) == 1 {
 			return true
 		}
 	}
 	return false
 }
 
-// visibleEscapers are the html/template escapers of contexts where a value
-// reaches the reader: element text and attribute values (including link
-// targets). Comments, scripts, styles and attribute names are absent on
-// purpose: there a value prints as nothing or as an unusable placeholder.
-var visibleEscapers = map[string]bool{
-	"_html_template_htmlescaper":    true,
-	"_html_template_attrescaper":    true,
-	"_html_template_nospaceescaper": true,
-	"_html_template_urlfilter":      true,
-	"_html_template_urlnormalizer":  true,
-	"_html_template_urlescaper":     true,
+// linkTail matches the end of the HTML right before a link target: an open
+// <a> or <area> tag whose attribute being written is href.
+var linkTail = regexp.MustCompile(`(?is)<(?:a|area)\b[^<>]*\shref\s*=\s*["']?$`)
+
+// linkEscapers is the escaper chain html/template gives a value that is the
+// whole of a URL attribute value.
+var linkEscapers = [][]string{
+	{"_html_template_urlfilter", "_html_template_urlnormalizer", "_html_template_attrescaper"},
+	{"_html_template_urlfilter", "_html_template_urlnormalizer", "_html_template_nospaceescaper"},
 }
 
-// visible reports whether every command after the printed field is one of
-// the visibleEscapers (none at all for text/template parts).
-func visible(cmds []*parse.CommandNode) bool {
-	for _, c := range cmds {
-		if len(c.Args) != 1 {
-			return false
+// LinksTopLevel reports whether the HTML part uses the variable name as the
+// complete target of an <a> or <area> link outside of any condition. The
+// escaper chain alone cannot tell href from other URL-valued attributes
+// (src, style url(...)), so the attribute is read from the HTML before the
+// action. Hiding the link by styling is not detected.
+func (c *Compiled) LinksTopLevel(name string) bool {
+	if c.html == nil {
+		return false
+	}
+	nodes := c.html.Tree.Root.Nodes
+	for i, n := range nodes {
+		a, ok := n.(*parse.ActionNode)
+		if !ok || i == 0 || !printsField(a, name) || !escapedAs(a.Pipe.Cmds[1:], linkEscapers) {
+			continue
 		}
-		id, ok := c.Args[0].(*parse.IdentifierNode)
-		if !ok || !visibleEscapers[id.Ident] {
-			return false
+		if t, ok := nodes[i-1].(*parse.TextNode); ok && linkTail.Match(t.Text) {
+			return true
 		}
 	}
-	return true
+	return false
+}
+
+// printsField reports whether the action prints the declared field name as
+// its first command.
+func printsField(a *parse.ActionNode, name string) bool {
+	if a.Pipe == nil || len(a.Pipe.Cmds) == 0 || len(a.Pipe.Cmds[0].Args) != 1 {
+		return false
+	}
+	f, ok := a.Pipe.Cmds[0].Args[0].(*parse.FieldNode)
+	return ok && len(f.Ident) == 1 && f.Ident[0] == name
+}
+
+// escapedAs reports whether the commands are exactly one of the escaper
+// chains.
+func escapedAs(cmds []*parse.CommandNode, chains [][]string) bool {
+	for _, chain := range chains {
+		if len(cmds) != len(chain) {
+			continue
+		}
+		match := true
+		for k, c := range cmds {
+			id, ok := (*parse.IdentifierNode)(nil), len(c.Args) == 1
+			if ok {
+				id, ok = c.Args[0].(*parse.IdentifierNode)
+			}
+			if !ok || id.Ident != chain[k] {
+				match = false
+				break
+			}
+		}
+		if match {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *Compiled) executeHTML(w io.Writer, data any) error {

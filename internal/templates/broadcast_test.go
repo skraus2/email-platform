@@ -5,29 +5,38 @@ import (
 	"testing"
 )
 
-func TestPrintsTopLevel(t *testing.T) {
+func TestPrintsAndLinksTopLevel(t *testing.T) {
 	schema, err := ParseSchema([]byte(`{"unsubscribe_url":{"type":"string","required":true},"vip":{"type":"boolean"},"name":{"type":"string"}}`))
 	if err != nil {
 		t.Fatal(err)
 	}
 	cases := []struct {
-		src       Source
-		text, htm bool
+		src        Source
+		text, link bool
 	}{
 		{Source{Subject: "s", Text: "Bye: {{.unsubscribe_url}}", HTML: `<a href="{{.unsubscribe_url}}">x</a>`}, true, true},
 		{Source{Subject: "s", Text: "{{if .vip}}{{.unsubscribe_url}}{{end}}", HTML: `<p>{{.name}}</p>`}, false, false},
 		{Source{Subject: "s", Text: "{{.name}}{{/* {{.unsubscribe_url}} */}}"}, false, false},
 		{Source{Subject: "{{.unsubscribe_url}}", Text: "x"}, false, false},
-		// Printed only where html/template turns it into nothing or garbage.
+		// Accepted link forms.
+		{Source{Subject: "s", Text: "{{.unsubscribe_url}}", HTML: `<a href={{.unsubscribe_url}}>x</a>`}, true, true},
+		{Source{Subject: "s", Text: "{{.unsubscribe_url}}", HTML: `<p>Bye</p><A class="f" HREF='{{.unsubscribe_url}}'>Unsubscribe</A>`}, true, true},
+		{Source{Subject: "s", Text: "{{.unsubscribe_url}}", HTML: `<map><area shape="rect" href="{{.unsubscribe_url}}"></map>`}, true, true},
+		// Printed, but not as a link the reader can follow.
+		{Source{Subject: "s", Text: "{{.unsubscribe_url}}", HTML: `<p>Unsubscribe: {{.unsubscribe_url}}</p>`}, true, false},
 		{Source{Subject: "s", Text: "{{.unsubscribe_url}}", HTML: `<p>x</p><!-- {{.unsubscribe_url}} -->`}, true, false},
 		{Source{Subject: "s", Text: "{{.unsubscribe_url}}", HTML: `<style>p{color:{{.unsubscribe_url}}}</style>`}, true, false},
+		{Source{Subject: "s", Text: "{{.unsubscribe_url}}", HTML: `<style>p{background:url({{.unsubscribe_url}})}</style>`}, true, false},
+		{Source{Subject: "s", Text: "{{.unsubscribe_url}}", HTML: `<p style="background:url({{.unsubscribe_url}})">x</p>`}, true, false},
 		{Source{Subject: "s", Text: "{{.unsubscribe_url}}", HTML: `<script>/*{{.unsubscribe_url}}*/</script>`}, true, false},
-		{Source{Subject: "s", Text: "{{.unsubscribe_url}}", HTML: `<script>var u = {{.unsubscribe_url}};</script>`}, true, false},
 		{Source{Subject: "s", Text: "{{.unsubscribe_url}}", HTML: `<a {{.unsubscribe_url}}>x</a>`}, true, false},
-		{Source{Subject: "s", Text: "{{.unsubscribe_url}}", HTML: `<p>{{if .vip}}{{.unsubscribe_url}}{{end}}</p>`}, true, false},
-		// Visible text and link targets count.
-		{Source{Subject: "s", Text: "{{.unsubscribe_url}}", HTML: `<p>Unsubscribe: {{.unsubscribe_url}}</p>`}, true, true},
-		{Source{Subject: "s", Text: "{{.unsubscribe_url}}", HTML: `<a href={{.unsubscribe_url}}>x</a>`}, true, true},
+		{Source{Subject: "s", Text: "{{.unsubscribe_url}}", HTML: `<p class="{{.unsubscribe_url}}">x</p>`}, true, false},
+		{Source{Subject: "s", Text: "{{.unsubscribe_url}}", HTML: `<input type="hidden" value="{{.unsubscribe_url}}">`}, true, false},
+		{Source{Subject: "s", Text: "{{.unsubscribe_url}}", HTML: `<img src="{{.unsubscribe_url}}">`}, true, false},
+		{Source{Subject: "s", Text: "{{.unsubscribe_url}}", HTML: `<a title="x" href="javascript:void('{{.unsubscribe_url}}')">x</a>`}, true, false},
+		{Source{Subject: "s", Text: "{{.unsubscribe_url}}", HTML: `<a href="https://other.example/r?u={{.unsubscribe_url}}">x</a>`}, true, false},
+		{Source{Subject: "s", Text: "{{.unsubscribe_url}}", HTML: `<a data-x="1" title="{{.unsubscribe_url}}">x</a>`}, true, false},
+		{Source{Subject: "s", Text: "{{.unsubscribe_url}}", HTML: `<p>{{if .vip}}<a href="{{.unsubscribe_url}}">x</a>{{end}}</p>`}, true, false},
 	}
 	for i, c := range cases {
 		comp, err := Compile(c.src, schema)
@@ -37,8 +46,8 @@ func TestPrintsTopLevel(t *testing.T) {
 		if got := comp.PrintsTopLevel("text", "unsubscribe_url"); got != c.text {
 			t.Errorf("%d text: %v", i, got)
 		}
-		if got := comp.PrintsTopLevel("html", "unsubscribe_url"); got != c.htm {
-			t.Errorf("%d html: %v", i, got)
+		if got := comp.LinksTopLevel("unsubscribe_url"); got != c.link {
+			t.Errorf("%d (%s) link: %v", i, c.src.HTML, got)
 		}
 		if comp.HasHTML() != (c.src.HTML != "") {
 			t.Errorf("%d HasHTML", i)

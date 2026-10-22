@@ -786,9 +786,13 @@ paths:
         `POST /v1/broadcasts/{id}/schedule` starts it.
 
         The version is resolved now (`"published"` = highest version). Its
-        schema must declare `unsubscribe_url` (string) and its text part —
-        and html part, if any — must print `{{.unsubscribe_url}}` outside
-        any condition (`422 template_missing_unsubscribe`). Per recipient,
+        schema must declare `unsubscribe_url` (string), its text part must
+        print `{{.unsubscribe_url}}` outside any condition, and its html
+        part, if any, must link it as the whole `href` of an `<a>` (or
+        `<area>`) outside any condition, e.g.
+        `<a href="{{.unsubscribe_url}}">Unsubscribe</a>`
+        (`422 template_missing_unsubscribe`). Hiding the link by styling is
+        not detected; it stays the app's responsibility. Per recipient,
         the variables are the shared `variables`, overlaid by the contact's
         attributes whose names the schema declares, plus `unsubscribe_url`.
         `unsubscribe_url` is an absolute `https` URL of the app's page with

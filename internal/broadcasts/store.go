@@ -227,8 +227,9 @@ func sharedVariables(schema templates.Schema, raw json.RawMessage) ([]byte, erro
 }
 
 // checkVersion requires the version to declare unsubscribe_url as a string
-// long enough for the URL with a token, and to print it outside conditions,
-// visibly, in its text and (if any) HTML part.
+// long enough for the URL with a token, to print it outside conditions in
+// its text part, and (if it has one) to use it as an <a>/<area> href outside
+// conditions in its HTML part.
 func checkVersion(v templates.Version, urlTemplate string) error {
 	c, err := v.Compile()
 	if err != nil {
@@ -236,7 +237,7 @@ func checkVersion(v templates.Version, urlTemplate string) error {
 	}
 	spec, ok := c.Schema()[contacts.ReservedAttribute]
 	if !ok || spec.Type != templates.TypeString || !c.PrintsTopLevel("text", contacts.ReservedAttribute) ||
-		(c.HasHTML() && !c.PrintsTopLevel("html", contacts.ReservedAttribute)) {
+		(c.HasHTML() && !c.LinksTopLevel(contacts.ReservedAttribute)) {
 		return ErrMissingUnsubscribe
 	}
 	limit := spec.MaxLength
