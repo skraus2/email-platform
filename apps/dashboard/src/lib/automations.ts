@@ -9,7 +9,7 @@ export const RUN_STATUSES: readonly RunStatus[] = [
   "failed",
 ];
 
-/** A wait as text: "1 hour", "3 days 2 hours", "90 seconds". */
+/** A wait as text, exact: "1 hour", "3 days 2 hours 5 minutes". */
 export function formatWait(seconds: number): string {
   const units: [number, string][] = [
     [86400, "day"],
@@ -24,9 +24,6 @@ export function formatWait(seconds: number): string {
     if (n > 0) {
       parts.push(`${n} ${name}${n === 1 ? "" : "s"}`);
       rest -= n * size;
-    }
-    if (parts.length === 2) {
-      break;
     }
   }
   return parts.length === 0 ? "0 seconds" : parts.join(" ");
@@ -56,6 +53,22 @@ export function describeStep(step: AutomationStep): string {
       return `Continue only if attribute "${step.attribute}" ${op}${value}`;
     }
     case "send":
-      return `Send version ${step.template_version} from ${step.from}`;
+      return `Send an email from ${step.from}`;
   }
+}
+
+const REASONS: Record<string, string> = {
+  condition_not_met: "a condition did not hold",
+  unsubscribed: "the contact unsubscribed",
+  suppressed: "the address is suppressed",
+  project_disabled: "the project was disabled",
+  canceled: "canceled through the API",
+  automation_archived: "the automation was archived",
+  render_failed: "the email could not be rendered",
+  internal_error: "an internal error persisted",
+};
+
+/** Why a run ended, in words (the code itself when unknown). */
+export function describeReason(reason: string): string {
+  return REASONS[reason] ?? reason;
 }

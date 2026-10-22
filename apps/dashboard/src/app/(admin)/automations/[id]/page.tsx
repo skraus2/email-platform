@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound, unstable_rethrow } from "next/navigation";
 import { cache } from "react";
+import { RunPosition, RunStatus } from "@/components/run-state";
 import { Status } from "@/components/status";
 import { Timestamp } from "@/components/timestamp";
 import {
@@ -98,8 +99,8 @@ export default async function AutomationPage({
           <dt>Runs per contact</dt>
           <dd>
             {a.allow_reentry
-              ? "again after the previous run ended"
-              : "one run ever"}
+              ? "Several, one at a time (a new run can start once the previous one ended)"
+              : "One, ever"}
           </dd>
           <dt>Created</dt>
           <dd>
@@ -117,20 +118,27 @@ export default async function AutomationPage({
         <ol>
           {a.steps.map((step, i) => (
             <li key={i} className="wrap">
-              {describeStep(step)}
               {step.type === "send" ? (
                 <>
-                  {" "}
-                  (
+                  Send{" "}
                   <Link
-                    href={`/templates/${encodeURIComponent(step.template_id)}/versions/${step.template_version}`}
+                    href={`/templates/${encodeURIComponent(step.template_id)}/versions/${encodeURIComponent(String(step.template_version))}`}
                     prefetch={false}
                   >
-                    template version
-                  </Link>
-                  )
+                    version {step.template_version}
+                  </Link>{" "}
+                  of template{" "}
+                  <Link
+                    href={`/templates/${encodeURIComponent(step.template_id)}`}
+                    prefetch={false}
+                  >
+                    <code>{step.template_id}</code>
+                  </Link>{" "}
+                  from {step.from}
                 </>
-              ) : null}
+              ) : (
+                describeStep(step)
+              )}
             </li>
           ))}
         </ol>
@@ -196,7 +204,7 @@ export default async function AutomationPage({
                   <tr>
                     <th scope="col">Run</th>
                     <th scope="col">Status</th>
-                    <th scope="col">Next step</th>
+                    <th scope="col">Position</th>
                     <th scope="col">Started</th>
                     <th scope="col">Ended</th>
                   </tr>
@@ -214,20 +222,10 @@ export default async function AutomationPage({
                         </Link>
                       </td>
                       <td>
-                        <Status value={r.status} />
-                        {r.reason ? (
-                          <span className="muted"> ({r.reason})</span>
-                        ) : null}
+                        <RunStatus run={r} />
                       </td>
                       <td>
-                        {r.status === "active" ? (
-                          <>
-                            step {r.step + 1},{" "}
-                            <Timestamp iso={r.next_step_at} />
-                          </>
-                        ) : (
-                          <span className="muted">none</span>
-                        )}
+                        <RunPosition run={r} />
                       </td>
                       <td>
                         <Timestamp iso={r.created_at} />

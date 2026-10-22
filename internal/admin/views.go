@@ -503,6 +503,10 @@ func (v *Views) Automation(ctx context.Context, id uuid.UUID) (Automation, error
 	if err != nil {
 		return Automation{}, err
 	}
+	// Shared variables never leave the view layer.
+	for i := range steps {
+		steps[i].Variables = nil
+	}
 	a := Automation{
 		AdminListAutomationsRow: store.AdminListAutomationsRow{
 			ID: r.Automation.ID, ProjectID: r.Automation.ProjectID, Name: r.Automation.Name, Status: r.Automation.Status,
@@ -537,19 +541,27 @@ func (v *Views) AutomationRuns(ctx context.Context, id uuid.UUID, status string,
 	if err := checkLimit(limit); err != nil {
 		return nil, false, err
 	}
-	if _, err := v.q().AdminGetAutomation(ctx, id); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, false, ErrNotFound
-		}
+	a, err := v.q().AdminGetAutomation(ctx, id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, false, ErrNotFound
+	}
+	if err != nil {
 		return nil, false, fmt.Errorf("get automation: %w", err)
 	}
 	var st *string
 	if status != "" {
 		st = &status
 	}
-	rows, err := v.q().AdminListAutomationRuns(ctx, store.AdminListAutomationRunsParams{
-		AutomationID: id, BeforeID: before(cursor), Status: st, RowLimit: int32(limit + 1), //nolint:gosec // bounded
+	var rows []store.AdminListAutomationRunsRow
+	err = v.bounded(ctx, func(ctx context.Context, q *store.Queries) (err error) {
+		rows, err = q.AdminListAutomationRuns(ctx, store.AdminListAutomationRunsParams{
+			ProjectID: a.Automation.ProjectID, AutomationID: id, BeforeID: before(cursor), Status: st, RowLimit: int32(limit + 1), //nolint:gosec // bounded
+		})
+		return err
 	})
+	if errors.Is(err, ErrViewBusy) {
+		return nil, false, err
+	}
 	if err != nil {
 		return nil, false, fmt.Errorf("list runs: %w", err)
 	}

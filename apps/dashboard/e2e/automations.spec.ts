@@ -31,9 +31,11 @@ test("the automation list, detail and run pages show steps, runs and their email
     .locator("ol li");
   await expect(steps).toHaveCount(3);
   await expect(steps.nth(1)).toHaveText("Wait 1 hour");
-  await expect(steps.nth(0)).toContainText(
-    `Send version 1 from ${s.sender.address}`,
-  );
+  await expect(steps.nth(0)).toContainText("Send version 1 of template");
+  await expect(steps.nth(0)).toContainText(`from ${s.sender.address}`);
+  await expect(
+    steps.nth(0).getByRole("link", { name: "version 1" }),
+  ).toBeVisible();
   const counts = page.getByRole("table", { name: "Runs by status" });
   await expect(
     counts.getByRole("row", { name: /active/ }).getByRole("cell"),
@@ -44,7 +46,7 @@ test("the automation list, detail and run pages show steps, runs and their email
 
   const runs = page.getByRole("table", { name: "Latest runs, newest first" });
   await expect(runs.locator("tbody tr")).toHaveCount(1);
-  await expect(runs.locator("tbody tr")).toContainText("step 3");
+  await expect(runs.locator("tbody tr")).toContainText("Step 3, due");
   await runs.getByRole("link", { name: `Run ${s.automation.runId}` }).click();
 
   await expect(page).toHaveURL(
@@ -85,5 +87,6 @@ test("unknown automations and runs show not-found pages", async ({ page }) => {
     await expect(
       page.getByRole("heading", { name: /not found/ }),
     ).toBeVisible();
+    await expect(page).toHaveTitle(/not found/);
   }
 });

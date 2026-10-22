@@ -266,13 +266,14 @@ func (q *Queries) AdminGetTemplate(ctx context.Context, id uuid.UUID) (Template,
 const adminListAutomationRuns = `-- name: AdminListAutomationRuns :many
 SELECT id, contact_id, status, reason, step, next_step_at, created_at, updated_at, finished_at
 FROM automation_runs
-WHERE automation_id = $1 AND id < $2::uuid
-  AND ($3::text IS NULL OR status = $3::text)
+WHERE project_id = $1 AND automation_id = $2 AND id < $3::uuid
+  AND ($4::text IS NULL OR status = $4::text)
 ORDER BY id DESC
-LIMIT $4
+LIMIT $5
 `
 
 type AdminListAutomationRunsParams struct {
+	ProjectID    uuid.UUID
 	AutomationID uuid.UUID
 	BeforeID     uuid.UUID
 	Status       *string
@@ -294,6 +295,7 @@ type AdminListAutomationRunsRow struct {
 // Never the trigger data.
 func (q *Queries) AdminListAutomationRuns(ctx context.Context, arg AdminListAutomationRunsParams) ([]AdminListAutomationRunsRow, error) {
 	rows, err := q.db.Query(ctx, adminListAutomationRuns,
+		arg.ProjectID,
 		arg.AutomationID,
 		arg.BeforeID,
 		arg.Status,

@@ -140,7 +140,9 @@ export default async function EmailPage({ params }: PageProps<"/emails/[id]">) {
                 <code>{email.broadcast_id}</code>
               </Link>
             ) : (
-              <span className="muted">none (single send)</span>
+              <span className="muted">
+                {email.automation_id ? "none" : "none (single send)"}
+              </span>
             )}
           </dd>
           <dt>Automation run</dt>
@@ -154,12 +156,16 @@ export default async function EmailPage({ params }: PageProps<"/emails/[id]">) {
                 <code>{email.automation_run_id}</code>
               </Link>
             ) : email.automation_id ? (
-              <Link
-                href={`/automations/${encodeURIComponent(email.automation_id)}`}
-                prefetch={false}
-              >
-                automation (run deleted)
-              </Link>
+              <>
+                <Link
+                  href={`/automations/${encodeURIComponent(email.automation_id)}`}
+                  prefetch={false}
+                  aria-label={`Automation ${email.automation_id}`}
+                >
+                  automation
+                </Link>{" "}
+                <span className="muted">(run deleted)</span>
+              </>
             ) : (
               <span className="muted">none</span>
             )}

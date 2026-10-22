@@ -691,11 +691,43 @@ func TestAdminAutomations(t *testing.T) {
 	}
 	assertKeys(t, "AutomationRun", runs["data"].([]any)[0].(map[string]any), "id", "contact_id", "status", "reason", "step",
 		"next_step_at", "created_at", "updated_at", "finished_at")
+	if _, m, _ := call(t, a.admin.URL, "GET", "/admin/v1/automations/"+idA+"/runs?status=completed", session, ""); len(m["data"].([]any)) != 0 {
+		t.Fatalf("run status filter: %v", m)
+	}
+	// A second run; pages of one run each, newest first.
+	_, body = a.do(t, "POST", "/v1/contacts", token, `{"email":"bob@example.test","status":"subscribed","consent_source":"signup"}`)
+	_, body = a.do(t, "POST", "/v1/contact-events", token, `{"name":"user.signed_up","contact_id":"`+body["id"].(string)+`"}`)
+	second := body["runs"].([]any)[0].(map[string]any)["id"].(string)
+	var walked []string
+	for cursor := ""; ; {
+		_, m, raw := call(t, a.admin.URL, "GET", "/admin/v1/automations/"+idA+"/runs?limit=1"+cursor, session, "")
+		data, _ := m["data"].([]any)
+		if len(data) != 1 {
+			t.Fatalf("run page: %s", raw)
+		}
+		walked = append(walked, data[0].(map[string]any)["id"].(string))
+		next, _ := m["next_cursor"].(string)
+		if next == "" {
+			break
+		}
+		cursor = "&cursor=" + next
+	}
+	if len(walked) != 2 || walked[0] != second || walked[1] != run {
+		t.Fatalf("runs walked %v, want [%s %s]", walked, second, run)
+	}
+	_, m1, _ := call(t, a.admin.URL, "GET", "/admin/v1/automations?limit=1", session, "")
+	_, m2, _ := call(t, a.admin.URL, "GET", "/admin/v1/automations?limit=1&cursor="+m1["next_cursor"].(string), session, "")
+	if m1["data"].([]any)[0].(map[string]any)["id"] != idB || m2["data"].([]any)[0].(map[string]any)["id"] != idA || m2["next_cursor"] != nil {
+		t.Fatalf("automation pages: %v %v", m1, m2)
+	}
 	resp, runDetail, raw := call(t, a.admin.URL, "GET", "/admin/v1/automation-runs/"+run, session, "")
 	emailsOfRun, _ := runDetail["emails"].([]any)
 	if resp.StatusCode != 200 || len(emailsOfRun) != 1 || runDetail["automation_name"] != "Welcome" || runDetail["step"] != 2.0 {
 		t.Fatalf("run detail: %d %s", resp.StatusCode, raw)
 	}
+	assertKeys(t, "AutomationRunDetail", runDetail, "id", "contact_id", "status", "reason", "step", "next_step_at", "created_at",
+		"updated_at", "finished_at", "project_id", "project_name", "automation_id", "automation_name", "emails")
+	assertKeys(t, "AutomationRunDetail.emails", emailsOfRun[0].(map[string]any), "id", "step", "status")
 	if strings.Contains(raw, "Zq9-event-data") || strings.Contains(raw, "secret") {
 		t.Fatal("trigger data shown to operators")
 	}

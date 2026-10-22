@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { describeStep, formatWait } from "./automations.ts";
+import { describeReason, describeStep, formatWait } from "./automations.ts";
 
-test("formats waits with at most two units", () => {
+test("formats waits exactly", () => {
   assert.equal(formatWait(60), "1 minute");
   assert.equal(formatWait(3600), "1 hour");
-  assert.equal(formatWait(90061), "1 day 1 hour");
+  assert.equal(formatWait(90061), "1 day 1 hour 1 minute 1 second");
+  assert.equal(formatWait(95400), "1 day 2 hours 30 minutes");
   assert.equal(formatWait(2592000), "30 days");
   assert.equal(formatWait(150), "2 minutes 30 seconds");
 });
@@ -41,6 +42,11 @@ test("describes each step type", () => {
       template_version: 3,
       unsubscribe_url: "https://x.test/{token}",
     }),
-    "Send version 3 from news@example.test",
+    "Send an email from news@example.test",
   );
+});
+
+test("describes end reasons", () => {
+  assert.equal(describeReason("condition_not_met"), "a condition did not hold");
+  assert.equal(describeReason("something_new"), "something_new");
 });

@@ -798,7 +798,7 @@ func adminStepJSON(st automations.Step) map[string]any {
 		}
 		m := map[string]any{"type": st.Type, "attribute": st.Attribute, "op": st.Op}
 		if st.Value != nil {
-			m["value"] = json.RawMessage(st.Value)
+			m["value"] = st.Value
 		}
 		return m
 	}

@@ -98,7 +98,7 @@ WHERE a.id = $1;
 -- Never the trigger data.
 SELECT id, contact_id, status, reason, step, next_step_at, created_at, updated_at, finished_at
 FROM automation_runs
-WHERE automation_id = sqlc.arg(automation_id) AND id < sqlc.arg(before_id)::uuid
+WHERE project_id = sqlc.arg(project_id) AND automation_id = sqlc.arg(automation_id) AND id < sqlc.arg(before_id)::uuid
   AND (sqlc.narg(status)::text IS NULL OR status = sqlc.narg(status)::text)
 ORDER BY id DESC
 LIMIT sqlc.arg(row_limit);

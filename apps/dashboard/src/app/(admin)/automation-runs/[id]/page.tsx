@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound, unstable_rethrow } from "next/navigation";
 import { cache } from "react";
+import { RunPosition, RunStatus } from "@/components/run-state";
 import { Status } from "@/components/status";
 import { Timestamp } from "@/components/timestamp";
 import {
@@ -10,6 +11,7 @@ import {
   type AutomationRunDetail,
 } from "@/lib/admin-api";
 import { isUUID } from "@/lib/email-filters";
+import { shorten } from "@/lib/format";
 
 const loadRun = cache((id: string) =>
   adminFetch<AutomationRunDetail>(
@@ -21,7 +23,19 @@ export async function generateMetadata({
   params,
 }: PageProps<"/automation-runs/[id]">): Promise<Metadata> {
   const { id } = await params;
-  return { title: isUUID(id) ? "Automation run" : "Run not found" };
+  if (!isUUID(id)) {
+    return { title: "Run not found" };
+  }
+  try {
+    const r = await loadRun(id.toLowerCase());
+    return { title: `Run of ${shorten(r.automation_name, 60)}` };
+  } catch (err) {
+    unstable_rethrow(err);
+    if (err instanceof AdminAPIError && err.status === 404) {
+      return { title: "Run not found" };
+    }
+    throw err;
+  }
 }
 
 export default async function RunPage({
@@ -44,7 +58,7 @@ export default async function RunPage({
 
   return (
     <>
-      <p>
+      <p className="wrap">
         <Link href={`/automations/${encodeURIComponent(r.automation_id)}`}>
           Automation {r.automation_name}
         </Link>
@@ -59,8 +73,7 @@ export default async function RunPage({
         <dl className="meta">
           <dt>Status</dt>
           <dd>
-            <Status value={r.status} />
-            {r.reason ? <span className="muted"> ({r.reason})</span> : null}
+            <RunStatus run={r} />
           </dd>
           <dt>Project</dt>
           <dd className="wrap">
@@ -75,15 +88,9 @@ export default async function RunPage({
           <dd>
             <code>{r.contact_id}</code>
           </dd>
-          <dt>Next step</dt>
+          <dt>Position</dt>
           <dd>
-            {r.status === "active" ? (
-              <>
-                step {r.step + 1}, <Timestamp iso={r.next_step_at} />
-              </>
-            ) : (
-              <span className="muted">none (the run ended)</span>
-            )}
+            <RunPosition run={r} />
           </dd>
           <dt>Started</dt>
           <dd>
