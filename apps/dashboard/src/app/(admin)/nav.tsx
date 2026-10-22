@@ -27,12 +27,18 @@ export function MainNav() {
         ? "true"
         : undefined;
   const current = (
-    item: "overview" | "messages" | "failures" | "templates" | "projects",
+    item:
+      | "overview"
+      | "messages"
+      | "failures"
+      | "broadcasts"
+      | "templates"
+      | "projects",
   ) => {
     if (item === "overview") {
       return pathname === "/" ? "page" : undefined;
     }
-    if (item === "templates" || item === "projects") {
+    if (item === "templates" || item === "projects" || item === "broadcasts") {
       return section(`/${item}`);
     }
     if (item === "failures") {
@@ -60,6 +66,11 @@ export function MainNav() {
         <li>
           <Link href="/emails?status=failed" aria-current={current("failures")}>
             Failures
+          </Link>
+        </li>
+        <li>
+          <Link href="/broadcasts" aria-current={current("broadcasts")}>
+            Broadcasts
           </Link>
         </li>
         <li>

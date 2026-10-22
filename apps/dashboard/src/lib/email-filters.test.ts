@@ -178,3 +178,28 @@ test("the raw query string keeps every value, invalid and empty ones too", () =>
   assert.equal(queryString({ q: "x", cursor: "C" }, ["cursor"]), "q=x");
   assert.equal(queryString({ gone: undefined }), "");
 });
+
+test("broadcast filter and the canceled status", () => {
+  const BROADCAST = "0199f0a2-7c1e-7d3a-9b1e-2f5c8a9d0e33";
+  const { filters, errors } = parseEmailFilters({
+    broadcast_id: BROADCAST.toUpperCase(),
+    status: ["canceled", "queued"],
+  });
+  assert.deepEqual(errors, []);
+  assert.equal(filters.broadcast_id, BROADCAST);
+  assert.deepEqual(filters.status, ["canceled", "queued"]);
+  assert.equal(
+    apiQuery(filters).toString(),
+    `status=canceled&status=queued&broadcast_id=${BROADCAST}&limit=50`,
+  );
+  assert.equal(
+    emailsHref(filters),
+    `/emails?status=canceled&status=queued&broadcast_id=${BROADCAST}`,
+  );
+  const bad = parseEmailFilters({ broadcast_id: "nope" });
+  assert.deepEqual(
+    bad.errors.map((e) => e.field),
+    ["broadcast_id"],
+  );
+  assert.equal(bad.errors[0].message.includes("nope"), false);
+});

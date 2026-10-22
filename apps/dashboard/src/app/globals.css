@@ -243,6 +243,10 @@ td.wrap {
 .status-wait {
   color: var(--wait);
 }
+.status-off {
+  color: var(--muted);
+  border-style: dashed;
+}
 
 .pager ul {
   display: flex;

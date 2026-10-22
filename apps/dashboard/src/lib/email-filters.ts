@@ -15,6 +15,7 @@ export const EMAIL_STATUSES = [
   "bounced",
   "complained",
   "failed",
+  "canceled",
 ] as const;
 
 export type EmailStatus = (typeof EMAIL_STATUSES)[number];
@@ -36,6 +37,10 @@ export const FAILURE_CODES = [
   "content_missing",
   "expired",
   "internal_error",
+  "unsubscribed",
+  "contact_deleted",
+  "broadcast_canceled",
+  "render_failed",
 ] as const;
 
 export const PAGE_SIZE = 50;
@@ -51,6 +56,7 @@ export type EmailFilters = {
   error_code?: string;
   q?: string;
   template_id?: string;
+  broadcast_id?: string;
   cursor?: string;
 };
 
@@ -75,6 +81,7 @@ const LABELS: Record<FilterField, string> = {
   error_code: "Error code",
   q: "Search",
   template_id: "Template",
+  broadcast_id: "Broadcast",
   cursor: "Page link",
 };
 
@@ -175,6 +182,15 @@ export function parseEmailFilters(sp: SearchParams): {
     }
   }
 
+  const broadcast = single("broadcast_id");
+  if (broadcast !== undefined) {
+    if (isUUID(broadcast)) {
+      filters.broadcast_id = broadcast.toLowerCase();
+    } else {
+      fail("broadcast_id", "must be a broadcast id.");
+    }
+  }
+
   // The cursor is opaque; the admin API checks it.
   const cursor = single("cursor");
   if (cursor !== undefined) {
@@ -228,6 +244,7 @@ export function apiQuery(f: EmailFilters): URLSearchParams {
   if (f.error_code) q.set("error_code", f.error_code);
   if (f.q) q.set("q", f.q);
   if (f.template_id) q.set("template_id", f.template_id);
+  if (f.broadcast_id) q.set("broadcast_id", f.broadcast_id);
   q.set("limit", String(PAGE_SIZE));
   if (f.cursor) q.set("cursor", f.cursor);
   return q;
@@ -244,6 +261,7 @@ export function emailsHref(f: EmailFilters, cursor?: string): string {
   if (f.error_code) q.set("error_code", f.error_code);
   if (f.q) q.set("q", f.q);
   if (f.template_id) q.set("template_id", f.template_id);
+  if (f.broadcast_id) q.set("broadcast_id", f.broadcast_id);
   if (cursor) q.set("cursor", cursor);
   const s = q.toString();
   return s ? `/emails?${s}` : "/emails";

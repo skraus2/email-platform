@@ -135,7 +135,7 @@ func emailFromRow(e store.Email, projectName string) Email {
 		Email: emails.Email{
 			ID: e.ID, ProjectID: e.ProjectID, Status: e.Status, From: e.Sender, To: e.Recipient, Subject: e.Subject,
 			CreatedAt: e.CreatedAt, UpdatedAt: e.UpdatedAt, FinishedAt: e.FinishedAt, Attempts: int(e.Attempts),
-			ErrorCode: e.ErrorCode, TemplateID: e.TemplateID,
+			ErrorCode: e.ErrorCode, TemplateID: e.TemplateID, ScheduledAt: e.ScheduledAt, BroadcastID: e.BroadcastID,
 		},
 		ProjectName: projectName, Provider: e.Provider, ProviderID: e.ProviderID,
 	}
@@ -155,6 +155,7 @@ type EmailFilter struct {
 	ErrorCode     string
 	Recipient     string
 	TemplateID    *uuid.UUID
+	BroadcastID   *uuid.UUID
 	CreatedAfter  *time.Time
 	CreatedBefore *time.Time
 	Query         string
@@ -167,7 +168,7 @@ func (v *Views) SearchEmails(ctx context.Context, f EmailFilter, limit int) ([]E
 		return nil, false, err
 	}
 	p := store.AdminSearchEmailsParams{
-		BeforeID: before(f.Cursor), ProjectID: f.ProjectID, Statuses: f.Statuses, TemplateID: f.TemplateID,
+		BeforeID: before(f.Cursor), ProjectID: f.ProjectID, Statuses: f.Statuses, TemplateID: f.TemplateID, BroadcastID: f.BroadcastID,
 		CreatedAfter: f.CreatedAfter, CreatedBefore: f.CreatedBefore, RowLimit: int32(limit + 1), //nolint:gosec // bounded
 	}
 	if p.Statuses == nil {
@@ -386,4 +387,67 @@ func (v *Views) WebhookEndpoints(ctx context.Context, project *uuid.UUID, cursor
 	}
 	p, more := page(rows, limit)
 	return p, more, nil
+}
+
+// Broadcast is a broadcast as operators see it (never its shared
+// variables). ByStatus is set for a single broadcast only.
+type Broadcast struct {
+	store.Broadcast
+	ProjectName string
+	ByStatus    map[string]int
+}
+
+// Broadcasts lists broadcasts of all projects, newest first, optionally of
+// one project or status.
+func (v *Views) Broadcasts(ctx context.Context, project *uuid.UUID, status string, cursor uuid.UUID, limit int) ([]Broadcast, bool, error) {
+	if err := checkLimit(limit); err != nil {
+		return nil, false, err
+	}
+	var st *string
+	if status != "" {
+		st = &status
+	}
+	rows, err := v.q().AdminListBroadcasts(ctx, store.AdminListBroadcastsParams{
+		BeforeID: before(cursor), ProjectID: project, Status: st, RowLimit: int32(limit + 1), //nolint:gosec // bounded
+	})
+	if err != nil {
+		return nil, false, fmt.Errorf("list broadcasts: %w", err)
+	}
+	rows, more := page(rows, limit)
+	out := make([]Broadcast, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, Broadcast{Broadcast: r.Broadcast, ProjectName: r.ProjectName})
+	}
+	return out, more, nil
+}
+
+// BroadcastStatuses are the email statuses counted per broadcast.
+var BroadcastStatuses = []string{"queued", "sending", "captured", "submitted", "delivered", "bounced", "complained", "failed", "canceled"}
+
+// Broadcast returns one broadcast of any project with its recipient
+// emails counted by status (bounded like a search).
+func (v *Views) Broadcast(ctx context.Context, id uuid.UUID) (Broadcast, error) {
+	r, err := v.q().AdminGetBroadcast(ctx, id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Broadcast{}, ErrNotFound
+	}
+	if err != nil {
+		return Broadcast{}, fmt.Errorf("get broadcast: %w", err)
+	}
+	b := Broadcast{Broadcast: r.Broadcast, ProjectName: r.ProjectName, ByStatus: make(map[string]int, len(BroadcastStatuses))}
+	for _, st := range BroadcastStatuses {
+		b.ByStatus[st] = 0
+	}
+	var counts []store.CountBroadcastEmailsRow
+	err = v.bounded(ctx, func(ctx context.Context, q *store.Queries) (err error) {
+		counts, err = q.CountBroadcastEmails(ctx, &id)
+		return err
+	})
+	if err != nil {
+		return Broadcast{}, err
+	}
+	for _, c := range counts {
+		b.ByStatus[c.Status] = int(c.N)
+	}
+	return b, nil
 }

@@ -71,7 +71,7 @@ export default async function EmailsPage({
                     <Link href={emailsHref(filters)}>Go to the first page</Link>
                     .
                   </>
-                ) : e.field === "template_id" ? (
+                ) : e.field === "template_id" || e.field === "broadcast_id" ? (
                   e.message
                 ) : (
                   <a href={`#f-${e.field}`}>{e.message}</a>

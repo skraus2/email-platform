@@ -129,6 +129,8 @@ export type AdminEmail = {
   created_at: string;
   updated_at: string;
   finished_at: string | null;
+  scheduled_at: string | null;
+  broadcast_id: string | null;
 };
 
 export type EmailEvent = {
@@ -202,4 +204,34 @@ export type WebhookEndpoint = {
   status: "active" | "disabled";
   created_at: string;
   updated_at: string;
+};
+
+export type BroadcastStatus =
+  "draft" | "scheduled" | "sending" | "completed" | "canceled";
+
+export type Broadcast = {
+  id: string;
+  project_id: string;
+  project_name: string;
+  name: string;
+  status: BroadcastStatus;
+  audience_id: string;
+  from: string;
+  template_id: string;
+  template_version: number;
+  unsubscribe_url: string;
+  scheduled_at: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+  created_at: string;
+};
+
+export type BroadcastDetail = Broadcast & {
+  counts: {
+    recipients: number;
+    skipped_unsubscribed: number;
+    skipped_suppressed: number;
+    skipped_invalid: number;
+    by_status: Record<string, number>;
+  };
 };

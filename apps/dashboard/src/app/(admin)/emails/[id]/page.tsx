@@ -128,6 +128,27 @@ export default async function EmailPage({ params }: PageProps<"/emails/[id]">) {
               <span className="muted">none (raw content)</span>
             )}
           </dd>
+          <dt>Broadcast</dt>
+          <dd>
+            {email.broadcast_id ? (
+              <Link
+                href={`/broadcasts/${encodeURIComponent(email.broadcast_id)}`}
+                prefetch={false}
+              >
+                <code>{email.broadcast_id}</code>
+              </Link>
+            ) : (
+              <span className="muted">none (single send)</span>
+            )}
+          </dd>
+          <dt>Planned for</dt>
+          <dd>
+            {email.scheduled_at ? (
+              <Timestamp iso={email.scheduled_at} />
+            ) : (
+              <span className="muted">not planned (sent when accepted)</span>
+            )}
+          </dd>
           <dt>Created</dt>
           <dd>
             <Timestamp iso={email.created_at} />

@@ -20,7 +20,7 @@ type emailListResponse struct {
 
 const (
 	defaultEmailPage = 50
-	maxStatusFilters = 8
+	maxStatusFilters = 9 // every email status once
 )
 
 // listQueryParams are the query parameters GET /v1/emails understands.
@@ -81,7 +81,7 @@ func parseListQuery(query url.Values) (f emails.ListFilter, limit, status int, c
 	}
 	if v, ok := query["status"]; ok {
 		if len(v) > maxStatusFilters {
-			return bad("invalid_filter", "status may be given at most 8 times")
+			return bad("invalid_filter", "status may be given at most 9 times")
 		}
 		for _, st := range v {
 			if !emails.IsStatus(st) {

@@ -86,6 +86,46 @@ func (q *Queries) AdminEmailDeliveries(ctx context.Context, arg AdminEmailDelive
 	return items, nil
 }
 
+const adminGetBroadcast = `-- name: AdminGetBroadcast :one
+SELECT b.id, b.project_id, b.name, b.audience_id, b.sender, b.template_id, b.template_version, b.variables, b.unsubscribe_url, b.status, b.scheduled_at, b.started_at, b.finished_at, b.cursor_contact_id, b.recipients, b.skipped_unsubscribed, b.skipped_suppressed, b.skipped_invalid, b.created_at, b.updated_at, p.name AS project_name
+FROM broadcasts b JOIN projects p ON p.id = b.project_id
+WHERE b.id = $1
+`
+
+type AdminGetBroadcastRow struct {
+	Broadcast   Broadcast
+	ProjectName string
+}
+
+func (q *Queries) AdminGetBroadcast(ctx context.Context, id uuid.UUID) (AdminGetBroadcastRow, error) {
+	row := q.db.QueryRow(ctx, adminGetBroadcast, id)
+	var i AdminGetBroadcastRow
+	err := row.Scan(
+		&i.Broadcast.ID,
+		&i.Broadcast.ProjectID,
+		&i.Broadcast.Name,
+		&i.Broadcast.AudienceID,
+		&i.Broadcast.Sender,
+		&i.Broadcast.TemplateID,
+		&i.Broadcast.TemplateVersion,
+		&i.Broadcast.Variables,
+		&i.Broadcast.UnsubscribeUrl,
+		&i.Broadcast.Status,
+		&i.Broadcast.ScheduledAt,
+		&i.Broadcast.StartedAt,
+		&i.Broadcast.FinishedAt,
+		&i.Broadcast.CursorContactID,
+		&i.Broadcast.Recipients,
+		&i.Broadcast.SkippedUnsubscribed,
+		&i.Broadcast.SkippedSuppressed,
+		&i.Broadcast.SkippedInvalid,
+		&i.Broadcast.CreatedAt,
+		&i.Broadcast.UpdatedAt,
+		&i.ProjectName,
+	)
+	return i, err
+}
+
 const adminGetEmail = `-- name: AdminGetEmail :one
 SELECT e.id, e.project_id, e.sender, e.recipient, e.subject, e.status, e.provider, e.provider_id, e.attempts, e.last_error, e.created_at, e.updated_at, e.finished_at, e.error_code, e.template_id, e.template_version, e.scheduled_at, e.broadcast_id, e.contact_id, p.name AS project_name
 FROM emails e JOIN projects p ON p.id = e.project_id
@@ -141,6 +181,75 @@ func (q *Queries) AdminGetTemplate(ctx context.Context, id uuid.UUID) (Template,
 		&i.CreatedAt,
 	)
 	return i, err
+}
+
+const adminListBroadcasts = `-- name: AdminListBroadcasts :many
+SELECT b.id, b.project_id, b.name, b.audience_id, b.sender, b.template_id, b.template_version, b.variables, b.unsubscribe_url, b.status, b.scheduled_at, b.started_at, b.finished_at, b.cursor_contact_id, b.recipients, b.skipped_unsubscribed, b.skipped_suppressed, b.skipped_invalid, b.created_at, b.updated_at, p.name AS project_name
+FROM broadcasts b JOIN projects p ON p.id = b.project_id
+WHERE b.id < $1::uuid
+  AND ($2::uuid IS NULL OR b.project_id = $2::uuid)
+  AND ($3::text IS NULL OR b.status = $3::text)
+ORDER BY b.id DESC
+LIMIT $4
+`
+
+type AdminListBroadcastsParams struct {
+	BeforeID  uuid.UUID
+	ProjectID *uuid.UUID
+	Status    *string
+	RowLimit  int32
+}
+
+type AdminListBroadcastsRow struct {
+	Broadcast   Broadcast
+	ProjectName string
+}
+
+func (q *Queries) AdminListBroadcasts(ctx context.Context, arg AdminListBroadcastsParams) ([]AdminListBroadcastsRow, error) {
+	rows, err := q.db.Query(ctx, adminListBroadcasts,
+		arg.BeforeID,
+		arg.ProjectID,
+		arg.Status,
+		arg.RowLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AdminListBroadcastsRow{}
+	for rows.Next() {
+		var i AdminListBroadcastsRow
+		if err := rows.Scan(
+			&i.Broadcast.ID,
+			&i.Broadcast.ProjectID,
+			&i.Broadcast.Name,
+			&i.Broadcast.AudienceID,
+			&i.Broadcast.Sender,
+			&i.Broadcast.TemplateID,
+			&i.Broadcast.TemplateVersion,
+			&i.Broadcast.Variables,
+			&i.Broadcast.UnsubscribeUrl,
+			&i.Broadcast.Status,
+			&i.Broadcast.ScheduledAt,
+			&i.Broadcast.StartedAt,
+			&i.Broadcast.FinishedAt,
+			&i.Broadcast.CursorContactID,
+			&i.Broadcast.Recipients,
+			&i.Broadcast.SkippedUnsubscribed,
+			&i.Broadcast.SkippedSuppressed,
+			&i.Broadcast.SkippedInvalid,
+			&i.Broadcast.CreatedAt,
+			&i.Broadcast.UpdatedAt,
+			&i.ProjectName,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const adminListProjects = `-- name: AdminListProjects :many
@@ -326,14 +435,15 @@ WHERE e.id < $1::uuid
   AND ($4::text IS NULL OR e.error_code = $4::text)
   AND ($5::text IS NULL OR lower(e.recipient) = lower($5::text))
   AND ($6::uuid IS NULL OR e.template_id = $6::uuid)
-  AND ($7::timestamptz IS NULL OR e.created_at >= $7::timestamptz)
-  AND ($8::timestamptz IS NULL OR e.created_at < $8::timestamptz)
-  AND ($9::uuid IS NULL OR e.id = $9::uuid)
-  AND ($10::text IS NULL OR e.provider_id = $10::text
-       OR e.provider_id = $11::text
-       OR lower(e.recipient) = lower($10::text))
+  AND ($7::uuid IS NULL OR e.broadcast_id = $7::uuid)
+  AND ($8::timestamptz IS NULL OR e.created_at >= $8::timestamptz)
+  AND ($9::timestamptz IS NULL OR e.created_at < $9::timestamptz)
+  AND ($10::uuid IS NULL OR e.id = $10::uuid)
+  AND ($11::text IS NULL OR e.provider_id = $11::text
+       OR e.provider_id = $12::text
+       OR lower(e.recipient) = lower($11::text))
 ORDER BY e.id DESC
-LIMIT $12
+LIMIT $13
 `
 
 type AdminSearchEmailsParams struct {
@@ -343,6 +453,7 @@ type AdminSearchEmailsParams struct {
 	ErrorCode     *string
 	Recipient     *string
 	TemplateID    *uuid.UUID
+	BroadcastID   *uuid.UUID
 	CreatedAfter  *time.Time
 	CreatedBefore *time.Time
 	EmailID       *uuid.UUID
@@ -364,6 +475,7 @@ func (q *Queries) AdminSearchEmails(ctx context.Context, arg AdminSearchEmailsPa
 		arg.ErrorCode,
 		arg.Recipient,
 		arg.TemplateID,
+		arg.BroadcastID,
 		arg.CreatedAfter,
 		arg.CreatedBefore,
 		arg.EmailID,

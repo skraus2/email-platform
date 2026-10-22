@@ -14,6 +14,7 @@ WHERE e.id < sqlc.arg(before_id)::uuid
   AND (sqlc.narg(error_code)::text IS NULL OR e.error_code = sqlc.narg(error_code)::text)
   AND (sqlc.narg(recipient)::text IS NULL OR lower(e.recipient) = lower(sqlc.narg(recipient)::text))
   AND (sqlc.narg(template_id)::uuid IS NULL OR e.template_id = sqlc.narg(template_id)::uuid)
+  AND (sqlc.narg(broadcast_id)::uuid IS NULL OR e.broadcast_id = sqlc.narg(broadcast_id)::uuid)
   AND (sqlc.narg(created_after)::timestamptz IS NULL OR e.created_at >= sqlc.narg(created_after)::timestamptz)
   AND (sqlc.narg(created_before)::timestamptz IS NULL OR e.created_at < sqlc.narg(created_before)::timestamptz)
   AND (sqlc.narg(email_id)::uuid IS NULL OR e.id = sqlc.narg(email_id)::uuid)
@@ -63,3 +64,17 @@ WHERE id < sqlc.arg(before_id)::uuid
   AND (sqlc.narg(project_id)::uuid IS NULL OR project_id = sqlc.narg(project_id)::uuid)
 ORDER BY id DESC
 LIMIT sqlc.arg(row_limit);
+
+-- name: AdminListBroadcasts :many
+SELECT sqlc.embed(b), p.name AS project_name
+FROM broadcasts b JOIN projects p ON p.id = b.project_id
+WHERE b.id < sqlc.arg(before_id)::uuid
+  AND (sqlc.narg(project_id)::uuid IS NULL OR b.project_id = sqlc.narg(project_id)::uuid)
+  AND (sqlc.narg(status)::text IS NULL OR b.status = sqlc.narg(status)::text)
+ORDER BY b.id DESC
+LIMIT sqlc.arg(row_limit);
+
+-- name: AdminGetBroadcast :one
+SELECT sqlc.embed(b), p.name AS project_name
+FROM broadcasts b JOIN projects p ON p.id = b.project_id
+WHERE b.id = $1;

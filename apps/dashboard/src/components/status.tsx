@@ -1,4 +1,4 @@
-const TONE: Record<string, "ok" | "bad" | "wait"> = {
+const TONE: Record<string, "ok" | "bad" | "wait" | "off"> = {
   captured: "ok",
   submitted: "ok",
   delivered: "ok",
@@ -11,6 +11,10 @@ const TONE: Record<string, "ok" | "bad" | "wait"> = {
   queued: "wait",
   sending: "wait",
   pending: "wait",
+  draft: "wait",
+  scheduled: "wait",
+  completed: "ok",
+  canceled: "off",
 };
 
 /** A status as text; the colour is only an extra cue. */

@@ -435,7 +435,8 @@ func TestAdminContractAndHardening(t *testing.T) {
 	assertKeys(t, "Me", me, "id", "username", "session_expires_at")
 	_, em, _ := call(t, a.admin.URL, "GET", "/admin/v1/emails/"+all[0], session, "")
 	assertKeys(t, "AdminEmail", em, "id", "project_id", "project_name", "status", "from", "to", "subject", "provider",
-		"provider_id", "attempts", "error_code", "template_id", "template_version", "created_at", "updated_at", "finished_at")
+		"provider_id", "attempts", "error_code", "template_id", "template_version", "created_at", "updated_at", "finished_at",
+		"scheduled_at", "broadcast_id")
 	_, pr, _ := call(t, a.admin.URL, "GET", "/admin/v1/projects", session, "")
 	assertKeys(t, "Project", pr["data"].([]any)[0].(map[string]any), "id", "name", "status", "created_at")
 	_, tl, _ := call(t, a.admin.URL, "GET", "/admin/v1/templates", session, "")
@@ -520,5 +521,89 @@ func TestAdminContractAndHardening(t *testing.T) {
 		if strings.Contains(logs, secret) {
 			t.Fatalf("logs contain a secret (%.6s…)", secret)
 		}
+	}
+}
+
+func TestAdminBroadcasts(t *testing.T) {
+	t.Parallel()
+	a := newAdminStack(t)
+	session := a.login(t)
+	projectA, token := a.project(t, "broadcasts:read", "broadcasts:write", "contacts:write", "templates:write", "emails:send")
+	_, tokenB := a.project(t, "broadcasts:write", "contacts:write", "templates:write")
+	mk := func(token string) string {
+		t.Helper()
+		_, body := a.do(t, "POST", "/v1/audiences", token, `{"name":"news"}`)
+		audience := body["id"].(string)
+		_, body = a.do(t, "POST", "/v1/templates", token, `{"slug":"news"}`)
+		tmpl := body["id"].(string)
+		a.do(t, "POST", "/v1/templates/"+tmpl+"/versions", token, jsonBody(t, map[string]any{
+			"subject": "News", "text": "{{.unsubscribe_url}}",
+			"variables": map[string]any{"unsubscribe_url": map[string]any{"type": "string"}},
+		}))
+		code, body := a.do(t, "POST", "/v1/broadcasts", token, jsonBody(t, map[string]any{
+			"name": "October", "audience_id": audience, "from": "news@example.test", "template_id": tmpl,
+			"template_version": 1, "variables": map[string]any{}, "unsubscribe_url": "https://app.example.test/u?t={token}"}))
+		if code != 201 {
+			t.Fatalf("create: %d %v", code, body)
+		}
+		return body["id"].(string)
+	}
+	idA, idB := mk(token), mk(tokenB)
+	a.do(t, "POST", "/v1/broadcasts/"+idB+"/cancel", tokenB, "")
+
+	// A recipient email of broadcast A, and a planned, cancelled single send.
+	var email string
+	if err := a.pool.QueryRow(context.Background(), `INSERT INTO emails (project_id, sender, recipient, subject, broadcast_id)
+		VALUES ($1, 'news@example.test', 'r@example.test', 'News', $2) RETURNING id`, projectA, idA).Scan(&email); err != nil {
+		t.Fatal(err)
+	}
+	_, body := a.do(t, "POST", "/v1/emails", token, `{"from":"app@example.test","to":"u@example.test","subject":"Later","text":"x","scheduled_at":"`+
+		time.Now().Add(time.Hour).UTC().Format(time.RFC3339)+`"}`)
+	planned := body["id"].(string)
+	a.do(t, "POST", "/v1/emails/"+planned+"/cancel", token, "")
+
+	_, list, _ := call(t, a.admin.URL, "GET", "/admin/v1/broadcasts", session, "")
+	if n := len(list["data"].([]any)); n != 2 {
+		t.Fatalf("all projects: %d", n)
+	}
+	first := list["data"].([]any)[0].(map[string]any)
+	assertKeys(t, "Broadcast", first, "id", "project_id", "project_name", "name", "status", "audience_id", "from", "template_id",
+		"template_version", "unsubscribe_url", "scheduled_at", "started_at", "finished_at", "created_at")
+	if _, m, _ := call(t, a.admin.URL, "GET", "/admin/v1/broadcasts?status=canceled", session, ""); len(m["data"].([]any)) != 1 {
+		t.Fatalf("status filter: %v", m)
+	}
+	if _, m, _ := call(t, a.admin.URL, "GET", "/admin/v1/broadcasts?project_id="+projectA.String(), session, ""); len(m["data"].([]any)) != 1 {
+		t.Fatalf("project filter: %v", m)
+	}
+	resp, detail, raw := call(t, a.admin.URL, "GET", "/admin/v1/broadcasts/"+idA, session, "")
+	counts, _ := detail["counts"].(map[string]any)
+	byStatus, _ := counts["by_status"].(map[string]any)
+	if resp.StatusCode != 200 || byStatus["queued"] != 1.0 || len(byStatus) != 9 || strings.Contains(raw, "variables") {
+		t.Fatalf("detail: %d %s", resp.StatusCode, raw)
+	}
+	for _, q := range []string{"/admin/v1/broadcasts?status=sent", "/admin/v1/broadcasts?project_id=x", "/admin/v1/emails?broadcast_id=x"} {
+		if resp, m, _ := call(t, a.admin.URL, "GET", q, session, ""); resp.StatusCode != 400 || errorCode(m) != "invalid_filter" {
+			t.Errorf("%s: %d %v", q, resp.StatusCode, m)
+		}
+	}
+	if resp, _, _ := call(t, a.admin.URL, "GET", "/admin/v1/broadcasts/"+uuid.NewString(), session, ""); resp.StatusCode != 404 {
+		t.Fatalf("unknown: %d", resp.StatusCode)
+	}
+	if resp, _, _ := call(t, a.admin.URL, "GET", "/admin/v1/broadcasts", "", ""); resp.StatusCode != 401 {
+		t.Fatalf("no session: %d", resp.StatusCode)
+	}
+
+	// Emails: broadcast filter, broadcast link, planned time, canceled status.
+	_, m, _ := call(t, a.admin.URL, "GET", "/admin/v1/emails?broadcast_id="+idA, session, "")
+	if data := m["data"].([]any); len(data) != 1 || data[0].(map[string]any)["id"] != email || data[0].(map[string]any)["broadcast_id"] != idA {
+		t.Fatalf("broadcast filter: %v", m)
+	}
+	_, m, _ = call(t, a.admin.URL, "GET", "/admin/v1/emails?status=canceled", session, "")
+	if data := m["data"].([]any); len(data) != 1 || data[0].(map[string]any)["id"] != planned || data[0].(map[string]any)["scheduled_at"] == nil {
+		t.Fatalf("canceled filter: %v", m)
+	}
+	all := "/admin/v1/emails?status=queued&status=sending&status=captured&status=submitted&status=delivered&status=bounced&status=complained&status=failed&status=canceled"
+	if resp, _, _ := call(t, a.admin.URL, "GET", all, session, ""); resp.StatusCode != 200 {
+		t.Fatalf("every status: %d", resp.StatusCode)
 	}
 }

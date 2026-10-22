@@ -17,6 +17,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/skraus2/email-platform/internal/admin"
+	"github.com/skraus2/email-platform/internal/broadcasts"
 	"github.com/skraus2/email-platform/internal/database"
 	"github.com/skraus2/email-platform/internal/emails"
 	"github.com/skraus2/email-platform/internal/templates"
@@ -75,6 +76,8 @@ func NewAdmin(d AdminDeps) *AdminServer {
 	route("GET /admin/v1/templates/{id}/versions/{version}", http.MethodGet, s.requireSession(s.handleTemplateVersion))
 	route("POST /admin/v1/templates/{id}/versions/{version}/preview", http.MethodPost, s.requireSession(s.handlePreview))
 	route("GET /admin/v1/senders", http.MethodGet, s.requireSession(s.handleSenders))
+	route("GET /admin/v1/broadcasts", http.MethodGet, s.requireSession(s.handleBroadcasts))
+	route("GET /admin/v1/broadcasts/{id}", http.MethodGet, s.requireSession(s.handleBroadcast))
 	route("GET /admin/v1/webhook-endpoints", http.MethodGet, s.requireSession(s.handleWebhookEndpoints))
 	mux.HandleFunc("/", handleNotFound)
 	s.handler = requestLogger(s.logger, allowHosts(d.ListenHost, mux))
@@ -324,13 +327,13 @@ func adminEmailJSON(e admin.Email) map[string]any {
 		"from": resp.From, "to": resp.To, "subject": resp.Subject, "provider": e.Provider, "provider_id": e.ProviderID,
 		"attempts": resp.Attempts, "error_code": resp.ErrorCode, "template_id": resp.TemplateID,
 		"template_version": resp.TemplateVersion, "created_at": resp.CreatedAt, "updated_at": resp.UpdatedAt,
-		"finished_at": resp.FinishedAt,
+		"finished_at": resp.FinishedAt, "scheduled_at": resp.ScheduledAt, "broadcast_id": resp.BroadcastID,
 	}
 }
 
 func (s *AdminServer) handleEmails(w http.ResponseWriter, r *http.Request) {
 	q, ok := parseAdminQuery(w, r, "project_id", "status", "error_code", "recipient", "template_id",
-		"created_after", "created_before", "q")
+		"broadcast_id", "created_after", "created_before", "q")
 	if !ok {
 		return
 	}
@@ -338,12 +341,15 @@ func (s *AdminServer) handleEmails(w http.ResponseWriter, r *http.Request) {
 	if f.ProjectID, ok = q.uuidParam(w, "project_id"); !ok {
 		return
 	}
+	if f.BroadcastID, ok = q.uuidParam(w, "broadcast_id"); !ok {
+		return
+	}
 	if f.TemplateID, ok = q.uuidParam(w, "template_id"); !ok {
 		return
 	}
 	if st := q.values["status"]; len(st) > 0 {
 		if len(st) > maxStatusFilters {
-			writeError(w, http.StatusBadRequest, "invalid_filter", "status may be given at most 8 times")
+			writeError(w, http.StatusBadRequest, "invalid_filter", "status may be given at most 9 times")
 			return
 		}
 		for _, v := range st {
@@ -707,4 +713,69 @@ func (s *AdminServer) handleWebhookEndpoints(w http.ResponseWriter, r *http.Requ
 		last = rows[len(rows)-1].ID
 	}
 	writeJSON(w, http.StatusOK, listResponse(data, nextCursor(more, last)))
+}
+
+// adminBroadcastJSON mirrors Broadcast in api/admin-openapi.yaml (never the
+// shared variables).
+func adminBroadcastJSON(b admin.Broadcast) map[string]any {
+	resp := map[string]any{
+		"id": b.ID.String(), "project_id": b.ProjectID.String(), "project_name": b.ProjectName, "name": b.Name,
+		"status": b.Status, "audience_id": b.AudienceID.String(), "from": b.Sender, "template_id": b.TemplateID.String(),
+		"template_version": b.TemplateVersion, "unsubscribe_url": b.UnsubscribeUrl,
+		"scheduled_at": utcPtr(b.ScheduledAt), "started_at": utcPtr(b.StartedAt), "finished_at": utcPtr(b.FinishedAt),
+		"created_at": b.CreatedAt.UTC(),
+	}
+	if b.ByStatus != nil {
+		resp["counts"] = map[string]any{
+			"recipients": b.Recipients, "skipped_unsubscribed": b.SkippedUnsubscribed,
+			"skipped_suppressed": b.SkippedSuppressed, "skipped_invalid": b.SkippedInvalid, "by_status": b.ByStatus,
+		}
+	}
+	return resp
+}
+
+func (s *AdminServer) handleBroadcasts(w http.ResponseWriter, r *http.Request) {
+	q, ok := parseAdminQuery(w, r, "project_id", "status")
+	if !ok {
+		return
+	}
+	project, ok := q.uuidParam(w, "project_id")
+	if !ok {
+		return
+	}
+	var status string
+	if v, has := q.values["status"]; has {
+		if len(v) != 1 || !broadcasts.IsStatus(v[0]) {
+			writeError(w, http.StatusBadRequest, "invalid_filter", "status must be a broadcast status")
+			return
+		}
+		status = v[0]
+	}
+	rows, more, err := s.views.Broadcasts(r.Context(), project, status, q.cursor, q.limit)
+	if err != nil {
+		s.serverError(w, r, "admin list broadcasts", err)
+		return
+	}
+	data := make([]map[string]any, 0, len(rows))
+	for _, b := range rows {
+		data = append(data, adminBroadcastJSON(b))
+	}
+	var last uuid.UUID
+	if len(rows) > 0 {
+		last = rows[len(rows)-1].ID
+	}
+	writeJSON(w, http.StatusOK, listResponse(data, nextCursor(more, last)))
+}
+
+func (s *AdminServer) handleBroadcast(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	b, err := s.views.Broadcast(r.Context(), id)
+	if err != nil {
+		s.notFoundOr(w, r, "admin get broadcast", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, adminBroadcastJSON(b))
 }

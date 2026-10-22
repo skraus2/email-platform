@@ -170,12 +170,12 @@ paths:
         - name: status
           in: query
           required: false
-          description: Repeat for several statuses (at most 8).
+          description: Repeat for several statuses (at most 9).
           style: form
           explode: true
           schema:
             type: array
-            maxItems: 8
+            maxItems: 9
             items:
               $ref: "#/components/schemas/EmailStatus"
         - name: recipient

@@ -69,6 +69,7 @@ export function FilterForm({
   // fields also follow the URL when only an invalid value changed.
   const formKey = queryString(params, ["cursor"]);
   const templateError = errorOf("template_id");
+  const broadcastError = errorOf("broadcast_id");
   const project = raw("project_id").toLowerCase();
   const knownProject = !project || projects.some((p) => p.id === project);
   const statuses = new Set(
@@ -196,6 +197,28 @@ export function FilterForm({
       ) : null}
       {templateError ? (
         <p className="wide error">{templateError.message}</p>
+      ) : null}
+      {filters.broadcast_id ? (
+        <p className="wide">
+          <input
+            type="hidden"
+            name="broadcast_id"
+            value={filters.broadcast_id}
+          />
+          Only recipient emails of broadcast{" "}
+          <Link
+            href={`/broadcasts/${encodeURIComponent(filters.broadcast_id)}`}
+          >
+            <code>{filters.broadcast_id}</code>
+          </Link>
+          .{" "}
+          <Link href={emailsHref({ ...filters, broadcast_id: undefined })}>
+            Remove broadcast filter
+          </Link>
+        </p>
+      ) : null}
+      {broadcastError ? (
+        <p className="wide error">{broadcastError.message}</p>
       ) : null}
       <div className="actions wide">
         <button type="submit">Apply filters</button>

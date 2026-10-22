@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Email Platform Admin API
-  version: 0.1.0
+  version: 0.2.0
   description: |
     Internal API for the operator dashboard. Served on its own listener
     (default `127.0.0.1:8081`), never on the project API listener; project
@@ -146,7 +146,7 @@ paths:
           explode: true
           schema:
             type: array
-            maxItems: 8
+            maxItems: 9
             items:
               $ref: "#/components/schemas/EmailStatus"
         - name: error_code
@@ -164,6 +164,13 @@ paths:
         - name: template_id
           in: query
           required: false
+          schema:
+            type: string
+            format: uuid
+        - name: broadcast_id
+          in: query
+          required: false
+          description: Only recipient emails of this broadcast.
           schema:
             type: string
             format: uuid
@@ -479,6 +486,64 @@ paths:
           $ref: "#/components/responses/InternalError"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
+  /admin/v1/broadcasts:
+    get:
+      operationId: listBroadcasts
+      summary: List broadcasts of all projects, newest first
+      parameters:
+        - $ref: "#/components/parameters/ProjectFilter"
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [draft, scheduled, sending, completed, canceled]
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: One page of broadcasts (without counts).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, next_cursor]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Broadcast"
+                  next_cursor:
+                    $ref: "#/components/schemas/NextCursor"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /admin/v1/broadcasts/{id}:
+    get:
+      operationId: getBroadcast
+      summary: A broadcast with its progress counts
+      parameters:
+        - $ref: "#/components/parameters/ID"
+      responses:
+        "200":
+          description: The broadcast.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BroadcastDetail"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
 components:
   securitySchemes:
     session:
@@ -589,6 +654,7 @@ components:
           bounced,
           complained,
           failed,
+          canceled,
         ]
     AdminEmail:
       type: object
@@ -610,6 +676,8 @@ components:
           created_at,
           updated_at,
           finished_at,
+          scheduled_at,
+          broadcast_id,
         ]
       properties:
         id:
@@ -652,6 +720,101 @@ components:
         finished_at:
           type: [string, "null"]
           format: date-time
+        scheduled_at:
+          type: [string, "null"]
+          format: date-time
+          description: Planned send time; `null` for immediate sends.
+        broadcast_id:
+          type: [string, "null"]
+          format: uuid
+    Broadcast:
+      type: object
+      description: A broadcast of any project (never its shared variables).
+      required:
+        [
+          id,
+          project_id,
+          project_name,
+          name,
+          status,
+          audience_id,
+          from,
+          template_id,
+          template_version,
+          unsubscribe_url,
+          scheduled_at,
+          started_at,
+          finished_at,
+          created_at,
+        ]
+      properties:
+        id:
+          type: string
+          format: uuid
+        project_id:
+          type: string
+          format: uuid
+        project_name:
+          type: string
+        name:
+          type: string
+        status:
+          type: string
+          enum: [draft, scheduled, sending, completed, canceled]
+        audience_id:
+          type: string
+          format: uuid
+        from:
+          type: string
+        template_id:
+          type: string
+          format: uuid
+        template_version:
+          type: integer
+        unsubscribe_url:
+          type: string
+          description: The URL template with `{token}` (never a contact's token).
+        scheduled_at:
+          type: [string, "null"]
+          format: date-time
+        started_at:
+          type: [string, "null"]
+          format: date-time
+        finished_at:
+          type: [string, "null"]
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+    BroadcastDetail:
+      allOf:
+        - $ref: "#/components/schemas/Broadcast"
+        - type: object
+          required: [counts]
+          properties:
+            counts:
+              type: object
+              required:
+                [
+                  recipients,
+                  skipped_unsubscribed,
+                  skipped_suppressed,
+                  skipped_invalid,
+                  by_status,
+                ]
+              properties:
+                recipients:
+                  type: integer
+                skipped_unsubscribed:
+                  type: integer
+                skipped_suppressed:
+                  type: integer
+                skipped_invalid:
+                  type: integer
+                by_status:
+                  type: object
+                  additionalProperties:
+                    type: integer
     EmailEvent:
       type: object
       required: [id, type, origin, provider, occurred_at, received_at, details]
