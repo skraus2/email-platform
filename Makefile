@@ -137,5 +137,9 @@ load-broadcast: ## Broadcast load measurement: 50k recipients + transactional se
 	./scripts/load-broadcast.sh
 
 .PHONY: resilience
-resilience: ## Mailpit outage, worker SIGKILL and PostgreSQL restart against real binaries (needs `make up migrate`, minutes)
+resilience: ## Mailpit outage, worker SIGKILL, PostgreSQL restart and automation runs across worker kills against real binaries (needs `make up migrate`, minutes)
 	./scripts/resilience.sh
+
+.PHONY: accept-automations
+accept-automations: ## Automations end to end through real binaries: trigger replay, waits across a worker SIGKILL, conditions, webhook retry, archive (needs `make up migrate`, ~2 min)
+	./scripts/automations-acceptance.sh

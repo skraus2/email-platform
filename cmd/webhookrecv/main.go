@@ -8,7 +8,8 @@
 //
 // The secret is read from the file named by WEBHOOK_SECRET_FILE on every
 // request (the endpoint, and with it the secret, is created after the
-// receiver starts), never from flags.
+// receiver starts), never from flags. With -fail-first N it answers the
+// first N requests of each event with 503, so the sender has to retry.
 package main
 
 import (
@@ -35,6 +36,7 @@ type record struct {
 	ID      string `json:"id"`
 	EmailID string `json:"email_id"`
 	Valid   bool   `json:"valid"`
+	Status  int    `json:"status"`
 }
 
 func main() {
@@ -47,6 +49,7 @@ func main() {
 func run() error {
 	addr := flag.String("addr", "127.0.0.1:18090", "loopback listen address")
 	out := flag.String("out", "", "file the received requests are appended to")
+	failFirst := flag.Int("fail-first", 0, "answer the first N requests of each event with 503")
 	flag.Parse()
 	secretFile := os.Getenv("WEBHOOK_SECRET_FILE")
 	if *out == "" || secretFile == "" {
@@ -63,6 +66,7 @@ func run() error {
 	defer f.Close()
 
 	var mu sync.Mutex
+	seen := map[string]int{}
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(io.LimitReader(r.Body, 64<<10))
 		if err != nil {
@@ -85,15 +89,20 @@ func run() error {
 		rec := record{Type: p.Type, ID: p.ID, EmailID: p.Data.EmailID}
 		rec.Valid = r.Header.Get("Webhook-Id") == p.ID && webhooks.Verify(strings.TrimSpace(string(secret)),
 			r.Header.Get("Webhook-Timestamp"), r.Header.Get("Webhook-Signature"), body, 5*time.Minute, time.Now()) == nil
-		line, _ := json.Marshal(rec)
 		mu.Lock()
+		seen[p.ID]++
+		rec.Status = http.StatusNoContent
+		if seen[p.ID] <= *failFirst {
+			rec.Status = http.StatusServiceUnavailable
+		}
+		line, _ := json.Marshal(rec)
 		_, err = f.Write(append(line, '\n'))
 		mu.Unlock()
 		if err != nil {
 			http.Error(w, "write", http.StatusInternalServerError)
 			return
 		}
-		w.WriteHeader(http.StatusNoContent)
+		w.WriteHeader(rec.Status)
 	})
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

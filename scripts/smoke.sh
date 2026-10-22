@@ -4,7 +4,8 @@
 # one email end to end (admin CLI -> POST -> worker -> Mailpit), checks that
 # parallel requests with one idempotency key produce one message, that the
 # email's event history shows `captured` and a local receiver gets exactly
-# one correctly signed `email.captured` webhook, that a suppressed recipient
+# one correctly signed `email.captured` webhook, that a reported contact
+# event runs an automation whose email reaches Mailpit, that a suppressed recipient
 # is refused, that a second API requiring verified senders refuses an
 # unverified one (422) and accepts it once verified, and that the project
 # rate limit answers 429, then sends SIGTERM and requires a clean shutdown.
@@ -29,6 +30,7 @@ TMP="$(mktemp -d)"
 cleanup() {
   [[ -n "${hookkey:-}" ]] && "$TMP/admin" key revoke -prefix "$(cut -d_ -f2 <<<"$hookkey")" >/dev/null 2>&1 || true
   [[ -n "${key:-}" ]] && "$TMP/admin" key revoke -prefix "$(cut -d_ -f2 <<<"$key")" >/dev/null 2>&1 || true
+  [[ -n "${autokey:-}" ]] && "$TMP/admin" key revoke -prefix "$(cut -d_ -f2 <<<"$autokey")" >/dev/null 2>&1 || true
   # Pending deliveries of this run must not reach whatever binds the port later.
   [[ -s "$TMP/webhook.out" ]] && "$TMP/admin" webhook disable -project "$project" -id "$(head -1 "$TMP/webhook.out" | cut -f1)" >/dev/null 2>&1 || true
   kill "${API_PID:-}" "${API2_PID:-}" "${WORKER_PID:-}" "${RECV_PID:-}" 2>/dev/null || true
@@ -222,6 +224,33 @@ for _ in $(seq 1 50); do
 done
 [[ "$par_state" == *'"status":"captured"'* && "$par_state" == *'"attempts":1,'* ]] || fail "parallel email not captured in one attempt: $par_state"
 echo "8 parallel POSTs with one Idempotency-Key -> 1 email, 1 message in Mailpit"
+
+# A reported contact event runs an automation: its email reaches Mailpit
+# with one-click unsubscribe headers.
+autokey=$("$TMP/admin" key create -project "$project" -scopes templates:write,contacts:write,automations:read,automations:write,events:write 2>"$TMP/admin.err") ||
+  fail "admin key create (automations): $(cat "$TMP/admin.err")"
+printf '%s\n' "$autokey" "smoke-auto@example.test" >>"$TMP/needles"
+printf 'Authorization: Bearer %s\n' "$autokey" >"$TMP/auto.header"
+auto() { curl -sS -X "$1" "http://$ADDR$2" -H @"$TMP/auto.header" -H 'Content-Type: application/json' ${3:+-d "$3"}; }
+first_id() { grep -o '"id":"[0-9a-f-]\{36\}"' | head -1 | cut -d'"' -f4; }
+tmpl=$(auto POST /v1/templates "{\"slug\":\"smoke-auto-$run\"}" | first_id)
+auto POST "/v1/templates/$tmpl/versions" '{"subject":"Welcome","text":"Hi {{.unsubscribe_url}}","variables":{"unsubscribe_url":{"type":"string","required":true}}}' >/dev/null
+auto POST /v1/automations "{\"name\":\"smoke\",\"trigger\":{\"event\":\"smoke.$run\"},\"steps\":[{\"type\":\"send\",\"from\":\"smoke@example.test\",\"template_id\":\"$tmpl\",\"template_version\":1,\"unsubscribe_url\":\"https://app.example.test/u?t={token}\"}]}" >/dev/null
+contact=$(auto POST /v1/contacts '{"email":"smoke-auto@example.test","status":"subscribed","consent_source":"smoke"}' | first_id)
+[[ -n "$contact" ]] || contact=$(auto GET "/v1/contacts?email=smoke-auto@example.test" | first_id)
+auto_run=$(auto POST /v1/contact-events "{\"name\":\"smoke.$run\",\"contact_id\":\"$contact\"}" | grep -o '"runs":\[{"id":"[0-9a-f-]\{36\}"' | cut -d'"' -f6)
+[[ -n "$auto_run" ]] || fail "contact event started no run"
+for _ in $(seq 1 100); do
+  run_state=$(auto GET "/v1/automation-runs/$auto_run")
+  [[ "$run_state" == *'"status":"completed"'*'"status":"captured"'* ]] && break
+  sleep 0.1
+done
+[[ "$run_state" == *'"status":"completed"'*'"status":"captured"'* ]] || fail "automation run: $run_state"
+auto_email=$(sed -nE 's/.*"emails":\[\{"id":"([0-9a-f-]{36})".*/\1/p' <<<"$run_state")
+msg=$(curl -sS "$MAILPIT_URL/api/v1/search?query=message-id:%22$auto_email@email-platform.local%22" | sed -nE 's/.*"messages":\[\{"ID":"([^"]+)".*/\1/p')
+[[ -n "$msg" ]] && curl -sS "$MAILPIT_URL/api/v1/message/$msg/headers" | grep -q 'List-Unsubscribe=One-Click' ||
+  fail "automation email not in Mailpit with List-Unsubscribe-Post"
+echo "contact event -> automation run completed, its email in Mailpit with one-click unsubscribe"
 
 # A suppressed recipient is refused.
 "$TMP/admin" suppression add -project "$project" -email blocked@example.test -reason manual >/dev/null || fail "admin suppression add"
