@@ -7,6 +7,7 @@ package store
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -60,6 +61,42 @@ func (q *Queries) CancelArchivedRuns(ctx context.Context, arg CancelArchivedRuns
 	return result.RowsAffected(), nil
 }
 
+const cancelRun = `-- name: CancelRun :one
+UPDATE automation_runs
+SET status = 'canceled', reason = 'canceled', next_step_at = NULL, trigger_data = NULL,
+    finished_at = now(), updated_at = now()
+WHERE id = $1 AND project_id = $2 AND status = 'active'
+RETURNING id, project_id, automation_id, contact_id, trigger_event_id, status, reason, step, next_step_at, trigger_data, created_at, updated_at, finished_at
+`
+
+type CancelRunParams struct {
+	ID        uuid.UUID
+	ProjectID uuid.UUID
+}
+
+// Waits for a step job holding the run; the run's queued emails are
+// canceled by dispatch.
+func (q *Queries) CancelRun(ctx context.Context, arg CancelRunParams) (AutomationRun, error) {
+	row := q.db.QueryRow(ctx, cancelRun, arg.ID, arg.ProjectID)
+	var i AutomationRun
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.AutomationID,
+		&i.ContactID,
+		&i.TriggerEventID,
+		&i.Status,
+		&i.Reason,
+		&i.Step,
+		&i.NextStepAt,
+		&i.TriggerData,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.FinishedAt,
+	)
+	return i, err
+}
+
 const countAutomationRuns = `-- name: CountAutomationRuns :many
 SELECT status, count(*) AS n FROM automation_runs
 WHERE automation_id = $1 AND project_id = $2
@@ -96,4 +133,347 @@ func (q *Queries) CountAutomationRuns(ctx context.Context, arg CountAutomationRu
 		return nil, err
 	}
 	return items, nil
+}
+
+const emailsOfRun = `-- name: EmailsOfRun :many
+SELECT id, automation_step, status FROM emails
+WHERE automation_run_id = $1 AND project_id = $2
+ORDER BY automation_step
+`
+
+type EmailsOfRunParams struct {
+	AutomationRunID *uuid.UUID
+	ProjectID       uuid.UUID
+}
+
+type EmailsOfRunRow struct {
+	ID             uuid.UUID
+	AutomationStep *int16
+	Status         string
+}
+
+func (q *Queries) EmailsOfRun(ctx context.Context, arg EmailsOfRunParams) ([]EmailsOfRunRow, error) {
+	rows, err := q.db.Query(ctx, emailsOfRun, arg.AutomationRunID, arg.ProjectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []EmailsOfRunRow{}
+	for rows.Next() {
+		var i EmailsOfRunRow
+		if err := rows.Scan(&i.ID, &i.AutomationStep, &i.Status); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const endRun = `-- name: EndRun :exec
+UPDATE automation_runs
+SET status = $1, reason = $2, step = $3, next_step_at = NULL,
+    trigger_data = NULL, finished_at = now(), updated_at = now()
+WHERE id = $4 AND project_id = $5 AND status = 'active'
+`
+
+type EndRunParams struct {
+	Status    string
+	Reason    *string
+	Step      int16
+	ID        uuid.UUID
+	ProjectID uuid.UUID
+}
+
+func (q *Queries) EndRun(ctx context.Context, arg EndRunParams) error {
+	_, err := q.db.Exec(ctx, endRun,
+		arg.Status,
+		arg.Reason,
+		arg.Step,
+		arg.ID,
+		arg.ProjectID,
+	)
+	return err
+}
+
+const eventOccurredSince = `-- name: EventOccurredSince :one
+SELECT EXISTS (SELECT 1 FROM contact_events
+               WHERE contact_id = $1 AND name = $2 AND created_at > $3::timestamptz)::boolean
+`
+
+type EventOccurredSinceParams struct {
+	ContactID uuid.UUID
+	Name      string
+	Since     time.Time
+}
+
+// Whether the contact reported an event of that name after the given time
+// (the run's start; its trigger event is older).
+func (q *Queries) EventOccurredSince(ctx context.Context, arg EventOccurredSinceParams) (bool, error) {
+	row := q.db.QueryRow(ctx, eventOccurredSince, arg.ContactID, arg.Name, arg.Since)
+	var column_1 bool
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const failRunAtStep = `-- name: FailRunAtStep :execrows
+UPDATE automation_runs
+SET status = 'failed', reason = 'internal_error', next_step_at = NULL, trigger_data = NULL,
+    finished_at = now(), updated_at = now()
+WHERE id = $1 AND project_id = $2 AND status = 'active' AND step = $3
+`
+
+type FailRunAtStepParams struct {
+	ID        uuid.UUID
+	ProjectID uuid.UUID
+	Step      int16
+}
+
+// After the final attempt of a step job: only a run still at that step.
+func (q *Queries) FailRunAtStep(ctx context.Context, arg FailRunAtStepParams) (int64, error) {
+	result, err := q.db.Exec(ctx, failRunAtStep, arg.ID, arg.ProjectID, arg.Step)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const getRun = `-- name: GetRun :one
+SELECT id, project_id, automation_id, contact_id, trigger_event_id, status, reason, step, next_step_at, trigger_data, created_at, updated_at, finished_at FROM automation_runs WHERE id = $1 AND project_id = $2
+`
+
+type GetRunParams struct {
+	ID        uuid.UUID
+	ProjectID uuid.UUID
+}
+
+func (q *Queries) GetRun(ctx context.Context, arg GetRunParams) (AutomationRun, error) {
+	row := q.db.QueryRow(ctx, getRun, arg.ID, arg.ProjectID)
+	var i AutomationRun
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.AutomationID,
+		&i.ContactID,
+		&i.TriggerEventID,
+		&i.Status,
+		&i.Reason,
+		&i.Step,
+		&i.NextStepAt,
+		&i.TriggerData,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.FinishedAt,
+	)
+	return i, err
+}
+
+const listRuns = `-- name: ListRuns :many
+SELECT id, project_id, automation_id, contact_id, trigger_event_id, status, reason, step, next_step_at, trigger_data, created_at, updated_at, finished_at FROM automation_runs
+WHERE project_id = $1 AND automation_id = $2 AND id < $3::uuid
+  AND ($4::text IS NULL OR status = $4::text)
+  AND ($5::uuid IS NULL OR contact_id = $5::uuid)
+ORDER BY id DESC
+LIMIT $6
+`
+
+type ListRunsParams struct {
+	ProjectID    uuid.UUID
+	AutomationID uuid.UUID
+	BeforeID     uuid.UUID
+	Status       *string
+	ContactID    *uuid.UUID
+	RowLimit     int32
+}
+
+// One page of an automation's runs, newest first; before_id is the cursor.
+func (q *Queries) ListRuns(ctx context.Context, arg ListRunsParams) ([]AutomationRun, error) {
+	rows, err := q.db.Query(ctx, listRuns,
+		arg.ProjectID,
+		arg.AutomationID,
+		arg.BeforeID,
+		arg.Status,
+		arg.ContactID,
+		arg.RowLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AutomationRun{}
+	for rows.Next() {
+		var i AutomationRun
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProjectID,
+			&i.AutomationID,
+			&i.ContactID,
+			&i.TriggerEventID,
+			&i.Status,
+			&i.Reason,
+			&i.Step,
+			&i.NextStepAt,
+			&i.TriggerData,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.FinishedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const lockRunContact = `-- name: LockRunContact :one
+SELECT c.id, c.email, c.status, c.attributes, c.unsubscribe_token FROM contacts c
+WHERE c.project_id = $1
+  AND c.id = (SELECT r.contact_id FROM automation_runs r WHERE r.id = $2 AND r.project_id = $1)
+FOR SHARE
+`
+
+type LockRunContactParams struct {
+	ProjectID uuid.UUID
+	RunID     uuid.UUID
+}
+
+type LockRunContactRow struct {
+	ID               uuid.UUID
+	Email            string
+	Status           string
+	Attributes       []byte
+	UnsubscribeToken string
+}
+
+// First lock of a step job: the run's contact, shared (same order as contact
+// deletion and event reports, which lock the contact before runs; it also
+// waits for an event report of the contact still in flight).
+func (q *Queries) LockRunContact(ctx context.Context, arg LockRunContactParams) (LockRunContactRow, error) {
+	row := q.db.QueryRow(ctx, lockRunContact, arg.ProjectID, arg.RunID)
+	var i LockRunContactRow
+	err := row.Scan(
+		&i.ID,
+		&i.Email,
+		&i.Status,
+		&i.Attributes,
+		&i.UnsubscribeToken,
+	)
+	return i, err
+}
+
+const lockRunForStep = `-- name: LockRunForStep :one
+SELECT r.id, r.project_id, r.automation_id, r.status, r.step, r.trigger_data, r.created_at,
+       a.status AS automation_status, a.steps, p.status AS project_status,
+       EXISTS (SELECT 1 FROM suppressions s
+               WHERE s.project_id = r.project_id AND lower(s.recipient) = lower(c.email))::boolean AS suppressed
+FROM automation_runs r
+JOIN automations a ON a.id = r.automation_id AND a.project_id = r.project_id
+JOIN projects p ON p.id = r.project_id
+JOIN contacts c ON c.id = r.contact_id AND c.project_id = r.project_id
+WHERE r.id = $1 AND r.project_id = $2
+FOR NO KEY UPDATE OF r
+`
+
+type LockRunForStepParams struct {
+	ID        uuid.UUID
+	ProjectID uuid.UUID
+}
+
+type LockRunForStepRow struct {
+	ID               uuid.UUID
+	ProjectID        uuid.UUID
+	AutomationID     uuid.UUID
+	Status           string
+	Step             int16
+	TriggerData      []byte
+	CreatedAt        time.Time
+	AutomationStatus string
+	Steps            []byte
+	ProjectStatus    string
+	Suppressed       bool
+}
+
+func (q *Queries) LockRunForStep(ctx context.Context, arg LockRunForStepParams) (LockRunForStepRow, error) {
+	row := q.db.QueryRow(ctx, lockRunForStep, arg.ID, arg.ProjectID)
+	var i LockRunForStepRow
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.AutomationID,
+		&i.Status,
+		&i.Step,
+		&i.TriggerData,
+		&i.CreatedAt,
+		&i.AutomationStatus,
+		&i.Steps,
+		&i.ProjectStatus,
+		&i.Suppressed,
+	)
+	return i, err
+}
+
+const overdueRuns = `-- name: OverdueRuns :many
+SELECT id, project_id, step FROM automation_runs
+WHERE status = 'active' AND next_step_at < $1::timestamptz
+ORDER BY next_step_at
+LIMIT $2
+`
+
+type OverdueRunsParams struct {
+	Before   time.Time
+	RowLimit int32
+}
+
+type OverdueRunsRow struct {
+	ID        uuid.UUID
+	ProjectID uuid.UUID
+	Step      int16
+}
+
+// Active runs whose next step was due before the cutoff, oldest first.
+func (q *Queries) OverdueRuns(ctx context.Context, arg OverdueRunsParams) ([]OverdueRunsRow, error) {
+	rows, err := q.db.Query(ctx, overdueRuns, arg.Before, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []OverdueRunsRow{}
+	for rows.Next() {
+		var i OverdueRunsRow
+		if err := rows.Scan(&i.ID, &i.ProjectID, &i.Step); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const waitRun = `-- name: WaitRun :exec
+UPDATE automation_runs SET step = $3, next_step_at = $4, updated_at = now()
+WHERE id = $1 AND project_id = $2 AND status = 'active'
+`
+
+type WaitRunParams struct {
+	ID         uuid.UUID
+	ProjectID  uuid.UUID
+	Step       int16
+	NextStepAt *time.Time
+}
+
+func (q *Queries) WaitRun(ctx context.Context, arg WaitRunParams) error {
+	_, err := q.db.Exec(ctx, waitRun,
+		arg.ID,
+		arg.ProjectID,
+		arg.Step,
+		arg.NextStepAt,
+	)
+	return err
 }

@@ -153,3 +153,12 @@ func TestReferencesFailsClosed(t *testing.T) {
 		}
 	}
 }
+
+func TestMergeLayers(t *testing.T) {
+	schema := Schema{"a": {Type: TypeString}, "b": {Type: TypeString}, "c": {Type: TypeString}, "unsubscribe_url": {Type: TypeString}}
+	got, err := MergeLayers(schema, [][]byte{[]byte(`{"a":"1","b":"1","c":"1"}`), nil, []byte(`{"b":"2","c":"2"}`), []byte(`{"c":"3","unsubscribe_url":"x"}`)},
+		map[string]string{"unsubscribe_url": "u"})
+	if err != nil || string(got) != `{"a":"1","b":"2","c":"3","unsubscribe_url":"u"}` {
+		t.Fatalf("got %s %v", got, err)
+	}
+}

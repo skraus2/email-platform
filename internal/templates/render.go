@@ -204,8 +204,15 @@ func (l *limitWriter) Write(p []byte) (int, error) {
 // Undeclared attributes are ignored, so contacts can carry attributes for
 // other templates. The result still has to pass Render's validation.
 func MergeVariables(schema Schema, shared, attributes []byte, platform map[string]string) ([]byte, error) {
+	return MergeLayers(schema, [][]byte{shared, attributes}, platform)
+}
+
+// MergeLayers is MergeVariables for any number of layers (JSON objects, nil
+// or empty for none), each overlaying the previous ones, then the platform's
+// values.
+func MergeLayers(schema Schema, layers [][]byte, platform map[string]string) ([]byte, error) {
 	merged := map[string]any{}
-	for _, raw := range [][]byte{shared, attributes} {
+	for _, raw := range layers {
 		if len(bytes.TrimSpace(raw)) == 0 {
 			continue
 		}

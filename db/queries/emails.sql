@@ -195,3 +195,13 @@ WHERE e.id = ANY (sqlc.arg(ids)::uuid[])
 -- name: CountOpenScheduled :one
 -- Planned emails of the project that are still waiting.
 SELECT count(*) FROM emails WHERE project_id = $1 AND status = 'queued' AND scheduled_at IS NOT NULL;
+
+-- name: InsertAutomationEmail :one
+INSERT INTO emails (project_id, sender, recipient, subject, template_id, template_version,
+                    contact_id, automation_id, automation_run_id, automation_step)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+RETURNING id;
+
+-- name: InsertEmailContentWithUnsubscribe :exec
+INSERT INTO email_contents (email_id, project_id, text_body, html_body, list_unsubscribe_url)
+VALUES ($1, $2, $3, $4, $5);

@@ -1,0 +1,335 @@
+//go:build integration
+
+package automations_test
+
+import (
+	"errors"
+	"log/slog"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/google/uuid"
+
+	"github.com/skraus2/email-platform/internal/automations"
+	"github.com/skraus2/email-platform/internal/contacts"
+	"github.com/skraus2/email-platform/internal/jobs"
+	"github.com/skraus2/email-platform/internal/templates"
+)
+
+func (f *fixture) engine() *automations.Engine {
+	return automations.NewEngine(f.pool, f.enq, slog.New(slog.DiscardHandler), templates.NewCache(1<<20, 1<<20))
+}
+
+// startRun creates an automation with the steps, a subscribed contact and a
+// run triggered for it; it returns the run and the contact.
+func (f *fixture) startRun(t *testing.T, data string, steps ...string) (uuid.UUID, uuid.UUID) {
+	t.Helper()
+	in := f.input(steps...)
+	in.TriggerEvent = "go." + uuid.NewString()[:8]
+	a, err := f.store.Create(f.ctx, f.project, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := f.contact(t, f.project, uuid.NewString()[:8]+"@example.test")
+	if _, err := f.pool.Exec(f.ctx, `UPDATE contacts SET attributes = '{"name":"Ann"}' WHERE id = $1`, c); err != nil {
+		t.Fatal(err)
+	}
+	ev, err := f.events(1000).Report(f.ctx, f.project, automations.EventInput{Name: in.TriggerEvent, ContactID: c, Data: []byte(data)})
+	if err != nil || len(ev.Runs) != 1 {
+		t.Fatalf("start run: %+v %v", ev, err)
+	}
+	_ = a
+	return ev.Runs[0].ID, c
+}
+
+func (f *fixture) step(t *testing.T, e *automations.Engine, run uuid.UUID, step int) {
+	t.Helper()
+	if err := e.Step(f.ctx, jobs.AutomationStepArgs{RunID: run, ProjectID: f.project, Step: step}, jobs.Attempt{Number: 1, MaxAttempts: 25}); err != nil {
+		t.Fatalf("step %d: %v", step, err)
+	}
+}
+
+type runState struct {
+	status, reason string
+	step           int
+	due, data      bool
+}
+
+func (f *fixture) run(t *testing.T, id uuid.UUID) runState {
+	t.Helper()
+	var s runState
+	var reason *string
+	if err := f.pool.QueryRow(f.ctx, `SELECT status, reason, step, next_step_at IS NOT NULL, trigger_data IS NOT NULL FROM automation_runs WHERE id = $1`, id).
+		Scan(&s.status, &reason, &s.step, &s.due, &s.data); err != nil {
+		t.Fatal(err)
+	}
+	if reason != nil {
+		s.reason = *reason
+	}
+	return s
+}
+
+const wait60 = `{"type":"wait","seconds":60}`
+
+func TestEngineSendWaitSend(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t, 50)
+	e := f.engine()
+	run, contact := f.startRun(t, `{"order":"A-7"}`, f.sendStep(f.template, "1"), wait60, f.sendStep(f.template, "1"))
+
+	before := time.Now()
+	f.step(t, e, run, 0)
+	if s := f.run(t, run); s.status != automations.RunActive || s.step != 2 || !s.due || !s.data {
+		t.Fatalf("after first send + wait: %+v", s)
+	}
+	var subject, text, html, url string
+	var step int16
+	if err := f.pool.QueryRow(f.ctx, `SELECT e.subject, c.text_body, c.html_body, c.list_unsubscribe_url, e.automation_step
+		FROM emails e JOIN email_contents c ON c.email_id = e.id
+		WHERE e.automation_run_id = $1 AND e.contact_id = $2 AND e.status = 'queued'`, run, contact).Scan(&subject, &text, &html, &url, &step); err != nil {
+		t.Fatalf("first email: %v", err)
+	}
+	if subject != "Hello Ann" || !strings.Contains(text, "Hi Ann A-7") || !strings.Contains(html, `href="https://app.example.test/u?t=`) ||
+		!strings.HasPrefix(url, "https://app.example.test/u?t=") || strings.Contains(url, "{token}") || step != 0 {
+		t.Fatalf("rendered email: %q %q %q %q %d", subject, text, html, url, step)
+	}
+	// The email's dispatch job is bulk; the next step is scheduled for the
+	// end of the wait.
+	if n := f.count(t, `SELECT count(*) FROM river_job WHERE kind = 'send_email' AND priority = 2`); n != 1 {
+		t.Fatalf("%d bulk send jobs", n)
+	}
+	var at time.Time
+	if err := f.pool.QueryRow(f.ctx, `SELECT scheduled_at FROM river_job WHERE kind = 'automation_step' AND args->>'step' = '2'`).Scan(&at); err != nil {
+		t.Fatal(err)
+	}
+	if at.Before(before.Add(59*time.Second)) || at.After(time.Now().Add(61*time.Second)) {
+		t.Fatalf("next step at %v", at)
+	}
+
+	// The same job again, and a stale one, change nothing.
+	f.step(t, e, run, 0)
+	f.step(t, e, run, 1)
+	if n := f.count(t, `SELECT count(*) FROM emails WHERE automation_run_id = $1`, run); n != 1 {
+		t.Fatalf("%d emails after repeated jobs", n)
+	}
+
+	f.step(t, e, run, 2)
+	if s := f.run(t, run); s.status != automations.RunCompleted || s.reason != "" || s.step != 3 || s.due || s.data {
+		t.Fatalf("completed: %+v", s)
+	}
+	if n := f.count(t, `SELECT count(*) FROM emails WHERE automation_run_id = $1`, run); n != 2 {
+		t.Fatalf("%d emails", n)
+	}
+	f.step(t, e, run, 2)
+	if n := f.count(t, `SELECT count(*) FROM emails WHERE automation_run_id = $1`, run); n != 2 {
+		t.Fatalf("job after completion sent again: %d", n)
+	}
+}
+
+func TestEngineConditions(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t, 50)
+	e := f.engine()
+	send := f.sendStep(f.template, "1")
+	cases := []struct {
+		name      string
+		condition string
+		event     string // reported for the contact after the run started
+		want      runState
+	}{
+		{"attribute holds", `{"type":"condition","attribute":"name","op":"eq","value":"Ann"}`, "", runState{status: "completed", step: 2}},
+		{"attribute fails", `{"type":"condition","attribute":"name","op":"neq","value":"Ann"}`, "", runState{status: "exited", reason: "condition_not_met"}},
+		{"missing attribute", `{"type":"condition","attribute":"plan","op":"exists"}`, "", runState{status: "exited", reason: "condition_not_met"}},
+		{"not occurred holds", `{"type":"condition","event":"order.completed","op":"not_occurred"}`, "", runState{status: "completed", step: 2}},
+		{"not occurred fails", `{"type":"condition","event":"order.completed","op":"not_occurred"}`, "order.completed", runState{status: "exited", reason: "condition_not_met"}},
+		{"occurred holds", `{"type":"condition","event":"order.completed","op":"occurred"}`, "order.completed", runState{status: "completed", step: 2}},
+		{"other event", `{"type":"condition","event":"order.completed","op":"occurred"}`, "order.refunded", runState{status: "exited", reason: "condition_not_met"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			run, contact := f.startRun(t, "", tc.condition, send)
+			if tc.event != "" {
+				if _, err := f.events(1000).Report(f.ctx, f.project, automations.EventInput{Name: tc.event, ContactID: contact}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			f.step(t, e, run, 0)
+			got := f.run(t, run)
+			if got.status != tc.want.status || got.reason != tc.want.reason || (tc.want.step != 0 && got.step != tc.want.step) {
+				t.Fatalf("got %+v, want %+v", got, tc.want)
+			}
+			emails := f.count(t, `SELECT count(*) FROM emails WHERE automation_run_id = $1`, run)
+			if (tc.want.status == "completed") != (emails == 1) {
+				t.Fatalf("%d emails", emails)
+			}
+		})
+	}
+	// The trigger event itself never counts as "occurred after the start".
+	run, _ := f.startRunNamed(t, "order.completed", `{"type":"condition","event":"order.completed","op":"occurred"}`, send)
+	f.step(t, e, run, 0)
+	if s := f.run(t, run); s.status != "exited" {
+		t.Fatalf("trigger counted as a later event: %+v", s)
+	}
+}
+
+// startRunNamed is startRun with a fixed trigger name.
+func (f *fixture) startRunNamed(t *testing.T, trigger string, steps ...string) (uuid.UUID, uuid.UUID) {
+	t.Helper()
+	in := f.input(steps...)
+	in.TriggerEvent = trigger
+	if _, err := f.store.Create(f.ctx, f.project, in); err != nil {
+		t.Fatal(err)
+	}
+	c := f.contact(t, f.project, uuid.NewString()[:8]+"@example.test")
+	ev, err := f.events(1000).Report(f.ctx, f.project, automations.EventInput{Name: trigger, ContactID: c})
+	if err != nil || len(ev.Runs) != 1 {
+		t.Fatalf("start run: %+v %v", ev, err)
+	}
+	return ev.Runs[0].ID, c
+}
+
+func TestEngineEndsRuns(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t, 50)
+	e := f.engine()
+	send := f.sendStep(f.template, "1")
+	cases := []struct {
+		name  string
+		data  string
+		setup func(run, contact uuid.UUID)
+		want  runState
+	}{
+		{"unsubscribed", "", func(_, c uuid.UUID) {
+			f.exec(t, `UPDATE contacts SET status = 'unsubscribed' WHERE id = $1`, c)
+		}, runState{status: "exited", reason: "unsubscribed"}},
+		{"suppressed", "", func(_, c uuid.UUID) {
+			f.exec(t, `INSERT INTO suppressions (project_id, recipient, reason) SELECT project_id, upper(email), 'manual' FROM contacts WHERE id = $1`, c)
+		}, runState{status: "exited", reason: "suppressed"}},
+		{"render failed", `{"order":5}`, nil, runState{status: "failed", reason: "render_failed"}},
+		{"archived", "", func(r, _ uuid.UUID) {
+			f.exec(t, `UPDATE automations SET status = 'archived', archived_at = now() WHERE id = (SELECT automation_id FROM automation_runs WHERE id = $1)`, r)
+		}, runState{status: "canceled", reason: "automation_archived"}},
+		{"project disabled", "", func(_, _ uuid.UUID) {
+			f.exec(t, `UPDATE projects SET status = 'disabled' WHERE id = $1`, f.project)
+		}, runState{status: "exited", reason: "project_disabled"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			run, contact := f.startRun(t, tc.data, send)
+			if tc.setup != nil {
+				tc.setup(run, contact)
+			}
+			f.step(t, e, run, 0)
+			got := f.run(t, run)
+			if got.status != tc.want.status || got.reason != tc.want.reason || got.due || got.data {
+				t.Fatalf("got %+v, want %+v", got, tc.want)
+			}
+			if n := f.count(t, `SELECT count(*) FROM emails WHERE automation_run_id = $1`, run); n != 0 {
+				t.Fatalf("%d emails", n)
+			}
+			f.exec(t, `UPDATE projects SET status = 'active' WHERE id = $1`, f.project)
+		})
+	}
+	// A run whose contact was deleted is gone: the job does nothing.
+	run, contact := f.startRun(t, "", send)
+	f.exec(t, `DELETE FROM contacts WHERE id = $1`, contact)
+	f.step(t, e, run, 0)
+	if n := f.count(t, `SELECT count(*) FROM emails WHERE automation_id IS NOT NULL AND contact_id IS NULL`); n != 0 {
+		t.Fatalf("%d emails for a deleted contact", n)
+	}
+}
+
+func (f *fixture) exec(t *testing.T, q string, args ...any) {
+	t.Helper()
+	if _, err := f.pool.Exec(f.ctx, q, args...); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestEngineFinalAttempt(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t, 50)
+	e := f.engine()
+	run, _ := f.startRun(t, "", f.sendStep(f.template, "1"))
+	// A send step whose template version is gone fails internally.
+	f.exec(t, `UPDATE automations SET steps = jsonb_set(steps, '{0,template_version}', '99') WHERE id = (SELECT automation_id FROM automation_runs WHERE id = $1)`, run)
+	args := jobs.AutomationStepArgs{RunID: run, ProjectID: f.project, Step: 0}
+	if err := e.Step(f.ctx, args, jobs.Attempt{Number: 1, MaxAttempts: 25}); err == nil {
+		t.Fatal("internal error not returned for a retry")
+	}
+	if s := f.run(t, run); s.status != automations.RunActive {
+		t.Fatalf("run ended before the final attempt: %+v", s)
+	}
+	if err := e.Step(f.ctx, args, jobs.Attempt{Number: 25, MaxAttempts: 25}); err != nil {
+		t.Fatalf("final attempt: %v", err)
+	}
+	if s := f.run(t, run); s.status != automations.RunFailed || s.reason != automations.ReasonInternalError || s.data {
+		t.Fatalf("after final attempt: %+v", s)
+	}
+	// A stale job's final failure never touches a run at another step.
+	other, _ := f.startRun(t, "", f.sendStep(f.template, "1"), wait60, f.sendStep(f.template, "1"))
+	f.step(t, e, other, 0)
+	automations.FailRun(e, f.ctx, jobs.AutomationStepArgs{RunID: other, ProjectID: f.project, Step: 0}, errors.New("boom"))
+	if s := f.run(t, other); s.status != automations.RunActive || s.step != 2 {
+		t.Fatalf("stale failure touched the run: %+v", s)
+	}
+}
+
+func TestEngineRequeueOverdue(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t, 50)
+	e := f.engine()
+	run, _ := f.startRun(t, "", f.sendStep(f.template, "1"))
+	// Lose the step job, as after a discard.
+	f.exec(t, `DELETE FROM river_job WHERE kind = 'automation_step'`)
+	f.exec(t, `UPDATE automation_runs SET next_step_at = now() - interval '16 minutes' WHERE id = $1`, run)
+	if err := e.Requeue(f.ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n := f.count(t, `SELECT count(*) FROM river_job WHERE kind = 'automation_step' AND args->>'run_id' = $1`, run.String()); n != 1 {
+		t.Fatalf("%d jobs after requeue", n)
+	}
+	// While the job exists, a second pass inserts nothing.
+	if err := e.Requeue(f.ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n := f.count(t, `SELECT count(*) FROM river_job WHERE kind = 'automation_step' AND args->>'run_id' = $1`, run.String()); n != 1 {
+		t.Fatalf("%d jobs after a second requeue", n)
+	}
+	// A run due less than the grace ago is left alone.
+	recent, _ := f.startRun(t, "", f.sendStep(f.template, "1"))
+	f.exec(t, `DELETE FROM river_job WHERE kind = 'automation_step' AND args->>'run_id' = $1`, recent.String())
+	if err := e.Requeue(f.ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n := f.count(t, `SELECT count(*) FROM river_job WHERE kind = 'automation_step' AND args->>'run_id' = $1`, recent.String()); n != 0 {
+		t.Fatalf("recent run requeued")
+	}
+}
+
+// A step job and the deletion of its contact take their locks in the same
+// order (contact, then run): racing them never deadlocks.
+func TestEngineRacesContactDeletion(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t, 50)
+	e := f.engine()
+	cs := contacts.NewStore(f.pool, 1000)
+	for range 20 {
+		run, contact := f.startRun(t, "", f.sendStep(f.template, "1"), wait60, f.sendStep(f.template, "1"))
+		var wg sync.WaitGroup
+		var stepErr, delErr error
+		wg.Go(func() {
+			stepErr = e.Step(f.ctx, jobs.AutomationStepArgs{RunID: run, ProjectID: f.project, Step: 0}, jobs.Attempt{Number: 1, MaxAttempts: 25})
+		})
+		wg.Go(func() { delErr = cs.Delete(f.ctx, f.project, contact) })
+		wg.Wait()
+		if stepErr != nil || delErr != nil {
+			t.Fatalf("step: %v, delete: %v", stepErr, delErr)
+		}
+	}
+	if n := f.count(t, `SELECT count(*) FROM automation_runs`); n != 0 {
+		t.Fatalf("%d runs left after their contacts were deleted", n)
+	}
+}

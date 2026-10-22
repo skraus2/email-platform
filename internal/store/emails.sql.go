@@ -312,6 +312,44 @@ func (q *Queries) HandoffLeavesWindowIn(ctx context.Context, arg HandoffLeavesWi
 	return seconds, err
 }
 
+const insertAutomationEmail = `-- name: InsertAutomationEmail :one
+INSERT INTO emails (project_id, sender, recipient, subject, template_id, template_version,
+                    contact_id, automation_id, automation_run_id, automation_step)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+RETURNING id
+`
+
+type InsertAutomationEmailParams struct {
+	ProjectID       uuid.UUID
+	Sender          string
+	Recipient       string
+	Subject         string
+	TemplateID      *uuid.UUID
+	TemplateVersion *int32
+	ContactID       *uuid.UUID
+	AutomationID    *uuid.UUID
+	AutomationRunID *uuid.UUID
+	AutomationStep  *int16
+}
+
+func (q *Queries) InsertAutomationEmail(ctx context.Context, arg InsertAutomationEmailParams) (uuid.UUID, error) {
+	row := q.db.QueryRow(ctx, insertAutomationEmail,
+		arg.ProjectID,
+		arg.Sender,
+		arg.Recipient,
+		arg.Subject,
+		arg.TemplateID,
+		arg.TemplateVersion,
+		arg.ContactID,
+		arg.AutomationID,
+		arg.AutomationRunID,
+		arg.AutomationStep,
+	)
+	var id uuid.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
 const insertEmail = `-- name: InsertEmail :one
 INSERT INTO emails (project_id, sender, recipient, subject, template_id, template_version, scheduled_at)
 VALUES ($1, $2, $3, $4, $5, $6, $7)
@@ -384,6 +422,30 @@ func (q *Queries) InsertEmailContent(ctx context.Context, arg InsertEmailContent
 		arg.ProjectID,
 		arg.TextBody,
 		arg.HtmlBody,
+	)
+	return err
+}
+
+const insertEmailContentWithUnsubscribe = `-- name: InsertEmailContentWithUnsubscribe :exec
+INSERT INTO email_contents (email_id, project_id, text_body, html_body, list_unsubscribe_url)
+VALUES ($1, $2, $3, $4, $5)
+`
+
+type InsertEmailContentWithUnsubscribeParams struct {
+	EmailID            uuid.UUID
+	ProjectID          uuid.UUID
+	TextBody           *string
+	HtmlBody           *string
+	ListUnsubscribeUrl *string
+}
+
+func (q *Queries) InsertEmailContentWithUnsubscribe(ctx context.Context, arg InsertEmailContentWithUnsubscribeParams) error {
+	_, err := q.db.Exec(ctx, insertEmailContentWithUnsubscribe,
+		arg.EmailID,
+		arg.ProjectID,
+		arg.TextBody,
+		arg.HtmlBody,
+		arg.ListUnsubscribeUrl,
 	)
 	return err
 }
