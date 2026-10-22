@@ -3,7 +3,8 @@
 # real API and worker binaries and checks that sending survives
 #   (a) a Mailpit outage,
 #   (b) the worker being killed with SIGKILL mid-batch,
-#   (c) a PostgreSQL restart while API and worker run.
+#   (c) a PostgreSQL restart while API and worker run,
+#   (d) worker kills while automation step jobs run and while runs wait.
 # Needs `make up migrate`. Only local containers are stopped and started; no
 # volume or data is removed. Takes a few minutes.
 set -euo pipefail
@@ -24,6 +25,7 @@ cleanup() {
   # The run's key is useless afterwards; revoke it instead of leaving an
   # active credential behind.
   [[ -n "${key:-}" ]] && "$TMP/admin" key revoke -prefix "$(cut -d_ -f2 <<<"$key")" >/dev/null 2>&1 || true
+  [[ -n "${akey:-}" ]] && "$TMP/admin" key revoke -prefix "$(cut -d_ -f2 <<<"$akey")" >/dev/null 2>&1 || true
   kill "$API_PID" "$WORKER_PID" 2>/dev/null || true
   wait "$API_PID" "$WORKER_PID" 2>/dev/null || true
   # Never leave the shared infrastructure stopped.
@@ -177,7 +179,86 @@ wait_captured prerestart 120
 wait_captured postrestart 120
 echo "(c) PostgreSQL restart: readyz 503 seen: $saw503; POST codes during restart: $(printf '%s\n' "${codes[@]}" | sort | uniq -c | awk '{printf "%s×%s ", $1, $2}'); 10/10 captured afterwards without restarting api/worker"
 
+# (d) automation runs survive worker kills -----------------------------------
+# RUNS contacts trigger an automation (send, wait 60 s, send). The worker is
+# killed with SIGKILL while the first steps run and again while every run
+# waits; after each restart every run ends with exactly one email per send
+# step. A faster provider rate keeps the 2×RUNS sends short.
+RUNS="${RESILIENCE_RUNS:-1000}"
+psql_q() { docker compose exec -T postgres psql -U email_platform -d email_platform -Atc "$1"; }
+kill -TERM "$WORKER_PID"; wait "$WORKER_PID" 2>/dev/null || true
+export PROVIDER_RATE_PER_SECOND=500
+start_worker 3
+akey=$("$TMP/admin" key create -project "$project" -scopes automations:read,automations:write,events:write,contacts:write,templates:write 2>/dev/null) ||
+  fail "admin key create (automations)"
+printf 'Authorization: Bearer %s\n' "$akey" >"$TMP/auth2.header"
+api() { # api METHOD PATH BODY -> prints the response, fails on >= 300
+  local code
+  code=$(curl -sS -o "$TMP/api.json" -w '%{http_code}' -X "$1" "http://$ADDR$2" -H @"$TMP/auth2.header" \
+    -H 'Content-Type: application/json' -d "$3")
+  [[ "$code" -lt 300 ]] || fail "$1 $2: $code $(cat "$TMP/api.json")"
+  cat "$TMP/api.json"
+}
+id_of() { sed -nE 's/^\{"id":"([0-9a-f-]{36})".*/\1/p'; }
+tmpl=$(api POST /v1/templates '{"slug":"res-welcome"}' | id_of)
+api POST "/v1/templates/$tmpl/versions" '{"subject":"Welcome","text":"Hi {{.unsubscribe_url}}","variables":{"unsubscribe_url":{"type":"string","required":true}}}' >/dev/null
+send_step="{\"type\":\"send\",\"from\":\"res@example.test\",\"template_id\":\"$tmpl\",\"template_version\":1,\"unsubscribe_url\":\"https://app.example.test/u?t={token}\"}"
+automation=$(api POST /v1/automations "{\"name\":\"resilience\",\"trigger\":{\"event\":\"res.signed_up\"},\"steps\":[$send_step,{\"type\":\"wait\",\"seconds\":60},$send_step]}" | id_of)
+[[ -n "$automation" ]] || fail "automation not created"
+started=$SECONDS
+# The events are reported while the worker is down, so their step jobs form
+# a backlog the restarted worker is killed in the middle of.
+kill -TERM "$WORKER_PID"; wait "$WORKER_PID" 2>/dev/null || true
+for i in $(seq 1 "$RUNS"); do
+  c=$(api POST /v1/contacts "{\"email\":\"res-run-$i@example.test\",\"status\":\"subscribed\",\"consent_source\":\"resilience\"}" | id_of)
+  api POST /v1/contact-events "{\"name\":\"res.signed_up\",\"contact_id\":\"$c\"}" >/dev/null
+done
+start_worker 4
+steprunning=0
+for _ in $(seq 1 200); do
+  steprunning=$(psql_q "SELECT count(*) FROM river_job WHERE kind = 'automation_step' AND state = 'running'")
+  [[ "$steprunning" -ge 1 ]] && break
+  sleep 0.01
+done
+stepdone=$(psql_q "SELECT count(*) FROM automation_runs WHERE automation_id = '$automation' AND step > 0")
+kill -KILL "$WORKER_PID"; wait "$WORKER_PID" 2>/dev/null || true
+[[ "$steprunning" -ge 1 ]] || fail "automation: no step job was running at the kill; the scenario did not test rescue"
+start_worker 5
+runs_sql="FROM automation_runs WHERE automation_id = '$automation'"
+# Every run reaches its wait (rescued step jobs need JOB_RESCUE_AFTER).
+deadline=$((SECONDS + 240))
+until [[ $(psql_q "SELECT count(*) $runs_sql AND status = 'active' AND step = 2") -eq $RUNS ]]; do
+  [[ $SECONDS -ge $deadline ]] && fail "automation: runs did not all reach their wait: $(psql_q "SELECT status, step, count(*) $runs_sql GROUP BY 1, 2")"
+  sleep 1
+done
+# Kill while every run waits; stay down past the due times.
+kill -KILL "$WORKER_PID"; wait "$WORKER_PID" 2>/dev/null || true
+waiting=$(psql_q "SELECT count(*) $runs_sql AND status = 'active' AND next_step_at > now()")
+sleep 65
+overdue=$(psql_q "SELECT count(*) $runs_sql AND status = 'active' AND next_step_at < now()")
+start_worker 6
+deadline=$((SECONDS + 300))
+until [[ $(psql_q "SELECT count(*) $runs_sql AND status = 'completed'") -eq $RUNS ]]; do
+  [[ $SECONDS -ge $deadline ]] && fail "automation: runs not completed: $(psql_q "SELECT status, step, count(*) $runs_sql GROUP BY 1, 2")"
+  sleep 1
+done
+until [[ $(psql_q "SELECT count(*) FROM emails WHERE automation_id = '$automation' AND status IN ('queued', 'sending')") -eq 0 ]]; do
+  [[ $SECONDS -ge $deadline ]] && fail "automation: emails still queued"
+  sleep 1
+done
+bad=$(psql_q "SELECT count(*) FROM (SELECT r.id FROM automation_runs r LEFT JOIN emails e ON e.automation_run_id = r.id
+  WHERE r.automation_id = '$automation' GROUP BY r.id HAVING count(e.id) <> 2 OR bool_or(e.status <> 'captured')) x")
+[[ "$bad" -eq 0 ]] || fail "automation: $bad runs without exactly two captured emails"
+# The latest emails reached Mailpit exactly once (or a duplicate was
+# flagged); Mailpit keeps only its newest messages (MP_MAX_MESSAGES).
+for id in $(psql_q "SELECT id FROM emails WHERE automation_id = '$automation' ORDER BY finished_at DESC LIMIT 20"); do
+  c=$(copies "$id")
+  [[ "$c" -ge 1 ]] || fail "automation: $id missing in Mailpit"
+  if [[ "$c" -gt 1 ]]; then grep 'possible_duplicate_send' "$TMP/worker.log" | grep -qF "$id" || fail "automation: duplicate of $id not flagged"; fi
+done
+echo "(d) automation runs: $RUNS runs; SIGKILL with $steprunning step jobs running ($stepdone of $RUNS first steps done), again with $waiting runs waiting ($overdue overdue at restart); all completed with exactly 2 captured emails each in $((SECONDS - started))s"
+
 # Needles from a file: the key must not appear in grep's command line.
-printf '%s\n' "$key" "res-recipient@example.test" "resilience body" "reskey-" "email_platform:email_platform@" >"$TMP/needles"
+printf '%s\n' "$key" "$akey" "res-run-" "res-recipient@example.test" "resilience body" "reskey-" "email_platform:email_platform@" >"$TMP/needles"
 if grep -qFf "$TMP/needles" "$TMP/api.log" "$TMP/worker.log"; then fail "logs contain a secret, password, idempotency key or personal data"; fi
 echo "RESILIENCE OK"
