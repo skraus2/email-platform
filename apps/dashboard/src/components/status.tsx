@@ -15,6 +15,9 @@ const TONE: Record<string, "ok" | "bad" | "wait" | "off"> = {
   scheduled: "wait",
   completed: "ok",
   canceled: "off",
+  paused: "wait",
+  archived: "off",
+  exited: "off",
 };
 
 /** A status as text; the colour is only an extra cue. */

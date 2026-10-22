@@ -45,6 +45,11 @@ export type Seed = {
   };
   /** A preview value the logs must never contain. */
   previewValue: string;
+  /**
+   * A welcome automation (send, wait an hour, send) with one run that sent
+   * its first email and waits.
+   */
+  automation: { id: string; name: string; runId: string; contact: string };
 };
 
 export type Account = { username: string; password: string };

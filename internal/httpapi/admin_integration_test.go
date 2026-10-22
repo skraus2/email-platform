@@ -19,7 +19,10 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/skraus2/email-platform/internal/admin"
+	"github.com/skraus2/email-platform/internal/automations"
 	"github.com/skraus2/email-platform/internal/httpapi"
+	"github.com/skraus2/email-platform/internal/jobs"
+	"github.com/skraus2/email-platform/internal/templates"
 )
 
 const adminPassword = "correct horse battery"
@@ -121,6 +124,8 @@ var adminRoutes = []struct{ method, path string }{
 	{"POST", "/admin/v1/templates/" + uuid.NewString() + "/versions/1/preview"},
 	{"GET", "/admin/v1/senders"}, {"GET", "/admin/v1/webhook-endpoints"},
 	{"GET", "/admin/v1/broadcasts"}, {"GET", "/admin/v1/broadcasts/" + uuid.NewString()},
+	{"GET", "/admin/v1/automations"}, {"GET", "/admin/v1/automations/" + uuid.NewString()},
+	{"GET", "/admin/v1/automations/" + uuid.NewString() + "/runs"}, {"GET", "/admin/v1/automation-runs/" + uuid.NewString()},
 }
 
 func TestAdminAPIIsSeparateFromTheProjectAPI(t *testing.T) {
@@ -437,7 +442,7 @@ func TestAdminContractAndHardening(t *testing.T) {
 	_, em, _ := call(t, a.admin.URL, "GET", "/admin/v1/emails/"+all[0], session, "")
 	assertKeys(t, "AdminEmail", em, "id", "project_id", "project_name", "status", "from", "to", "subject", "provider",
 		"provider_id", "attempts", "error_code", "template_id", "template_version", "created_at", "updated_at", "finished_at",
-		"scheduled_at", "broadcast_id")
+		"scheduled_at", "broadcast_id", "automation_id", "automation_run_id")
 	_, pr, _ := call(t, a.admin.URL, "GET", "/admin/v1/projects", session, "")
 	assertKeys(t, "Project", pr["data"].([]any)[0].(map[string]any), "id", "name", "status", "created_at")
 	_, tl, _ := call(t, a.admin.URL, "GET", "/admin/v1/templates", session, "")
@@ -612,5 +617,100 @@ func TestAdminBroadcasts(t *testing.T) {
 	}
 	if resp, m, _ := call(t, a.admin.URL, "GET", all+"&status=queued", session, ""); resp.StatusCode != 400 || errorCode(m) != "invalid_filter" {
 		t.Fatalf("10 statuses: %d %v", resp.StatusCode, m)
+	}
+}
+
+func TestAdminAutomations(t *testing.T) {
+	t.Parallel()
+	a := newAdminStack(t)
+	session := a.login(t)
+	projectA, token := a.project(t, "automations:write", "events:write", "contacts:write", "templates:write")
+	_, tokenB := a.project(t, "automations:write", "templates:write")
+	mk := func(token string) string {
+		t.Helper()
+		_, body := a.do(t, "POST", "/v1/templates", token, `{"slug":"welcome"}`)
+		tmpl := body["id"].(string)
+		a.do(t, "POST", "/v1/templates/"+tmpl+"/versions", token, jsonBody(t, map[string]any{
+			"subject": "Welcome", "text": "{{.unsubscribe_url}}",
+			"variables": map[string]any{"unsubscribe_url": map[string]any{"type": "string"}, "plan": map[string]any{"type": "string"}},
+		}))
+		code, body := a.do(t, "POST", "/v1/automations", token, jsonBody(t, map[string]any{
+			"name": "Welcome", "trigger": map[string]any{"event": "user.signed_up"},
+			"steps": []any{
+				map[string]any{"type": "send", "from": "news@example.test", "template_id": tmpl, "template_version": 1,
+					"variables": map[string]any{"plan": "Zq9-shared-value"}, "unsubscribe_url": "https://app.example.test/u?t={token}"},
+				map[string]any{"type": "wait", "seconds": 3600},
+				map[string]any{"type": "condition", "attribute": "plan", "op": "eq", "value": "pro"},
+			},
+		}))
+		if code != 201 {
+			t.Fatalf("create: %d %v", code, body)
+		}
+		return body["id"].(string)
+	}
+	idA, idB := mk(token), mk(tokenB)
+	a.do(t, "PATCH", "/v1/automations/"+idB, tokenB, `{"status":"paused"}`)
+	_, body := a.do(t, "POST", "/v1/contacts", token, `{"email":"ann@example.test","status":"subscribed","consent_source":"signup"}`)
+	_, body = a.do(t, "POST", "/v1/contact-events", token, `{"name":"user.signed_up","contact_id":"`+body["id"].(string)+`","data":{"secret":"Zq9-event-data"}}`)
+	run := body["runs"].([]any)[0].(map[string]any)["id"].(string)
+	enq, err := jobs.NewEnqueuer(a.pool, slog.New(slog.DiscardHandler), 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := automations.NewEngine(a.pool, enq, slog.New(slog.DiscardHandler), templates.NewCache(1<<20, 1<<20))
+	if err := engine.Step(context.Background(), jobs.AutomationStepArgs{RunID: uuid.MustParse(run), ProjectID: projectA, Step: 0}, jobs.Attempt{Number: 1, MaxAttempts: 25}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, list, _ := call(t, a.admin.URL, "GET", "/admin/v1/automations", session, "")
+	if n := len(list["data"].([]any)); n != 2 {
+		t.Fatalf("all projects: %d", n)
+	}
+	assertKeys(t, "Automation", list["data"].([]any)[0].(map[string]any), "id", "project_id", "project_name", "name", "status",
+		"trigger_event", "allow_reentry", "step_count", "created_at", "updated_at")
+	if _, m, _ := call(t, a.admin.URL, "GET", "/admin/v1/automations?status=paused", session, ""); len(m["data"].([]any)) != 1 {
+		t.Fatalf("status filter: %v", m)
+	}
+	if _, m, _ := call(t, a.admin.URL, "GET", "/admin/v1/automations?project_id="+projectA.String(), session, ""); len(m["data"].([]any)) != 1 {
+		t.Fatalf("project filter: %v", m)
+	}
+	resp, detail, raw := call(t, a.admin.URL, "GET", "/admin/v1/automations/"+idA, session, "")
+	if resp.StatusCode != 200 || detail["run_counts"].(map[string]any)["active"] != 1.0 || len(detail["steps"].([]any)) != 3 {
+		t.Fatalf("detail: %d %s", resp.StatusCode, raw)
+	}
+	assertKeys(t, "AutomationDetail", detail, "id", "project_id", "project_name", "name", "status", "trigger_event", "allow_reentry",
+		"step_count", "created_at", "updated_at", "steps", "run_counts")
+	assertKeys(t, "SendStep", detail["steps"].([]any)[0].(map[string]any), "type", "from", "template_id", "template_version", "unsubscribe_url")
+	assertKeys(t, "ConditionStep", detail["steps"].([]any)[2].(map[string]any), "type", "attribute", "op", "value")
+	if strings.Contains(raw, "Zq9-shared-value") {
+		t.Fatal("shared variables shown to operators")
+	}
+	_, runs, raw := call(t, a.admin.URL, "GET", "/admin/v1/automations/"+idA+"/runs?status=active", session, "")
+	if len(runs["data"].([]any)) != 1 {
+		t.Fatalf("runs: %s", raw)
+	}
+	assertKeys(t, "AutomationRun", runs["data"].([]any)[0].(map[string]any), "id", "contact_id", "status", "reason", "step",
+		"next_step_at", "created_at", "updated_at", "finished_at")
+	resp, runDetail, raw := call(t, a.admin.URL, "GET", "/admin/v1/automation-runs/"+run, session, "")
+	emailsOfRun, _ := runDetail["emails"].([]any)
+	if resp.StatusCode != 200 || len(emailsOfRun) != 1 || runDetail["automation_name"] != "Welcome" || runDetail["step"] != 2.0 {
+		t.Fatalf("run detail: %d %s", resp.StatusCode, raw)
+	}
+	if strings.Contains(raw, "Zq9-event-data") || strings.Contains(raw, "secret") {
+		t.Fatal("trigger data shown to operators")
+	}
+	email := emailsOfRun[0].(map[string]any)["id"].(string)
+	if _, m, _ := call(t, a.admin.URL, "GET", "/admin/v1/emails/"+email, session, ""); m["automation_run_id"] != run || m["automation_id"] != idA {
+		t.Fatalf("email links: %v", m)
+	}
+	for _, q := range []string{"/admin/v1/automations?status=done", "/admin/v1/automations?project_id=x", "/admin/v1/automations/" + idA + "/runs?status=x"} {
+		if resp, m, _ := call(t, a.admin.URL, "GET", q, session, ""); resp.StatusCode != 400 || errorCode(m) != "invalid_filter" {
+			t.Errorf("%s: %d %v", q, resp.StatusCode, m)
+		}
+	}
+	for _, p := range []string{"/admin/v1/automations/" + uuid.NewString(), "/admin/v1/automations/" + uuid.NewString() + "/runs", "/admin/v1/automation-runs/" + uuid.NewString()} {
+		if resp, _, _ := call(t, a.admin.URL, "GET", p, session, ""); resp.StatusCode != 404 {
+			t.Errorf("unknown %s: %d", p, resp.StatusCode)
+		}
 	}
 }

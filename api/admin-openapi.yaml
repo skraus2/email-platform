@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Email Platform Admin API
-  version: 0.2.0
+  version: 0.3.0
   description: |
     Internal API for the operator dashboard. Served on its own listener
     (default `127.0.0.1:8081`), never on the project API listener; project
@@ -544,6 +544,124 @@ paths:
           $ref: "#/components/responses/InternalError"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
+  /admin/v1/automations:
+    get:
+      operationId: listAutomations
+      summary: List automations of all projects, newest first
+      parameters:
+        - $ref: "#/components/parameters/ProjectFilter"
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [active, paused, archived]
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: One page of automations (without steps and run counts).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, next_cursor]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Automation"
+                  next_cursor:
+                    $ref: "#/components/schemas/NextCursor"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /admin/v1/automations/{id}:
+    get:
+      operationId: getAutomation
+      summary: An automation with its steps and run counts
+      parameters:
+        - $ref: "#/components/parameters/ID"
+      responses:
+        "200":
+          description: The automation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AutomationDetail"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /admin/v1/automations/{id}/runs:
+    get:
+      operationId: listAutomationRuns
+      summary: Runs of an automation, newest first
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [active, completed, exited, canceled, failed]
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: One page of runs.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, next_cursor]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/AutomationRun"
+                  next_cursor:
+                    $ref: "#/components/schemas/NextCursor"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /admin/v1/automation-runs/{id}:
+    get:
+      operationId: getAutomationRun
+      summary: A run with the emails it created (never its trigger data)
+      parameters:
+        - $ref: "#/components/parameters/ID"
+      responses:
+        "200":
+          description: The run.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AutomationRunDetail"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
 components:
   securitySchemes:
     session:
@@ -678,6 +796,8 @@ components:
           finished_at,
           scheduled_at,
           broadcast_id,
+          automation_id,
+          automation_run_id,
         ]
       properties:
         id:
@@ -727,6 +847,13 @@ components:
         broadcast_id:
           type: [string, "null"]
           format: uuid
+        automation_id:
+          type: [string, "null"]
+          format: uuid
+        automation_run_id:
+          type: [string, "null"]
+          format: uuid
+          description: "`null` for other emails and once the run was deleted (with its contact or by retention)."
     Broadcast:
       type: object
       description: A broadcast of any project (never its shared variables).
@@ -985,6 +1112,104 @@ components:
           type: string
         html:
           type: [string, "null"]
+    Automation:
+      type: object
+      required:
+        [
+          id,
+          project_id,
+          project_name,
+          name,
+          status,
+          trigger_event,
+          allow_reentry,
+          step_count,
+          created_at,
+          updated_at,
+        ]
+      properties:
+        id: { type: string, format: uuid }
+        project_id: { type: string, format: uuid }
+        project_name: { type: string }
+        name: { type: string }
+        status: { type: string, enum: [active, paused, archived] }
+        trigger_event: { type: string }
+        allow_reentry: { type: boolean }
+        step_count: { type: integer, minimum: 1, maximum: 20 }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    AutomationDetail:
+      allOf:
+        - $ref: "#/components/schemas/Automation"
+        - type: object
+          required: [steps, run_counts]
+          properties:
+            steps:
+              type: array
+              description: The steps in order; send steps without their shared variables.
+              items:
+                type: object
+                required: [type]
+                properties:
+                  type: { type: string, enum: [wait, condition, send] }
+                  seconds: { type: integer }
+                  attribute: { type: string }
+                  event: { type: string }
+                  op: { type: string }
+                  value: { type: [string, number, boolean] }
+                  from: { type: string }
+                  template_id: { type: string, format: uuid }
+                  template_version: { type: integer }
+                  unsubscribe_url: { type: string }
+            run_counts:
+              type: object
+              required: [active, completed, exited, canceled, failed]
+              additionalProperties: { type: integer, minimum: 0 }
+    AutomationRun:
+      type: object
+      required:
+        [
+          id,
+          contact_id,
+          status,
+          reason,
+          step,
+          next_step_at,
+          created_at,
+          updated_at,
+          finished_at,
+        ]
+      properties:
+        id: { type: string, format: uuid }
+        contact_id: { type: string, format: uuid }
+        status:
+          { type: string, enum: [active, completed, exited, canceled, failed] }
+        reason: { type: [string, "null"] }
+        step: { type: integer, minimum: 0 }
+        next_step_at: { type: [string, "null"], format: date-time }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        finished_at: { type: [string, "null"], format: date-time }
+    AutomationRunDetail:
+      allOf:
+        - $ref: "#/components/schemas/AutomationRun"
+        - type: object
+          required:
+            [project_id, project_name, automation_id, automation_name, emails]
+          properties:
+            project_id: { type: string, format: uuid }
+            project_name: { type: string }
+            automation_id: { type: string, format: uuid }
+            automation_name: { type: string }
+            emails:
+              type: array
+              items:
+                type: object
+                required: [id, step, status]
+                properties:
+                  id: { type: string, format: uuid }
+                  step: { type: integer, minimum: 0 }
+                  status: { $ref: "#/components/schemas/EmailStatus" }
     Sender:
       type: object
       required: [id, project_id, kind, value, status, verified_at, created_at]

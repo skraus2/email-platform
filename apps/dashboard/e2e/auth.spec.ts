@@ -15,6 +15,14 @@ test("a data page without a session redirects to the login page", async ({
   await expect(page).toHaveURL(LOGIN);
   await page.goto("/emails?status=failed");
   await expect(page).toHaveURL(LOGIN);
+  for (const path of [
+    "/automations",
+    `/automations/${seed().automation.id}`,
+    `/automation-runs/${seed().automation.runId}`,
+  ]) {
+    await page.goto(path);
+    await expect(page).toHaveURL(LOGIN);
+  }
   await expect(page.getByRole("heading", { name: "Sign in" })).toBeVisible();
   await expect(page.getByText("Your session ended")).toHaveCount(0);
 });
@@ -151,6 +159,9 @@ test("sign-in sets a strict session cookie and every page carries a nonce CSP", 
     `/projects/${s.projectId}`,
     "/broadcasts",
     `/broadcasts/${s.broadcast.id}`,
+    "/automations",
+    `/automations/${s.automation.id}`,
+    `/automation-runs/${s.automation.runId}`,
     "/login",
   ];
   for (const path of paths) {

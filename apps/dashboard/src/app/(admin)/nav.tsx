@@ -32,6 +32,7 @@ export function MainNav() {
       | "messages"
       | "failures"
       | "broadcasts"
+      | "automations"
       | "templates"
       | "projects",
   ) => {
@@ -40,6 +41,12 @@ export function MainNav() {
     }
     if (item === "templates" || item === "projects" || item === "broadcasts") {
       return section(`/${item}`);
+    }
+    if (item === "automations") {
+      return (
+        section("/automations") ??
+        (pathname.startsWith("/automation-runs/") ? "true" : undefined)
+      );
     }
     if (item === "failures") {
       return failures ? "page" : undefined;
@@ -71,6 +78,11 @@ export function MainNav() {
         <li>
           <Link href="/broadcasts" aria-current={current("broadcasts")}>
             Broadcasts
+          </Link>
+        </li>
+        <li>
+          <Link href="/automations" aria-current={current("automations")}>
+            Automations
           </Link>
         </li>
         <li>

@@ -131,6 +131,8 @@ export type AdminEmail = {
   finished_at: string | null;
   scheduled_at: string | null;
   broadcast_id: string | null;
+  automation_id: string | null;
+  automation_run_id: string | null;
 };
 
 export type EmailEvent = {
@@ -234,4 +236,65 @@ export type BroadcastDetail = Broadcast & {
     skipped_invalid: number;
     by_status: Record<string, number>;
   };
+};
+
+export type AutomationStatus = "active" | "paused" | "archived";
+
+export type Automation = {
+  id: string;
+  project_id: string;
+  project_name: string;
+  name: string;
+  status: AutomationStatus;
+  trigger_event: string;
+  allow_reentry: boolean;
+  step_count: number;
+  created_at: string;
+  updated_at: string;
+};
+
+/** A step as operators see it (send steps without shared variables). */
+export type AutomationStep =
+  | { type: "wait"; seconds: number }
+  | {
+      type: "condition";
+      attribute?: string;
+      event?: string;
+      op: string;
+      value?: string | number | boolean;
+    }
+  | {
+      type: "send";
+      from: string;
+      template_id: string;
+      template_version: number;
+      unsubscribe_url: string;
+    };
+
+export type RunStatus =
+  "active" | "completed" | "exited" | "canceled" | "failed";
+
+export type AutomationDetail = Automation & {
+  steps: AutomationStep[];
+  run_counts: Record<RunStatus, number>;
+};
+
+export type AutomationRun = {
+  id: string;
+  contact_id: string;
+  status: RunStatus;
+  reason: string | null;
+  step: number;
+  next_step_at: string | null;
+  created_at: string;
+  updated_at: string;
+  finished_at: string | null;
+};
+
+export type AutomationRunDetail = AutomationRun & {
+  project_id: string;
+  project_name: string;
+  automation_id: string;
+  automation_name: string;
+  emails: { id: string; step: number; status: string }[];
 };

@@ -157,7 +157,7 @@ async function seedAll() {
     "-project",
     projectId,
     "-scopes",
-    "emails:send,emails:read,templates:read,templates:write,contacts:write,broadcasts:read,broadcasts:write",
+    "emails:send,emails:read,templates:read,templates:write,contacts:write,broadcasts:read,broadcasts:write,automations:read,automations:write,events:write",
   ]);
   needles(apiKey);
   const accounts: Account[] = ["e2e-admin", "e2e-locked"].map((username) => ({
@@ -275,6 +275,43 @@ async function seedAll() {
     scheduled_at: new Date(Date.now() + 3_000).toISOString(),
   });
 
+  // A welcome automation: the worker runs its first step (one email) and
+  // the run then waits an hour.
+  const welcomeContact = `welcome@${DOMAIN}`;
+  needles(welcomeContact);
+  const welcome = await v1<{ id: string }>(apiKey, "/v1/contacts", {
+    email: welcomeContact,
+    status: "subscribed",
+    consent_source: "e2e-signup",
+    attributes: { name: "Welcome reader" },
+  });
+  const automationName = "E2E welcome series";
+  const welcomeSend = {
+    type: "send",
+    from: FROM,
+    template_id: newsletter.id,
+    template_version: "published",
+    variables: { campaign: shared },
+    unsubscribe_url: "https://app.e2e-shop.test/unsubscribe?t={token}",
+  };
+  const automation = await v1<{ id: string }>(apiKey, "/v1/automations", {
+    name: automationName,
+    trigger: { event: "user.signed_up" },
+    steps: [welcomeSend, { type: "wait", seconds: 3600 }, welcomeSend],
+  });
+  // Event data no page or log may show.
+  const eventData = `e2e-event-${randomBytes(6).toString("hex")}`;
+  needles(eventData);
+  const started = await v1<{ runs: { id: string }[] }>(
+    apiKey,
+    "/v1/contact-events",
+    {
+      name: "user.signed_up",
+      contact_id: welcome.id,
+      data: { campaign: eventData },
+    },
+  );
+
   // A planned email the worker sends once it is due (during "wait").
   const plannedSent = await send({
     to: TEMPLATE_RECIPIENT,
@@ -311,8 +348,8 @@ async function seedAll() {
     },
     emails: {
       // + 2 newsletter recipients, + 2 planned emails (one cancelled),
-      // + 1 follow-up recipient (created by "check").
-      total: n + 8,
+      // + 1 follow-up recipient (created by "check"), + 1 automation email.
+      total: n + 9,
       plannedId: planned.id,
       plannedSentId: plannedSent.id,
       searchId,
@@ -323,13 +360,35 @@ async function seedAll() {
       recipients: RECIPIENTS,
     },
     previewValue,
+    automation: {
+      id: automation.id,
+      name: automationName,
+      runId: started.runs[0].id,
+      contact: welcomeContact,
+    },
   };
   writeFileSync(SEED, JSON.stringify(seed, null, 2), { mode: 0o600 });
 }
 
 async function waitFinal() {
-  const { apiKey, broadcast } = JSON.parse(readFileSync(SEED, "utf8")) as Seed;
+  const { apiKey, broadcast, automation } = JSON.parse(
+    readFileSync(SEED, "utf8"),
+  ) as Seed;
   const deadline = Date.now() + 60_000;
+  // The welcome run sent its first email and waits.
+  while (Date.now() < deadline) {
+    const run = await v1<{ step: number }>(
+      apiKey,
+      `/v1/automation-runs/${automation.runId}`,
+    );
+    if (run.step === 2) {
+      break;
+    }
+    if (Date.now() + 200 >= deadline) {
+      throw new Error(`welcome run did not reach its wait (step ${run.step})`);
+    }
+    await new Promise((r) => setTimeout(r, 200));
+  }
   // The newsletter's recipient emails exist once its fan-out completed.
   while (Date.now() < deadline) {
     const b = await v1<{ status: string }>(

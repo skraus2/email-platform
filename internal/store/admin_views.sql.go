@@ -86,6 +86,83 @@ func (q *Queries) AdminEmailDeliveries(ctx context.Context, arg AdminEmailDelive
 	return items, nil
 }
 
+const adminGetAutomation = `-- name: AdminGetAutomation :one
+SELECT a.id, a.project_id, a.name, a.status, a.trigger_event, a.allow_reentry, a.steps, a.created_at, a.updated_at, a.archived_at, p.name AS project_name
+FROM automations a JOIN projects p ON p.id = a.project_id
+WHERE a.id = $1
+`
+
+type AdminGetAutomationRow struct {
+	Automation  Automation
+	ProjectName string
+}
+
+func (q *Queries) AdminGetAutomation(ctx context.Context, id uuid.UUID) (AdminGetAutomationRow, error) {
+	row := q.db.QueryRow(ctx, adminGetAutomation, id)
+	var i AdminGetAutomationRow
+	err := row.Scan(
+		&i.Automation.ID,
+		&i.Automation.ProjectID,
+		&i.Automation.Name,
+		&i.Automation.Status,
+		&i.Automation.TriggerEvent,
+		&i.Automation.AllowReentry,
+		&i.Automation.Steps,
+		&i.Automation.CreatedAt,
+		&i.Automation.UpdatedAt,
+		&i.Automation.ArchivedAt,
+		&i.ProjectName,
+	)
+	return i, err
+}
+
+const adminGetAutomationRun = `-- name: AdminGetAutomationRun :one
+SELECT r.id, r.project_id, r.automation_id, r.contact_id, r.status, r.reason, r.step, r.next_step_at,
+       r.created_at, r.updated_at, r.finished_at, a.name AS automation_name, p.name AS project_name
+FROM automation_runs r
+JOIN automations a ON a.id = r.automation_id AND a.project_id = r.project_id
+JOIN projects p ON p.id = r.project_id
+WHERE r.id = $1
+`
+
+type AdminGetAutomationRunRow struct {
+	ID             uuid.UUID
+	ProjectID      uuid.UUID
+	AutomationID   uuid.UUID
+	ContactID      uuid.UUID
+	Status         string
+	Reason         *string
+	Step           int16
+	NextStepAt     *time.Time
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+	FinishedAt     *time.Time
+	AutomationName string
+	ProjectName    string
+}
+
+// Never the trigger data.
+func (q *Queries) AdminGetAutomationRun(ctx context.Context, id uuid.UUID) (AdminGetAutomationRunRow, error) {
+	row := q.db.QueryRow(ctx, adminGetAutomationRun, id)
+	var i AdminGetAutomationRunRow
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.AutomationID,
+		&i.ContactID,
+		&i.Status,
+		&i.Reason,
+		&i.Step,
+		&i.NextStepAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.FinishedAt,
+		&i.AutomationName,
+		&i.ProjectName,
+	)
+	return i, err
+}
+
 const adminGetBroadcast = `-- name: AdminGetBroadcast :one
 SELECT b.id, b.project_id, b.name, b.audience_id, b.sender, b.template_id, b.template_version, b.variables, b.unsubscribe_url, b.status, b.scheduled_at, b.started_at, b.finished_at, b.cursor_contact_id, b.recipients, b.skipped_unsubscribed, b.skipped_suppressed, b.skipped_invalid, b.created_at, b.updated_at, p.name AS project_name
 FROM broadcasts b JOIN projects p ON p.id = b.project_id
@@ -184,6 +261,137 @@ func (q *Queries) AdminGetTemplate(ctx context.Context, id uuid.UUID) (Template,
 		&i.CreatedAt,
 	)
 	return i, err
+}
+
+const adminListAutomationRuns = `-- name: AdminListAutomationRuns :many
+SELECT id, contact_id, status, reason, step, next_step_at, created_at, updated_at, finished_at
+FROM automation_runs
+WHERE automation_id = $1 AND id < $2::uuid
+  AND ($3::text IS NULL OR status = $3::text)
+ORDER BY id DESC
+LIMIT $4
+`
+
+type AdminListAutomationRunsParams struct {
+	AutomationID uuid.UUID
+	BeforeID     uuid.UUID
+	Status       *string
+	RowLimit     int32
+}
+
+type AdminListAutomationRunsRow struct {
+	ID         uuid.UUID
+	ContactID  uuid.UUID
+	Status     string
+	Reason     *string
+	Step       int16
+	NextStepAt *time.Time
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
+	FinishedAt *time.Time
+}
+
+// Never the trigger data.
+func (q *Queries) AdminListAutomationRuns(ctx context.Context, arg AdminListAutomationRunsParams) ([]AdminListAutomationRunsRow, error) {
+	rows, err := q.db.Query(ctx, adminListAutomationRuns,
+		arg.AutomationID,
+		arg.BeforeID,
+		arg.Status,
+		arg.RowLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AdminListAutomationRunsRow{}
+	for rows.Next() {
+		var i AdminListAutomationRunsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.ContactID,
+			&i.Status,
+			&i.Reason,
+			&i.Step,
+			&i.NextStepAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.FinishedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const adminListAutomations = `-- name: AdminListAutomations :many
+SELECT a.id, a.project_id, a.name, a.status, a.trigger_event, a.allow_reentry,
+       jsonb_array_length(a.steps)::integer AS step_count, a.created_at, a.updated_at, p.name AS project_name
+FROM automations a JOIN projects p ON p.id = a.project_id
+WHERE a.id < $1::uuid
+  AND ($2::uuid IS NULL OR a.project_id = $2::uuid)
+  AND ($3::text IS NULL OR a.status = $3::text)
+ORDER BY a.id DESC
+LIMIT $4
+`
+
+type AdminListAutomationsParams struct {
+	BeforeID  uuid.UUID
+	ProjectID *uuid.UUID
+	Status    *string
+	RowLimit  int32
+}
+
+type AdminListAutomationsRow struct {
+	ID           uuid.UUID
+	ProjectID    uuid.UUID
+	Name         string
+	Status       string
+	TriggerEvent string
+	AllowReentry bool
+	StepCount    int32
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+	ProjectName  string
+}
+
+func (q *Queries) AdminListAutomations(ctx context.Context, arg AdminListAutomationsParams) ([]AdminListAutomationsRow, error) {
+	rows, err := q.db.Query(ctx, adminListAutomations,
+		arg.BeforeID,
+		arg.ProjectID,
+		arg.Status,
+		arg.RowLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AdminListAutomationsRow{}
+	for rows.Next() {
+		var i AdminListAutomationsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProjectID,
+			&i.Name,
+			&i.Status,
+			&i.TriggerEvent,
+			&i.AllowReentry,
+			&i.StepCount,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.ProjectName,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const adminListBroadcasts = `-- name: AdminListBroadcasts :many

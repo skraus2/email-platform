@@ -22,6 +22,10 @@ export default function Overview() {
           and how far their recipient emails got.
         </li>
         <li>
+          <Link href="/automations">Automations</Link>: flows started by app
+          events, their steps and the state of each run.
+        </li>
+        <li>
           <Link href="/templates">Templates</Link>: published versions, their
           source and a preview with sample values.
         </li>

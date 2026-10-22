@@ -17,6 +17,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/skraus2/email-platform/internal/admin"
+	"github.com/skraus2/email-platform/internal/automations"
 	"github.com/skraus2/email-platform/internal/broadcasts"
 	"github.com/skraus2/email-platform/internal/database"
 	"github.com/skraus2/email-platform/internal/emails"
@@ -78,6 +79,10 @@ func NewAdmin(d AdminDeps) *AdminServer {
 	route("GET /admin/v1/senders", http.MethodGet, s.requireSession(s.handleSenders))
 	route("GET /admin/v1/broadcasts", http.MethodGet, s.requireSession(s.handleBroadcasts))
 	route("GET /admin/v1/broadcasts/{id}", http.MethodGet, s.requireSession(s.handleBroadcast))
+	route("GET /admin/v1/automations", http.MethodGet, s.requireSession(s.handleAutomations))
+	route("GET /admin/v1/automations/{id}", http.MethodGet, s.requireSession(s.handleAutomation))
+	route("GET /admin/v1/automations/{id}/runs", http.MethodGet, s.requireSession(s.handleAutomationRuns))
+	route("GET /admin/v1/automation-runs/{id}", http.MethodGet, s.requireSession(s.handleAutomationRun))
 	route("GET /admin/v1/webhook-endpoints", http.MethodGet, s.requireSession(s.handleWebhookEndpoints))
 	mux.HandleFunc("/", handleNotFound)
 	s.handler = requestLogger(s.logger, allowHosts(d.ListenHost, mux))
@@ -328,6 +333,7 @@ func adminEmailJSON(e admin.Email) map[string]any {
 		"attempts": resp.Attempts, "error_code": resp.ErrorCode, "template_id": resp.TemplateID,
 		"template_version": resp.TemplateVersion, "created_at": resp.CreatedAt, "updated_at": resp.UpdatedAt,
 		"finished_at": resp.FinishedAt, "scheduled_at": resp.ScheduledAt, "broadcast_id": resp.BroadcastID,
+		"automation_id": resp.AutomationID, "automation_run_id": resp.AutomationRunID,
 	}
 }
 
@@ -778,4 +784,151 @@ func (s *AdminServer) handleBroadcast(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, adminBroadcastJSON(b))
+}
+
+// adminStepJSON mirrors AutomationStep in api/admin-openapi.yaml: a send
+// step without its shared variables.
+func adminStepJSON(st automations.Step) map[string]any {
+	switch st.Type {
+	case automations.StepWait:
+		return map[string]any{"type": st.Type, "seconds": st.Seconds}
+	case automations.StepCondition:
+		if st.Event != "" {
+			return map[string]any{"type": st.Type, "event": st.Event, "op": st.Op}
+		}
+		m := map[string]any{"type": st.Type, "attribute": st.Attribute, "op": st.Op}
+		if st.Value != nil {
+			m["value"] = json.RawMessage(st.Value)
+		}
+		return m
+	}
+	return map[string]any{
+		"type": st.Type, "from": st.From, "template_id": st.TemplateID.String(), "template_version": st.TemplateVersion,
+		"unsubscribe_url": st.UnsubscribeURL,
+	}
+}
+
+// adminAutomationJSON mirrors Automation in api/admin-openapi.yaml.
+func adminAutomationJSON(a admin.Automation) map[string]any {
+	resp := map[string]any{
+		"id": a.ID.String(), "project_id": a.ProjectID.String(), "project_name": a.ProjectName, "name": a.Name,
+		"status": a.Status, "trigger_event": a.TriggerEvent, "allow_reentry": a.AllowReentry, "step_count": a.StepCount,
+		"created_at": a.CreatedAt.UTC(), "updated_at": a.UpdatedAt.UTC(),
+	}
+	if a.RunCounts != nil {
+		steps := make([]map[string]any, 0, len(a.Steps))
+		for _, st := range a.Steps {
+			steps = append(steps, adminStepJSON(st))
+		}
+		resp["steps"] = steps
+		resp["run_counts"] = a.RunCounts
+	}
+	return resp
+}
+
+func adminRunJSON(id, contactID uuid.UUID, status string, reason *string, step int16, next, created, updated, finished *time.Time) map[string]any {
+	return map[string]any{
+		"id": id.String(), "contact_id": contactID.String(), "status": status, "reason": reason, "step": step,
+		"next_step_at": utcPtr(next), "created_at": created.UTC(), "updated_at": updated.UTC(), "finished_at": utcPtr(finished),
+	}
+}
+
+func (s *AdminServer) handleAutomations(w http.ResponseWriter, r *http.Request) {
+	q, ok := parseAdminQuery(w, r, "project_id", "status")
+	if !ok {
+		return
+	}
+	project, ok := q.uuidParam(w, "project_id")
+	if !ok {
+		return
+	}
+	var status string
+	if v, has := q.values["status"]; has {
+		if len(v) != 1 || !automations.IsStatus(v[0]) {
+			writeError(w, http.StatusBadRequest, "invalid_filter", "status must be an automation status")
+			return
+		}
+		status = v[0]
+	}
+	rows, more, err := s.views.Automations(r.Context(), project, status, q.cursor, q.limit)
+	if err != nil {
+		s.serverError(w, r, "admin list automations", err)
+		return
+	}
+	data := make([]map[string]any, 0, len(rows))
+	for _, a := range rows {
+		data = append(data, adminAutomationJSON(a))
+	}
+	var last uuid.UUID
+	if len(rows) > 0 {
+		last = rows[len(rows)-1].ID
+	}
+	writeJSON(w, http.StatusOK, listResponse(data, nextCursor(more, last)))
+}
+
+func (s *AdminServer) handleAutomation(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	a, err := s.views.Automation(r.Context(), id)
+	if err != nil {
+		s.notFoundOr(w, r, "admin get automation", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, adminAutomationJSON(a))
+}
+
+func (s *AdminServer) handleAutomationRuns(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	q, ok := parseAdminQuery(w, r, "status")
+	if !ok {
+		return
+	}
+	var status string
+	if v, has := q.values["status"]; has {
+		if len(v) != 1 || !automations.IsRunStatus(v[0]) {
+			writeError(w, http.StatusBadRequest, "invalid_filter", "status must be a run status")
+			return
+		}
+		status = v[0]
+	}
+	rows, more, err := s.views.AutomationRuns(r.Context(), id, status, q.cursor, q.limit)
+	if err != nil {
+		s.notFoundOr(w, r, "admin list automation runs", err)
+		return
+	}
+	data := make([]map[string]any, 0, len(rows))
+	for _, run := range rows {
+		data = append(data, adminRunJSON(run.ID, run.ContactID, run.Status, run.Reason, run.Step, run.NextStepAt, &run.CreatedAt, &run.UpdatedAt, run.FinishedAt))
+	}
+	var last uuid.UUID
+	if len(rows) > 0 {
+		last = rows[len(rows)-1].ID
+	}
+	writeJSON(w, http.StatusOK, listResponse(data, nextCursor(more, last)))
+}
+
+func (s *AdminServer) handleAutomationRun(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	run, err := s.views.AutomationRun(r.Context(), id)
+	if err != nil {
+		s.notFoundOr(w, r, "admin get automation run", err)
+		return
+	}
+	resp := adminRunJSON(run.ID, run.ContactID, run.Status, run.Reason, run.Step, run.NextStepAt, &run.CreatedAt, &run.UpdatedAt, run.FinishedAt)
+	resp["project_id"], resp["project_name"] = run.ProjectID.String(), run.ProjectName
+	resp["automation_id"], resp["automation_name"] = run.AutomationID.String(), run.AutomationName
+	emails := make([]map[string]any, 0, len(run.Emails))
+	for _, e := range run.Emails {
+		emails = append(emails, map[string]any{"id": e.ID.String(), "step": e.AutomationStep, "status": e.Status})
+	}
+	resp["emails"] = emails
+	writeJSON(w, http.StatusOK, resp)
 }

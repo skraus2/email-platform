@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/skraus2/email-platform/internal/automations"
 	"github.com/skraus2/email-platform/internal/emails"
 	"github.com/skraus2/email-platform/internal/events"
 	"github.com/skraus2/email-platform/internal/store"
@@ -136,6 +137,7 @@ func emailFromRow(e store.Email, projectName string) Email {
 			ID: e.ID, ProjectID: e.ProjectID, Status: e.Status, From: e.Sender, To: e.Recipient, Subject: e.Subject,
 			CreatedAt: e.CreatedAt, UpdatedAt: e.UpdatedAt, FinishedAt: e.FinishedAt, Attempts: int(e.Attempts),
 			ErrorCode: e.ErrorCode, TemplateID: e.TemplateID, ScheduledAt: e.ScheduledAt, BroadcastID: e.BroadcastID,
+			AutomationID: e.AutomationID, AutomationRunID: e.AutomationRunID,
 		},
 		ProjectName: projectName, Provider: e.Provider, ProviderID: e.ProviderID,
 	}
@@ -453,4 +455,127 @@ func (v *Views) Broadcast(ctx context.Context, id uuid.UUID) (Broadcast, error) 
 		b.ByStatus[c.Status] = int(c.N)
 	}
 	return b, nil
+}
+
+// Automation is an automation as operators see it. Steps and RunCounts are
+// set for a single automation only.
+type Automation struct {
+	store.AdminListAutomationsRow
+	Steps     []automations.Step
+	RunCounts map[string]int
+}
+
+// Automations lists automations of all projects, newest first, optionally
+// of one project or status.
+func (v *Views) Automations(ctx context.Context, project *uuid.UUID, status string, cursor uuid.UUID, limit int) ([]Automation, bool, error) {
+	if err := checkLimit(limit); err != nil {
+		return nil, false, err
+	}
+	var st *string
+	if status != "" {
+		st = &status
+	}
+	rows, err := v.q().AdminListAutomations(ctx, store.AdminListAutomationsParams{
+		BeforeID: before(cursor), ProjectID: project, Status: st, RowLimit: int32(limit + 1), //nolint:gosec // bounded
+	})
+	if err != nil {
+		return nil, false, fmt.Errorf("list automations: %w", err)
+	}
+	rows, more := page(rows, limit)
+	out := make([]Automation, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, Automation{AdminListAutomationsRow: r})
+	}
+	return out, more, nil
+}
+
+// Automation returns one automation of any project with its steps and its
+// runs counted by status.
+func (v *Views) Automation(ctx context.Context, id uuid.UUID) (Automation, error) {
+	r, err := v.q().AdminGetAutomation(ctx, id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Automation{}, ErrNotFound
+	}
+	if err != nil {
+		return Automation{}, fmt.Errorf("get automation: %w", err)
+	}
+	steps, err := automations.DecodeSteps(r.Automation.Steps)
+	if err != nil {
+		return Automation{}, err
+	}
+	a := Automation{
+		AdminListAutomationsRow: store.AdminListAutomationsRow{
+			ID: r.Automation.ID, ProjectID: r.Automation.ProjectID, Name: r.Automation.Name, Status: r.Automation.Status,
+			TriggerEvent: r.Automation.TriggerEvent, AllowReentry: r.Automation.AllowReentry, StepCount: int32(len(steps)), //nolint:gosec // ≤ 20
+			CreatedAt: r.Automation.CreatedAt, UpdatedAt: r.Automation.UpdatedAt, ProjectName: r.ProjectName,
+		},
+		Steps: steps, RunCounts: make(map[string]int, len(automations.RunStatuses)),
+	}
+	for _, s := range automations.RunStatuses {
+		a.RunCounts[s] = 0
+	}
+	var counts []store.CountAutomationRunsRow
+	err = v.bounded(ctx, func(ctx context.Context, q *store.Queries) (err error) {
+		counts, err = q.CountAutomationRuns(ctx, store.CountAutomationRunsParams{AutomationID: id, ProjectID: a.ProjectID})
+		return err
+	})
+	if errors.Is(err, ErrViewBusy) {
+		return Automation{}, err
+	}
+	if err != nil {
+		return Automation{}, fmt.Errorf("count runs: %w", err)
+	}
+	for _, c := range counts {
+		a.RunCounts[c.Status] = int(c.N)
+	}
+	return a, nil
+}
+
+// AutomationRuns lists the runs of an automation, newest first, optionally
+// of one status. An unknown automation is ErrNotFound.
+func (v *Views) AutomationRuns(ctx context.Context, id uuid.UUID, status string, cursor uuid.UUID, limit int) ([]store.AdminListAutomationRunsRow, bool, error) {
+	if err := checkLimit(limit); err != nil {
+		return nil, false, err
+	}
+	if _, err := v.q().AdminGetAutomation(ctx, id); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, false, ErrNotFound
+		}
+		return nil, false, fmt.Errorf("get automation: %w", err)
+	}
+	var st *string
+	if status != "" {
+		st = &status
+	}
+	rows, err := v.q().AdminListAutomationRuns(ctx, store.AdminListAutomationRunsParams{
+		AutomationID: id, BeforeID: before(cursor), Status: st, RowLimit: int32(limit + 1), //nolint:gosec // bounded
+	})
+	if err != nil {
+		return nil, false, fmt.Errorf("list runs: %w", err)
+	}
+	rows, more := page(rows, limit)
+	return rows, more, nil
+}
+
+// AutomationRun is a run as operators see it (never its trigger data), with
+// the emails it created.
+type AutomationRun struct {
+	store.AdminGetAutomationRunRow
+	Emails []store.EmailsOfRunRow
+}
+
+// AutomationRun returns one run of any project.
+func (v *Views) AutomationRun(ctx context.Context, id uuid.UUID) (AutomationRun, error) {
+	r, err := v.q().AdminGetAutomationRun(ctx, id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return AutomationRun{}, ErrNotFound
+	}
+	if err != nil {
+		return AutomationRun{}, fmt.Errorf("get run: %w", err)
+	}
+	emails, err := v.q().EmailsOfRun(ctx, store.EmailsOfRunParams{AutomationRunID: &id, ProjectID: r.ProjectID})
+	if err != nil {
+		return AutomationRun{}, fmt.Errorf("emails of run: %w", err)
+	}
+	return AutomationRun{AdminGetAutomationRunRow: r, Emails: emails}, nil
 }

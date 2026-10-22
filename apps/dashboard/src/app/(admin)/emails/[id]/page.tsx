@@ -143,6 +143,27 @@ export default async function EmailPage({ params }: PageProps<"/emails/[id]">) {
               <span className="muted">none (single send)</span>
             )}
           </dd>
+          <dt>Automation run</dt>
+          <dd>
+            {email.automation_run_id ? (
+              <Link
+                href={`/automation-runs/${encodeURIComponent(email.automation_run_id)}`}
+                prefetch={false}
+                aria-label={`Automation run ${email.automation_run_id}`}
+              >
+                <code>{email.automation_run_id}</code>
+              </Link>
+            ) : email.automation_id ? (
+              <Link
+                href={`/automations/${encodeURIComponent(email.automation_id)}`}
+                prefetch={false}
+              >
+                automation (run deleted)
+              </Link>
+            ) : (
+              <span className="muted">none</span>
+            )}
+          </dd>
           <dt>Planned for</dt>
           <dd>
             {email.scheduled_at && email.status === "canceled" ? (

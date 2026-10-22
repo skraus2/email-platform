@@ -78,3 +78,36 @@ LIMIT sqlc.arg(row_limit);
 SELECT sqlc.embed(b), p.name AS project_name
 FROM broadcasts b JOIN projects p ON p.id = b.project_id
 WHERE b.id = $1;
+
+-- name: AdminListAutomations :many
+SELECT a.id, a.project_id, a.name, a.status, a.trigger_event, a.allow_reentry,
+       jsonb_array_length(a.steps)::integer AS step_count, a.created_at, a.updated_at, p.name AS project_name
+FROM automations a JOIN projects p ON p.id = a.project_id
+WHERE a.id < sqlc.arg(before_id)::uuid
+  AND (sqlc.narg(project_id)::uuid IS NULL OR a.project_id = sqlc.narg(project_id)::uuid)
+  AND (sqlc.narg(status)::text IS NULL OR a.status = sqlc.narg(status)::text)
+ORDER BY a.id DESC
+LIMIT sqlc.arg(row_limit);
+
+-- name: AdminGetAutomation :one
+SELECT sqlc.embed(a), p.name AS project_name
+FROM automations a JOIN projects p ON p.id = a.project_id
+WHERE a.id = $1;
+
+-- name: AdminListAutomationRuns :many
+-- Never the trigger data.
+SELECT id, contact_id, status, reason, step, next_step_at, created_at, updated_at, finished_at
+FROM automation_runs
+WHERE automation_id = sqlc.arg(automation_id) AND id < sqlc.arg(before_id)::uuid
+  AND (sqlc.narg(status)::text IS NULL OR status = sqlc.narg(status)::text)
+ORDER BY id DESC
+LIMIT sqlc.arg(row_limit);
+
+-- name: AdminGetAutomationRun :one
+-- Never the trigger data.
+SELECT r.id, r.project_id, r.automation_id, r.contact_id, r.status, r.reason, r.step, r.next_step_at,
+       r.created_at, r.updated_at, r.finished_at, a.name AS automation_name, p.name AS project_name
+FROM automation_runs r
+JOIN automations a ON a.id = r.automation_id AND a.project_id = r.project_id
+JOIN projects p ON p.id = r.project_id
+WHERE r.id = $1;
