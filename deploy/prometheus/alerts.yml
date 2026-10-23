@@ -1,0 +1,167 @@
+# Alert rules for the email platform. Thresholds are explained in the
+# operations runbook; each alert's `runbook` annotation names its section.
+# Unit tests: alerts_test.yml (make test-alerts).
+groups:
+  - name: email-platform
+    rules:
+      - alert: EmailPlatformTargetDown
+        expr: |
+          up{job=~"email-platform-.*"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "A platform process ({{ $labels.job }}) cannot be scraped."
+          runbook: target-down
+      - alert: EmailPlatformDatabaseDown
+        expr: |
+          max without (instance) (email_platform_db_up) == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "The worker cannot read from the database."
+          runbook: database-down
+      - alert: EmailPlatformAPIErrors
+        expr: |
+          sum(increase(email_platform_http_requests_total{job="email-platform-api",code=~"5.."}[10m])) >= 10
+            and
+          sum(increase(email_platform_http_requests_total{job="email-platform-api",code=~"5.."}[10m]))
+            / sum(increase(email_platform_http_requests_total{job="email-platform-api"}[10m])) > 0.05
+        labels:
+          severity: critical
+        annotations:
+          summary: "More than 5 % of API requests failed with a server error in the last 10 minutes."
+          runbook: api-errors
+      - alert: EmailPlatformAPISlow
+        expr: |
+          histogram_quantile(0.95, sum by (le) (rate(email_platform_http_request_duration_seconds_bucket{route="POST /v1/emails"}[10m]))) > 0.5
+            and on ()
+          sum(increase(email_platform_http_request_duration_seconds_count{route="POST /v1/emails"}[10m])) >= 50
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "95th percentile of POST /v1/emails is above 0.5 s."
+          runbook: api-slow
+      - alert: EmailPlatformTransactionalQueueLag
+        expr: |
+          max without (instance) (email_platform_queue_oldest_available_seconds{queue="default",class="transactional"}) > 120
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Transactional emails wait more than 2 minutes for a worker."
+          runbook: transactional-queue-lag
+      - alert: EmailPlatformBulkQueueStalled
+        expr: |
+          max without (instance) (email_platform_queue_oldest_available_seconds{queue="default",class="bulk"}) > 21600
+            and on ()
+          sum(increase(email_platform_dispatch_total{outcome="handed_off"}[30m])) == 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Broadcast or automation emails have waited over 6 hours and nothing was handed to the provider for 30 minutes."
+          runbook: bulk-queue-stalled
+      - alert: EmailPlatformDispatchFailures
+        expr: |
+          sum(increase(email_platform_dispatch_total{outcome="failed"}[30m])) >= 10
+            and
+          sum(increase(email_platform_dispatch_total{outcome="failed"}[30m]))
+            / sum(increase(email_platform_dispatch_total{outcome=~"handed_off|failed"}[30m])) > 0.05
+        labels:
+          severity: warning
+        annotations:
+          summary: "More than 5 % of emails failed in the last 30 minutes."
+          runbook: dispatch-failures
+      - alert: EmailPlatformProviderRetries
+        expr: |
+          sum(increase(email_platform_dispatch_total{outcome="retry"}[15m])) >= 20
+            and
+          sum(increase(email_platform_dispatch_total{outcome="retry"}[15m]))
+            / sum(increase(email_platform_dispatch_total{outcome=~"handed_off|failed|retry"}[15m])) > 0.2
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "More than 20 % of provider calls fail retryably."
+          runbook: provider-retries
+      - alert: EmailPlatformEmailsExpiring
+        expr: |
+          sum(increase(email_platform_dispatch_failures_total{error_code="expired"}[1h])) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "Emails were failed by the expiry safety net (stuck before a final state)."
+          runbook: emails-expiring
+      - alert: EmailPlatformBounceRate
+        expr: |
+          sum(increase(email_platform_provider_events_total{type="bounced",bounce_type="permanent",outcome="stored"}[24h]))
+            / sum(increase(email_platform_dispatch_total{outcome="handed_off"}[24h])) > 0.04
+            and on ()
+          sum(increase(email_platform_dispatch_total{outcome="handed_off"}[24h])) >= 100
+        labels:
+          severity: warning
+        annotations:
+          summary: "Permanent bounce rate over 24 h is above 4 % (SES reviews the account at 5 %)."
+          runbook: bounce-rate
+      - alert: EmailPlatformComplaintRate
+        expr: |
+          sum(increase(email_platform_provider_events_total{type="complained",outcome="stored"}[24h]))
+            / sum(increase(email_platform_dispatch_total{outcome="handed_off"}[24h])) > 0.0008
+            and on ()
+          sum(increase(email_platform_dispatch_total{outcome="handed_off"}[24h])) >= 1000
+        labels:
+          severity: critical
+        annotations:
+          summary: "Complaint rate over 24 h is above 0.08 % (SES reviews the account at 0.1 %)."
+          runbook: complaint-rate
+      - alert: EmailPlatformWebhookBacklog
+        expr: |
+          max without (instance) (email_platform_webhook_oldest_pending_seconds) > 900
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "A due webhook delivery has waited more than 15 minutes."
+          runbook: webhook-backlog
+      - alert: EmailPlatformWebhookFailures
+        expr: |
+          sum(increase(email_platform_webhook_deliveries_total{result="failed"}[30m])) >= 10
+            and
+          sum(increase(email_platform_webhook_deliveries_total{result="failed"}[30m]))
+            / sum(increase(email_platform_webhook_deliveries_total{result=~"delivered|failed"}[30m])) > 0.2
+        labels:
+          severity: warning
+        annotations:
+          summary: "More than 20 % of webhook deliveries failed for good in the last 30 minutes."
+          runbook: webhook-failures
+      - alert: EmailPlatformDailyCapNearlyUsed
+        expr: |
+          max without (instance) (email_platform_provider_handoffs_24h)
+            / max without (instance) (email_platform_provider_daily_limit > 0) > 0.9
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "More than 90 % of the daily hand-off cap of {{ $labels.provider }} is used."
+          runbook: daily-cap
+      - alert: EmailPlatformDBPoolWaiting
+        expr: |
+          rate(email_platform_db_pool_empty_acquire_wait_seconds_total[5m]) > 0.5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.job }} waits for database connections half of the time."
+          runbook: db-pool-waiting
+      - alert: EmailPlatformUsageRollupStale
+        expr: |
+          time() - max without (instance) (email_platform_usage_rollup_last_success_timestamp_seconds) > 1800
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Daily usage has not been rolled up for 30 minutes."
+          runbook: usage-rollup-stale

@@ -1,0 +1,483 @@
+# promtool unit tests for alerts.yml: every alert fires on a breaching series
+# and stays silent when healthy, at low volume or with several instances.
+rule_files:
+  - alerts.yml
+evaluation_interval: 1m
+tests:
+  # TargetDown: fires after 2 minutes down; healthy target is silent
+  - interval: 1m
+    input_series:
+      - series: 'up{job="email-platform-worker",instance="w1"}'
+        values: "1 1 0 0 0 0 0"
+      - series: 'up{job="email-platform-api",instance="a1"}'
+        values: "1x6"
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: EmailPlatformTargetDown
+        exp_alerts:
+          - exp_labels:
+              job: "email-platform-worker"
+              instance: "w1"
+              severity: "critical"
+            exp_annotations:
+              summary: "A platform process (email-platform-worker) cannot be scraped."
+              runbook: target-down
+  # DatabaseDown: one of two workers reading the database keeps it silent
+  - interval: 1m
+    input_series:
+      - series: 'email_platform_db_up{job="email-platform-worker",instance="w1"}'
+        values: "0x6"
+      - series: 'email_platform_db_up{job="email-platform-worker",instance="w2"}'
+        values: "1x6"
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: EmailPlatformDatabaseDown
+        exp_alerts: []
+  # DatabaseDown: fires when every worker reports db_up 0
+  - interval: 1m
+    input_series:
+      - series: 'email_platform_db_up{job="email-platform-worker",instance="w1"}'
+        values: "0x6"
+      - series: 'email_platform_db_up{job="email-platform-worker",instance="w2"}'
+        values: "0x6"
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: EmailPlatformDatabaseDown
+        exp_alerts:
+          - exp_labels:
+              job: "email-platform-worker"
+              severity: "critical"
+            exp_annotations:
+              summary: "The worker cannot read from the database."
+              runbook: database-down
+  # APIErrors: 20 server errors among 120 requests in 10 minutes
+  - interval: 1m
+    input_series:
+      - series: 'email_platform_http_requests_total{job="email-platform-api",instance="a1",route="POST /v1/emails",code="500"}'
+        values: "0+2x20"
+      - series: 'email_platform_http_requests_total{job="email-platform-api",instance="a1",route="POST /v1/emails",code="202"}'
+        values: "0+10x20"
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: EmailPlatformAPIErrors
+        exp_alerts:
+          - exp_labels:
+              severity: "critical"
+            exp_annotations:
+              summary: "More than 5 % of API requests failed with a server error in the last 10 minutes."
+              runbook: api-errors
+  # APIErrors: 5 server errors are below the minimum count
+  - interval: 1m
+    input_series:
+      - series: 'email_platform_http_requests_total{job="email-platform-api",instance="a1",route="POST /v1/emails",code="500"}'
+        values: "0+0.5x20"
+      - series: 'email_platform_http_requests_total{job="email-platform-api",instance="a1",route="POST /v1/emails",code="202"}'
+        values: "0+1x20"
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: EmailPlatformAPIErrors
+        exp_alerts: []
+  # APISlow: most sends take between 0.5 and 1 s
+  - interval: 1m
+    input_series:
+      - series: 'email_platform_http_request_duration_seconds_bucket{job="email-platform-api",instance="a1",route="POST /v1/emails",le="0.5"}'
+        values: "0+1x30"
+      - series: 'email_platform_http_request_duration_seconds_bucket{job="email-platform-api",instance="a1",route="POST /v1/emails",le="1"}'
+        values: "0+10x30"
+      - series: 'email_platform_http_request_duration_seconds_bucket{job="email-platform-api",instance="a1",route="POST /v1/emails",le="+Inf"}'
+        values: "0+10x30"
+      - series: 'email_platform_http_request_duration_seconds_count{job="email-platform-api",instance="a1",route="POST /v1/emails"}'
+        values: "0+10x30"
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: EmailPlatformAPISlow
+        exp_alerts:
+          - exp_labels:
+              severity: "warning"
+            exp_annotations:
+              summary: "95th percentile of POST /v1/emails is above 0.5 s."
+              runbook: api-slow
+  # APISlow: fast sends are silent
+  - interval: 1m
+    input_series:
+      - series: 'email_platform_http_request_duration_seconds_bucket{job="email-platform-api",instance="a1",route="POST /v1/emails",le="0.5"}'
+        values: "0+10x30"
+      - series: 'email_platform_http_request_duration_seconds_bucket{job="email-platform-api",instance="a1",route="POST /v1/emails",le="1"}'
+        values: "0+10x30"
+      - series: 'email_platform_http_request_duration_seconds_bucket{job="email-platform-api",instance="a1",route="POST /v1/emails",le="+Inf"}'
+        values: "0+10x30"
+      - series: 'email_platform_http_request_duration_seconds_count{job="email-platform-api",instance="a1",route="POST /v1/emails"}'
+        values: "0+10x30"
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: EmailPlatformAPISlow
+        exp_alerts: []
+  # APISlow: slow but rare sends (10 in 10 minutes) are silent
+  - interval: 1m
+    input_series:
+      - series: 'email_platform_http_request_duration_seconds_bucket{job="email-platform-api",instance="a1",route="POST /v1/emails",le="0.5"}'
+        values: "0+0.1x30"
+      - series: 'email_platform_http_request_duration_seconds_bucket{job="email-platform-api",instance="a1",route="POST /v1/emails",le="1"}'
+        values: "0+1x30"
+      - series: 'email_platform_http_request_duration_seconds_bucket{job="email-platform-api",instance="a1",route="POST /v1/emails",le="+Inf"}'
+        values: "0+1x30"
+      - series: 'email_platform_http_request_duration_seconds_count{job="email-platform-api",instance="a1",route="POST /v1/emails"}'
+        values: "0+1x30"
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: EmailPlatformAPISlow
+        exp_alerts: []
+  # TransactionalQueueLag: transactional sends wait 200 s
+  - interval: 1m
+    input_series:
+      - series: 'email_platform_queue_oldest_available_seconds{job="email-platform-worker",instance="w1",queue="default",class="transactional"}'
+        values: "200x10"
+      - series: 'email_platform_queue_oldest_available_seconds{job="email-platform-worker",instance="w1",queue="default",class="bulk"}'
+        values: "0x10"
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: EmailPlatformTransactionalQueueLag
+        exp_alerts:
+          - exp_labels:
+              job: "email-platform-worker"
+              queue: "default"
+              class: "transactional"
+              severity: "critical"
+            exp_annotations:
+              summary: "Transactional emails wait more than 2 minutes for a worker."
+              runbook: transactional-queue-lag
+  # TransactionalQueueLag: a large broadcast backlog alone is silent
+  - interval: 1m
+    input_series:
+      - series: 'email_platform_queue_oldest_available_seconds{job="email-platform-worker",instance="w1",queue="default",class="transactional"}'
+        values: "0x10"
+      - series: 'email_platform_queue_oldest_available_seconds{job="email-platform-worker",instance="w1",queue="default",class="bulk"}'
+        values: "30000x10"
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: EmailPlatformTransactionalQueueLag
+        exp_alerts: []
+  # BulkQueueStalled: bulk backlog over 6 h and no hand-off for 30 minutes
+  - interval: 1m
+    input_series:
+      - series: 'email_platform_queue_oldest_available_seconds{job="email-platform-worker",instance="w1",queue="default",class="bulk"}'
+        values: "30000x70"
+      - series: 'email_platform_dispatch_total{job="email-platform-worker",instance="w1",outcome="handed_off"}'
+        values: "100x70"
+    alert_rule_test:
+      - eval_time: 65m
+        alertname: EmailPlatformBulkQueueStalled
+        exp_alerts:
+          - exp_labels:
+              job: "email-platform-worker"
+              queue: "default"
+              class: "bulk"
+              severity: "warning"
+            exp_annotations:
+              summary: "Broadcast or automation emails have waited over 6 hours and nothing was handed to the provider for 30 minutes."
+              runbook: bulk-queue-stalled
+  # BulkQueueStalled: an old but moving backlog is silent
+  - interval: 1m
+    input_series:
+      - series: 'email_platform_queue_oldest_available_seconds{job="email-platform-worker",instance="w1",queue="default",class="bulk"}'
+        values: "30000x70"
+      - series: 'email_platform_dispatch_total{job="email-platform-worker",instance="w1",outcome="handed_off"}'
+        values: "0+5x70"
+    alert_rule_test:
+      - eval_time: 65m
+        alertname: EmailPlatformBulkQueueStalled
+        exp_alerts: []
+  # DispatchFailures: 30 failed against 300 handed off
+  - interval: 1m
+    input_series:
+      - series: 'email_platform_dispatch_total{job="email-platform-worker",instance="w1",outcome="failed"}'
+        values: "0+1x40"
+      - series: 'email_platform_dispatch_total{job="email-platform-worker",instance="w1",outcome="handed_off"}'
+        values: "0+10x40"
+    alert_rule_test:
+      - eval_time: 35m
+        alertname: EmailPlatformDispatchFailures
+        exp_alerts:
+          - exp_labels:
+              severity: "warning"
+            exp_annotations:
+              summary: "More than 5 % of emails failed in the last 30 minutes."
+              runbook: dispatch-failures
+  # DispatchFailures: 6 failures are below the minimum count
+  - interval: 1m
+    input_series:
+      - series: 'email_platform_dispatch_total{job="email-platform-worker",instance="w1",outcome="failed"}'
+        values: "0+0.2x40"
+      - series: 'email_platform_dispatch_total{job="email-platform-worker",instance="w1",outcome="handed_off"}'
+        values: "0+1x40"
+    alert_rule_test:
+      - eval_time: 35m
+        alertname: EmailPlatformDispatchFailures
+        exp_alerts: []
+  # DispatchFailures: 1 % failures are silent
+  - interval: 1m
+    input_series:
+      - series: 'email_platform_dispatch_total{job="email-platform-worker",instance="w1",outcome="failed"}'
+        values: "0+1x40"
+      - series: 'email_platform_dispatch_total{job="email-platform-worker",instance="w1",outcome="handed_off"}'
+        values: "0+100x40"
+    alert_rule_test:
+      - eval_time: 35m
+        alertname: EmailPlatformDispatchFailures
+        exp_alerts: []
+  # ProviderRetries: a third of provider calls retry; rate-limit snoozes do not dilute it
+  - interval: 1m
+    input_series:
+      - series: 'email_platform_dispatch_total{job="email-platform-worker",instance="w1",outcome="retry"}'
+        values: "0+5x40"
+      - series: 'email_platform_dispatch_total{job="email-platform-worker",instance="w1",outcome="handed_off"}'
+        values: "0+10x40"
+      - series: 'email_platform_dispatch_total{job="email-platform-worker",instance="w1",outcome="snoozed"}'
+        values: "0+1000x40"
+    alert_rule_test:
+      - eval_time: 35m
+        alertname: EmailPlatformProviderRetries
+        exp_alerts:
+          - exp_labels:
+              severity: "warning"
+            exp_annotations:
+              summary: "More than 20 % of provider calls fail retryably."
+              runbook: provider-retries
+  # ProviderRetries: 15 retries are below the minimum count
+  - interval: 1m
+    input_series:
+      - series: 'email_platform_dispatch_total{job="email-platform-worker",instance="w1",outcome="retry"}'
+        values: "0+1x40"
+      - series: 'email_platform_dispatch_total{job="email-platform-worker",instance="w1",outcome="handed_off"}'
+        values: "0+1x40"
+    alert_rule_test:
+      - eval_time: 35m
+        alertname: EmailPlatformProviderRetries
+        exp_alerts: []
+  # EmailsExpiring: the safety net expired an email
+  - interval: 1m
+    input_series:
+      - series: 'email_platform_dispatch_failures_total{job="email-platform-worker",instance="w1",error_code="expired"}'
+        values: "0 0 0 1 1 1 1"
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: EmailPlatformEmailsExpiring
+        exp_alerts:
+          - exp_labels:
+              severity: "warning"
+            exp_annotations:
+              summary: "Emails were failed by the expiry safety net (stuck before a final state)."
+              runbook: emails-expiring
+  # EmailsExpiring: no expiry
+  - interval: 1m
+    input_series:
+      - series: 'email_platform_dispatch_failures_total{job="email-platform-worker",instance="w1",error_code="expired"}'
+        values: "0x6"
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: EmailPlatformEmailsExpiring
+        exp_alerts: []
+  # BounceRate: 5 % permanent bounces over 24 h
+  - interval: 1h
+    input_series:
+      - series: 'email_platform_provider_events_total{job="email-platform-worker",instance="w1",type="bounced",bounce_type="permanent",outcome="stored"}'
+        values: "0+5x30"
+      - series: 'email_platform_dispatch_total{job="email-platform-worker",instance="w1",outcome="handed_off"}'
+        values: "0+100x30"
+    alert_rule_test:
+      - eval_time: 25h
+        alertname: EmailPlatformBounceRate
+        exp_alerts:
+          - exp_labels:
+              severity: "warning"
+            exp_annotations:
+              summary: "Permanent bounce rate over 24 h is above 4 % (SES reviews the account at 5 %)."
+              runbook: bounce-rate
+  # BounceRate: transient bounces do not count
+  - interval: 1h
+    input_series:
+      - series: 'email_platform_provider_events_total{job="email-platform-worker",instance="w1",type="bounced",bounce_type="transient",outcome="stored"}'
+        values: "0+50x30"
+      - series: 'email_platform_provider_events_total{job="email-platform-worker",instance="w1",type="bounced",bounce_type="permanent",outcome="stored"}'
+        values: "0+1x30"
+      - series: 'email_platform_dispatch_total{job="email-platform-worker",instance="w1",outcome="handed_off"}'
+        values: "0+100x30"
+    alert_rule_test:
+      - eval_time: 25h
+        alertname: EmailPlatformBounceRate
+        exp_alerts: []
+  # BounceRate: below 100 hand-offs a day the rate is not judged
+  - interval: 1h
+    input_series:
+      - series: 'email_platform_provider_events_total{job="email-platform-worker",instance="w1",type="bounced",bounce_type="permanent",outcome="stored"}'
+        values: "0+1x30"
+      - series: 'email_platform_dispatch_total{job="email-platform-worker",instance="w1",outcome="handed_off"}'
+        values: "0+2x30"
+    alert_rule_test:
+      - eval_time: 25h
+        alertname: EmailPlatformBounceRate
+        exp_alerts: []
+  # ComplaintRate: 1 % complaints over 24 h
+  - interval: 1h
+    input_series:
+      - series: 'email_platform_provider_events_total{job="email-platform-worker",instance="w1",type="complained",bounce_type="none",outcome="stored"}'
+        values: "0+1x30"
+      - series: 'email_platform_dispatch_total{job="email-platform-worker",instance="w1",outcome="handed_off"}'
+        values: "0+100x30"
+    alert_rule_test:
+      - eval_time: 25h
+        alertname: EmailPlatformComplaintRate
+        exp_alerts:
+          - exp_labels:
+              severity: "critical"
+            exp_annotations:
+              summary: "Complaint rate over 24 h is above 0.08 % (SES reviews the account at 0.1 %)."
+              runbook: complaint-rate
+  # ComplaintRate: redelivered (duplicate) complaint events do not count
+  - interval: 1h
+    input_series:
+      - series: 'email_platform_provider_events_total{job="email-platform-worker",instance="w1",type="complained",bounce_type="none",outcome="duplicate"}'
+        values: "0+50x30"
+      - series: 'email_platform_dispatch_total{job="email-platform-worker",instance="w1",outcome="handed_off"}'
+        values: "0+100x30"
+    alert_rule_test:
+      - eval_time: 25h
+        alertname: EmailPlatformComplaintRate
+        exp_alerts: []
+  # WebhookBacklog: one of two workers sees a 1000 s old due delivery
+  - interval: 1m
+    input_series:
+      - series: 'email_platform_webhook_oldest_pending_seconds{job="email-platform-worker",instance="w1"}'
+        values: "0x15"
+      - series: 'email_platform_webhook_oldest_pending_seconds{job="email-platform-worker",instance="w2"}'
+        values: "1000x15"
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: EmailPlatformWebhookBacklog
+        exp_alerts:
+          - exp_labels:
+              job: "email-platform-worker"
+              severity: "warning"
+            exp_annotations:
+              summary: "A due webhook delivery has waited more than 15 minutes."
+              runbook: webhook-backlog
+  # WebhookBacklog: 100 s is fine
+  - interval: 1m
+    input_series:
+      - series: 'email_platform_webhook_oldest_pending_seconds{job="email-platform-worker",instance="w1"}'
+        values: "100x15"
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: EmailPlatformWebhookBacklog
+        exp_alerts: []
+  # WebhookFailures: 30 failed against 60 delivered
+  - interval: 1m
+    input_series:
+      - series: 'email_platform_webhook_deliveries_total{job="email-platform-worker",instance="w1",result="failed"}'
+        values: "0+1x40"
+      - series: 'email_platform_webhook_deliveries_total{job="email-platform-worker",instance="w1",result="delivered"}'
+        values: "0+2x40"
+    alert_rule_test:
+      - eval_time: 35m
+        alertname: EmailPlatformWebhookFailures
+        exp_alerts:
+          - exp_labels:
+              severity: "warning"
+            exp_annotations:
+              summary: "More than 20 % of webhook deliveries failed for good in the last 30 minutes."
+              runbook: webhook-failures
+  # WebhookFailures: one broken endpoint with 6 failures is below the minimum count
+  - interval: 1m
+    input_series:
+      - series: 'email_platform_webhook_deliveries_total{job="email-platform-worker",instance="w1",result="failed"}'
+        values: "0+0.2x40"
+      - series: 'email_platform_webhook_deliveries_total{job="email-platform-worker",instance="w1",result="delivered"}'
+        values: "0x40"
+    alert_rule_test:
+      - eval_time: 35m
+        alertname: EmailPlatformWebhookFailures
+        exp_alerts: []
+  # DailyCapNearlyUsed: 950 of 1000 used (two workers report the same values)
+  - interval: 1m
+    input_series:
+      - series: 'email_platform_provider_handoffs_24h{job="email-platform-worker",instance="w1",provider="ses"}'
+        values: "950x10"
+      - series: 'email_platform_provider_daily_limit{job="email-platform-worker",instance="w1",provider="ses"}'
+        values: "1000x10"
+      - series: 'email_platform_provider_handoffs_24h{job="email-platform-worker",instance="w2",provider="ses"}'
+        values: "950x10"
+      - series: 'email_platform_provider_daily_limit{job="email-platform-worker",instance="w2",provider="ses"}'
+        values: "1000x10"
+    alert_rule_test:
+      - eval_time: 7m
+        alertname: EmailPlatformDailyCapNearlyUsed
+        exp_alerts:
+          - exp_labels:
+              job: "email-platform-worker"
+              provider: "ses"
+              severity: "warning"
+            exp_annotations:
+              summary: "More than 90 % of the daily hand-off cap of ses is used."
+              runbook: daily-cap
+  # DailyCapNearlyUsed: no cap configured
+  - interval: 1m
+    input_series:
+      - series: 'email_platform_provider_handoffs_24h{job="email-platform-worker",instance="w1",provider="ses"}'
+        values: "950x10"
+      - series: 'email_platform_provider_daily_limit{job="email-platform-worker",instance="w1",provider="ses"}'
+        values: "0x10"
+    alert_rule_test:
+      - eval_time: 7m
+        alertname: EmailPlatformDailyCapNearlyUsed
+        exp_alerts: []
+  # DBPoolWaiting: 40 s of every minute spent waiting for a connection
+  - interval: 1m
+    input_series:
+      - series: 'email_platform_db_pool_empty_acquire_wait_seconds_total{job="email-platform-api",instance="a1"}'
+        values: "0+40x20"
+    alert_rule_test:
+      - eval_time: 17m
+        alertname: EmailPlatformDBPoolWaiting
+        exp_alerts:
+          - exp_labels:
+              job: "email-platform-api"
+              instance: "a1"
+              severity: "warning"
+            exp_annotations:
+              summary: "email-platform-api waits for database connections half of the time."
+              runbook: db-pool-waiting
+  # DBPoolWaiting: short waits are fine
+  - interval: 1m
+    input_series:
+      - series: 'email_platform_db_pool_empty_acquire_wait_seconds_total{job="email-platform-api",instance="a1"}'
+        values: "0+1x20"
+    alert_rule_test:
+      - eval_time: 17m
+        alertname: EmailPlatformDBPoolWaiting
+        exp_alerts: []
+  # UsageRollupStale: no successful rollup since start (gauge 0)
+  - interval: 1m
+    input_series:
+      - series: 'email_platform_usage_rollup_last_success_timestamp_seconds{job="email-platform-worker",instance="w1"}'
+        values: "0x50"
+    alert_rule_test:
+      - eval_time: 45m
+        alertname: EmailPlatformUsageRollupStale
+        exp_alerts:
+          - exp_labels:
+              job: "email-platform-worker"
+              severity: "warning"
+            exp_annotations:
+              summary: "Daily usage has not been rolled up for 30 minutes."
+              runbook: usage-rollup-stale
+  # UsageRollupStale: the leader rolls up every minute; a follower's 0 is ignored
+  - interval: 1m
+    input_series:
+      - series: 'email_platform_usage_rollup_last_success_timestamp_seconds{job="email-platform-worker",instance="w1"}'
+        values: "0+60x50"
+      - series: 'email_platform_usage_rollup_last_success_timestamp_seconds{job="email-platform-worker",instance="w2"}'
+        values: "0x50"
+    alert_rule_test:
+      - eval_time: 45m
+        alertname: EmailPlatformUsageRollupStale
+        exp_alerts: []

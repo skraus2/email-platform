@@ -14,6 +14,9 @@ LOG_FORMAT        ?= text
 export NEXT_TELEMETRY_DISABLED := 1
 export POSTGRES_PORT DATABASE_URL TEST_DATABASE_URL TEST_MAILPIT_URL TEST_SMTP_ADDR LOG_FORMAT APP_ENV HTTP_ADDR LOG_LEVEL SHUTDOWN_TIMEOUT
 
+PROMETHEUS_IMAGE   := prom/prometheus:v3.15.1
+ALERTMANAGER_IMAGE := prom/alertmanager:v0.34.1
+
 GOLANGCI_LINT := go tool -modfile=tools/go.mod golangci-lint
 PNPM          := pnpm
 
@@ -118,11 +121,17 @@ build: ## Build Go binaries into ./bin and the dashboard
 check: fmt-check lint test build ## Fast full gate (no Docker needed)
 
 .PHONY: ci
-ci: check test-integration smoke restore-test test-e2e ## Local superset of CI gates (needs `make up migrate`)
+ci: check test-alerts test-integration smoke restore-test test-e2e ## Local superset of CI gates (needs `make up migrate`)
 
 .PHONY: smoke
 smoke: ## Real API + worker: health, send, idempotency, 422/429, log leaks, SIGTERM
 	./scripts/smoke.sh
+
+.PHONY: test-alerts
+test-alerts: ## Alert rules and routing: promtool check + rule unit tests, amtool check-config (Docker)
+	docker run --rm -v "$(CURDIR)/deploy:/deploy:ro" --workdir /deploy/prometheus --entrypoint promtool $(PROMETHEUS_IMAGE) check config prometheus.yml
+	docker run --rm -v "$(CURDIR)/deploy:/deploy:ro" --workdir /deploy/prometheus --entrypoint promtool $(PROMETHEUS_IMAGE) test rules alerts_test.yml
+	docker run --rm -v "$(CURDIR)/deploy:/deploy:ro" --entrypoint amtool $(ALERTMANAGER_IMAGE) check-config /deploy/alertmanager/alertmanager.yml
 
 .PHONY: restore-test
 restore-test: ## Backup + restore drill: pg_dump -> fresh DB -> checks -> api on the restored DB

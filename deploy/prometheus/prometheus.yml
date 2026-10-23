@@ -1,0 +1,22 @@
+# Prometheus for one VM. All containers share one network namespace, so the
+# api's operator listener (which serves /metrics), the worker's metrics
+# listener and Alertmanager are reached on loopback.
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - alerts.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["127.0.0.1:9093"]
+
+scrape_configs:
+  - job_name: email-platform-api
+    static_configs:
+      - targets: ["127.0.0.1:8081"]
+  - job_name: email-platform-worker
+    static_configs:
+      - targets: ["127.0.0.1:9091"]
