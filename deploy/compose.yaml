@@ -3,6 +3,8 @@
 #   deploy/bin/render-env                       # secrets from SSM → /run/email-platform/app.env
 #   deploy/bin/preflight                        # required files present
 #   docker compose -f deploy/compose.yaml build
+#   docker compose -f deploy/compose.yaml run --rm -T migrate   # before up: a failing
+#                                               # migration leaves the old release running
 #   docker compose -f deploy/compose.yaml up -d --wait
 #   docker compose -f deploy/compose.yaml run --rm -T admin <command>
 #
