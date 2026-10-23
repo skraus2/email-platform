@@ -303,6 +303,23 @@ grep -qE '^email_platform_webhook_deliveries_total\{result="delivered"\} [1-9]' 
 grep -qiFf "$TMP/needles" "$TMP/api.metrics" "$TMP/worker.metrics" && fail "metrics contain a secret or address of this run"
 echo "GET /metrics -> api (admin listener) and worker, no secrets or addresses"
 
+# A worker whose database is unreachable still serves its metrics with db_up 0
+# while it waits (nothing listens on port 1).
+DOWN_METRICS_ADDR="127.0.0.1:${SMOKE_DOWN_METRICS_PORT:-18084}"
+DATABASE_URL="postgres://smoke@127.0.0.1:1/none?sslmode=disable" METRICS_ADDR="$DOWN_METRICS_ADDR" LOG_FORMAT=json \
+  "$TMP/worker" >"$TMP/worker-down.log" 2>&1 &
+DOWN_PID=$!
+down=""
+for _ in $(seq 1 50); do
+  down=$(curl -fsS "http://$DOWN_METRICS_ADDR/metrics" 2>/dev/null | grep '^email_platform_db_up' || true)
+  [[ -n "$down" ]] && break
+  sleep 0.1
+done
+kill -TERM "$DOWN_PID" 2>/dev/null || true
+wait "$DOWN_PID" 2>/dev/null || true
+[[ "$down" == "email_platform_db_up 0" ]] || fail "worker without database: '$down', want db_up 0"
+echo "worker without database -> metrics served, db_up 0"
+
 # Daily usage: the worker rolls it up on start; the API serves it per day.
 for _ in $(seq 1 150); do
   grep -q '"usage rolled up"' "$TMP/worker.log" && break
