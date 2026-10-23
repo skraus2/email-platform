@@ -27,6 +27,8 @@ ADDR2="127.0.0.1:${SMOKE_PORT2:-18081}"
 RECV_ADDR="127.0.0.1:${SMOKE_RECV_PORT:-18090}"
 # The first API also serves the admin API; the second has it off.
 ADMIN_ADDR="127.0.0.1:${SMOKE_ADMIN_PORT:-18082}"
+# The worker's Prometheus listener.
+METRICS_ADDR="127.0.0.1:${SMOKE_METRICS_PORT:-18083}"
 TMP="$(mktemp -d)"
 cleanup() {
   [[ -n "${hookkey:-}" ]] && "$TMP/admin" key revoke -prefix "$(cut -d_ -f2 <<<"$hookkey")" >/dev/null 2>&1 || true
@@ -48,7 +50,7 @@ env -u WEBHOOK_KEKS HTTP_ADDR="$ADDR" ADMIN_HTTP_ADDR="$ADMIN_ADDR" LOG_FORMAT=j
 API_PID=$!
 HTTP_ADDR="$ADDR2" ADMIN_HTTP_ADDR=off LOG_FORMAT=json REQUIRE_VERIFIED_SENDER=true "$TMP/api" >"$TMP/api2.log" 2>&1 &
 API2_PID=$!
-LOG_FORMAT=json "$TMP/worker" >"$TMP/worker.log" 2>&1 &
+METRICS_ADDR="$METRICS_ADDR" LOG_FORMAT=json "$TMP/worker" >"$TMP/worker.log" 2>&1 &
 WORKER_PID=$!
 env -u WEBHOOK_KEKS WEBHOOK_SECRET_FILE="$TMP/whsec" "$TMP/webhookrecv" -addr "$RECV_ADDR" -out "$TMP/hooks.jsonl" >"$TMP/recv.log" 2>&1 &
 RECV_PID=$!
@@ -287,6 +289,16 @@ done
 grep -qiE '^retry-after: [0-9]+' "$TMP/rl.headers" || fail "429 without Retry-After"
 echo "project rate limit -> 429 with $(grep -i '^retry-after' "$TMP/rl.headers" | tr -d '\r')"
 
+
+# Prometheus metrics: the API's on its admin listener (not on /v1), the
+# worker's on METRICS_ADDR; neither carries the run's secrets or addresses.
+curl -fsS "http://$ADMIN_ADDR/metrics" >"$TMP/api.metrics" || fail "GET admin /metrics"
+grep -q 'email_platform_http_requests_total{code="202",route="POST /v1/emails"}' "$TMP/api.metrics" || fail "api metrics lack the send route"
+[[ "$(curl -sS -o /dev/null -w '%{http_code}' "http://$ADDR/metrics")" == 404 ]] || fail "/metrics exists on the public listener"
+curl -fsS "http://$METRICS_ADDR/metrics" >"$TMP/worker.metrics" || fail "GET worker /metrics"
+grep -q '^email_platform_db_pool_max_conns' "$TMP/worker.metrics" || fail "worker metrics lack the pool"
+grep -qiFf "$TMP/needles" "$TMP/api.metrics" "$TMP/worker.metrics" && fail "metrics contain a secret or address of this run"
+echo "GET /metrics -> api (admin listener) and worker, no secrets or addresses"
 
 # Daily usage: the worker rolls it up on start; the API serves it per day.
 for _ in $(seq 1 150); do

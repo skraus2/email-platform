@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/skraus2/email-platform/internal/auth"
+	"github.com/skraus2/email-platform/internal/metrics"
 )
 
 // readinessTimeout bounds all readiness checks together so a hung dependency
@@ -43,6 +44,8 @@ type Deps struct {
 	Runs          AutomationRunService
 	Usage         UsageService
 	UsageLimits   UsageLimits
+	// HTTPMetrics records requests by route pattern (nil: none).
+	HTTPMetrics *metrics.HTTP
 }
 
 // Server holds the HTTP handler and readiness state.
@@ -142,7 +145,9 @@ func New(d Deps) *Server {
 	mux.HandleFunc("/v1/usage", methodNotAllowed(http.MethodGet))
 	mux.HandleFunc("/", handleNotFound)
 
-	s.handler = requestLogger(s.logger, mux)
+	// Directly around the mux: the request logger hands on a copy of the
+	// request, and only the copy the mux serves carries the matched pattern.
+	s.handler = requestLogger(s.logger, d.HTTPMetrics.Wrap(mux))
 	return s
 }
 

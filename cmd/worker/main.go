@@ -8,10 +8,14 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/skraus2/email-platform/internal/automations"
 	"github.com/skraus2/email-platform/internal/broadcasts"
@@ -23,6 +27,7 @@ import (
 	"github.com/skraus2/email-platform/internal/events/ses"
 	"github.com/skraus2/email-platform/internal/jobs"
 	"github.com/skraus2/email-platform/internal/logging"
+	"github.com/skraus2/email-platform/internal/metrics"
 	"github.com/skraus2/email-platform/internal/retention"
 	"github.com/skraus2/email-platform/internal/templates"
 	"github.com/skraus2/email-platform/internal/usage"
@@ -64,6 +69,16 @@ func run() error {
 	defer func() { _ = migrator.Close() }()
 
 	logger.Info("worker starting", slog.String("env", cfg.Env), slog.String("database", cfg.RedactedDatabaseURL()))
+
+	registry := metrics.NewRegistry()
+	metrics.RegisterPool(registry, pool)
+	// The metrics listener starts before the database wait: a database that
+	// is down shows in the metrics, and a busy port fails the start at once.
+	stopMetrics, err := serveMetrics(ctx, cfg.MetricsAddr, registry, logger)
+	if err != nil {
+		return err
+	}
+	defer stopMetrics()
 
 	if !waitReady(ctx, logger, func(ctx context.Context) error { return database.Ready(ctx, pool, migrator) }) {
 		logger.Info("shutdown before ready")
@@ -183,6 +198,38 @@ func run() error {
 }
 
 const workerConcurrency = 10
+
+// serveMetrics serves the registry on addr ("" = off) until the returned
+// stop function is called, which shuts the listener down within a short
+// deadline.
+func serveMetrics(ctx context.Context, addr string, reg *prometheus.Registry, logger *slog.Logger) (func(), error) {
+	if addr == "" {
+		return func() {}, nil
+	}
+	ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", addr)
+	if err != nil {
+		return nil, fmt.Errorf("listen on METRICS_ADDR %s: %w", addr, err)
+	}
+	host, _, _ := net.SplitHostPort(addr)
+	srv := metrics.NewServer(reg, host, logger)
+	done := make(chan error, 1)
+	go func() { done <- srv.Serve(ln) }()
+	logger.Info("metrics listener started", slog.String("metrics_addr", ln.Addr().String()))
+	return func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), metricsShutdownTimeout)
+		defer cancel()
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			logger.Warn("metrics listener did not stop cleanly", slog.Any("error", err))
+		}
+		if err := <-done; !errors.Is(err, http.ErrServerClosed) {
+			logger.Warn("metrics listener failed", slog.Any("error", err))
+		}
+	}, nil
+}
+
+// metricsShutdownTimeout bounds the metrics listener's shutdown (scrapes
+// are short).
+const metricsShutdownTimeout = 2 * time.Second
 
 // newProvider builds the configured provider. An SES client exists only with
 // the complete SES opt-in, which config.Load enforces; everything else gets

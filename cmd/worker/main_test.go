@@ -5,12 +5,16 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net"
+	"net/http"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/skraus2/email-platform/internal/config"
 	"github.com/skraus2/email-platform/internal/delivery"
 	"github.com/skraus2/email-platform/internal/events"
+	"github.com/skraus2/email-platform/internal/metrics"
 )
 
 func TestNextDelayDoublesAndCaps(t *testing.T) {
@@ -107,5 +111,47 @@ func TestEventPollerOnlyWithSES(t *testing.T) {
 	rec := events.NewRecorder(nil, logger) // never used: nothing is received
 	if p, err := newEventPoller(context.Background(), sesConfig(t), rec, logger); p == nil || err != nil {
 		t.Fatalf("SES: poller %v, err %v; want one", p, err)
+	}
+}
+
+func TestServeMetrics(t *testing.T) {
+	logger := slog.New(slog.DiscardHandler)
+	reg := metrics.NewRegistry()
+	stop, err := serveMetrics(context.Background(), "", reg, logger)
+	if err != nil || stop == nil {
+		t.Fatalf("off: %v", err)
+	}
+	stop()
+
+	// A busy port fails the start.
+	busy, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer busy.Close()
+	if _, err := serveMetrics(context.Background(), busy.Addr().String(), reg, logger); err == nil {
+		t.Error("busy METRICS_ADDR accepted")
+	}
+
+	probe, _ := net.Listen("tcp", "127.0.0.1:0")
+	addr := probe.Addr().String()
+	_ = probe.Close()
+	stop, err = serveMetrics(context.Background(), addr, reg, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.Get("http://" + addr + "/metrics")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), "go_goroutines") {
+		t.Errorf("GET /metrics = %d", resp.StatusCode)
+	}
+	stop()
+	if resp, err := http.Get("http://" + addr + "/metrics"); err == nil {
+		_ = resp.Body.Close()
+		t.Error("metrics listener still serving after stop")
 	}
 }

@@ -5,9 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
-	"net"
 	"net/http"
-	"net/netip"
 	"net/url"
 	"strconv"
 	"strings"
@@ -21,6 +19,7 @@ import (
 	"github.com/skraus2/email-platform/internal/broadcasts"
 	"github.com/skraus2/email-platform/internal/database"
 	"github.com/skraus2/email-platform/internal/emails"
+	"github.com/skraus2/email-platform/internal/httpguard"
 	"github.com/skraus2/email-platform/internal/templates"
 )
 
@@ -39,6 +38,8 @@ type AdminDeps struct {
 	// ListenHost is the configured listener host; requests must name it,
 	// a loopback address or localhost in their Host header.
 	ListenHost string
+	// Metrics serves GET /metrics without a session (nil: no such route).
+	Metrics http.Handler
 }
 
 // AdminServer is the operator API described in api/admin-openapi.yaml. It
@@ -84,6 +85,11 @@ func NewAdmin(d AdminDeps) *AdminServer {
 	route("GET /admin/v1/automations/{id}/runs", http.MethodGet, s.requireSession(s.handleAutomationRuns))
 	route("GET /admin/v1/automation-runs/{id}", http.MethodGet, s.requireSession(s.handleAutomationRun))
 	route("GET /admin/v1/webhook-endpoints", http.MethodGet, s.requireSession(s.handleWebhookEndpoints))
+	if d.Metrics != nil {
+		// Prometheus scrapes without a session: the listener is internal and
+		// the metrics hold no project data, ids or content.
+		route("GET /metrics", http.MethodGet, d.Metrics.ServeHTTP)
+	}
 	mux.HandleFunc("/", handleNotFound)
 	s.handler = requestLogger(s.logger, allowHosts(d.ListenHost, mux))
 	return s
@@ -94,16 +100,7 @@ func NewAdmin(d AdminDeps) *AdminServer {
 // the admin listener would otherwise talk to it as same-origin.
 func allowHosts(listenHost string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		host := r.Host
-		if h, _, err := net.SplitHostPort(host); err == nil {
-			host = h
-		} else if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
-			host = host[1 : len(host)-1]
-		}
-		ip, err := netip.ParseAddr(host)
-		ok := strings.EqualFold(host, "localhost") || (err == nil && ip.IsLoopback()) ||
-			(listenHost != "" && strings.EqualFold(host, strings.Trim(listenHost, "[]")))
-		if !ok {
+		if !httpguard.HostAllowed(r, listenHost) {
 			writeError(w, http.StatusMisdirectedRequest, "misdirected_request", "this host name is not served here")
 			return
 		}

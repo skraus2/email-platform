@@ -25,6 +25,7 @@ import (
 	"github.com/skraus2/email-platform/internal/httpapi"
 	"github.com/skraus2/email-platform/internal/jobs"
 	"github.com/skraus2/email-platform/internal/logging"
+	"github.com/skraus2/email-platform/internal/metrics"
 	"github.com/skraus2/email-platform/internal/store"
 	"github.com/skraus2/email-platform/internal/templates"
 	"github.com/skraus2/email-platform/internal/usage"
@@ -61,6 +62,8 @@ func run() error {
 	defer func() { _ = migrator.Close() }()
 
 	queries := store.New(pool)
+	registry := metrics.NewRegistry()
+	metrics.RegisterPool(registry, pool)
 	enqueuer, err := jobs.NewEnqueuer(pool, logger, cfg.SendMaxAttempts)
 	if err != nil {
 		return err
@@ -103,6 +106,7 @@ func run() error {
 		Automations:   automationStore,
 		ContactEvents: automations.NewEvents(pool, enqueuer, logger, cfg.ContactEventRatePerMinute),
 		Runs:          automations.NewRuns(pool),
+		HTTPMetrics:   metrics.NewHTTP(registry),
 		Usage:         usage.NewReader(pool),
 		UsageLimits:   httpapi.UsageLimits{SendsPerMinute: cfg.APIRateLimitPerMinute, ContactEventsPerMinute: cfg.ContactEventRatePerMinute},
 		Authenticate: func(ctx context.Context, token string) (auth.Principal, error) {
@@ -136,6 +140,7 @@ func run() error {
 			Sessions:   admin.NewService(pool, logger, cfg.AdminSessionIdle, cfg.AdminSessionMax),
 			Views:      admin.NewViews(pool),
 			ListenHost: adminHost,
+			Metrics:    metrics.Handler(registry),
 		})
 		if !cfg.AdminBindIsLoopback() {
 			logger.Warn("admin API listens beyond loopback without TLS: admin passwords and session tokens cross the network in clear",

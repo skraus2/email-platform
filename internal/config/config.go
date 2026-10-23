@@ -35,7 +35,10 @@ type Config struct {
 	HTTPAddr string
 	// AdminHTTPAddr is the admin API listener ("" = off). In production it
 	// must be a loopback IP literal.
-	AdminHTTPAddr   string
+	AdminHTTPAddr string
+	// MetricsAddr is the worker's Prometheus listener ("" = off); the same
+	// rules as AdminHTTPAddr apply (loopback-only in production).
+	MetricsAddr     string
 	DatabaseURL     string
 	LogLevel        slog.Level
 	LogFormat       string // "json" or "text"
@@ -313,6 +316,13 @@ func Load(lookup LookupFunc) (Config, error) {
 			errs = append(errs, fmt.Errorf("ADMIN_HTTP_ADDR: %w", err))
 		} else {
 			cfg.AdminHTTPAddr = addr
+		}
+	}
+	if addr := get("METRICS_ADDR", ""); addr != "" && addr != "off" {
+		if err := validAdminAddr(addr, cfg.Env == EnvProduction); err != nil {
+			errs = append(errs, fmt.Errorf("METRICS_ADDR: %w", err))
+		} else {
+			cfg.MetricsAddr = addr
 		}
 	}
 	cfg.AdminSessionIdle, errs = positiveDuration(get, "ADMIN_SESSION_IDLE", "30m", errs)

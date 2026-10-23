@@ -101,6 +101,9 @@ func TestLoadRejectsInvalid(t *testing.T) {
 		{"version cap too high", map[string]string{"DATABASE_URL": devURL, "TEMPLATE_MAX_VERSIONS": "10001"}, "TEMPLATE_MAX_VERSIONS"},
 		{"template storage below 1 MiB", map[string]string{"DATABASE_URL": devURL, "TEMPLATE_MAX_STORAGE_BYTES": "1048575"}, "TEMPLATE_MAX_STORAGE_BYTES"},
 		{"admin addr no port", map[string]string{"DATABASE_URL": devURL, "ADMIN_HTTP_ADDR": "127.0.0.1"}, "ADMIN_HTTP_ADDR"},
+		{"metrics addr no port", map[string]string{"DATABASE_URL": devURL, "METRICS_ADDR": "127.0.0.1"}, "METRICS_ADDR"},
+		{"metrics addr public in production", map[string]string{"DATABASE_URL": prodURL, "APP_ENV": "production", "METRICS_ADDR": "0.0.0.0:9091"}, "METRICS_ADDR"},
+		{"metrics addr hostname in production", map[string]string{"DATABASE_URL": prodURL, "APP_ENV": "production", "METRICS_ADDR": "worker:9091"}, "METRICS_ADDR"},
 		{"admin addr bad port", map[string]string{"DATABASE_URL": devURL, "ADMIN_HTTP_ADDR": "127.0.0.1:0"}, "ADMIN_HTTP_ADDR"},
 		{"admin addr public in production", map[string]string{"DATABASE_URL": prodURL, "APP_ENV": "production", "ADMIN_HTTP_ADDR": "0.0.0.0:8081"}, "ADMIN_HTTP_ADDR"},
 		{"admin addr ipv6 wildcard in production", map[string]string{"DATABASE_URL": prodURL, "APP_ENV": "production", "ADMIN_HTTP_ADDR": "[::]:8081"}, "ADMIN_HTTP_ADDR"},
@@ -381,6 +384,23 @@ func TestAdminHTTPAddr(t *testing.T) {
 		cfg, err := Load(env(tc.env))
 		if err != nil || cfg.AdminHTTPAddr != tc.want {
 			t.Errorf("%v: %q %v, want %q", tc.env, cfg.AdminHTTPAddr, err, tc.want)
+		}
+	}
+}
+
+func TestLoadMetricsAddr(t *testing.T) {
+	for _, tc := range []struct {
+		env  map[string]string
+		want string
+	}{
+		{map[string]string{"DATABASE_URL": devURL}, ""},
+		{map[string]string{"DATABASE_URL": devURL, "METRICS_ADDR": "off"}, ""},
+		{map[string]string{"DATABASE_URL": devURL, "METRICS_ADDR": "0.0.0.0:9091"}, "0.0.0.0:9091"},
+		{map[string]string{"DATABASE_URL": prodURL, "APP_ENV": "production", "METRICS_ADDR": "127.0.0.1:9091"}, "127.0.0.1:9091"},
+	} {
+		cfg, err := Load(env(tc.env))
+		if err != nil || cfg.MetricsAddr != tc.want {
+			t.Errorf("%v: MetricsAddr = %q, %v; want %q", tc.env, cfg.MetricsAddr, err, tc.want)
 		}
 	}
 }

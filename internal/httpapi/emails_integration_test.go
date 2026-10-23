@@ -17,6 +17,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/skraus2/email-platform/internal/auth"
 	"github.com/skraus2/email-platform/internal/automations"
@@ -25,6 +26,7 @@ import (
 	"github.com/skraus2/email-platform/internal/emails"
 	"github.com/skraus2/email-platform/internal/httpapi"
 	"github.com/skraus2/email-platform/internal/jobs"
+	"github.com/skraus2/email-platform/internal/metrics"
 	"github.com/skraus2/email-platform/internal/store"
 	"github.com/skraus2/email-platform/internal/templates"
 	"github.com/skraus2/email-platform/internal/testdb"
@@ -34,9 +36,10 @@ import (
 
 // stack is the API wired exactly like cmd/api, on a throwaway database.
 type stack struct {
-	pool *pgxpool.Pool
-	q    *store.Queries
-	srv  *httptest.Server
+	pool    *pgxpool.Pool
+	q       *store.Queries
+	srv     *httptest.Server
+	metrics *prometheus.Registry
 }
 
 func newStack(t *testing.T) *stack {
@@ -75,8 +78,11 @@ func newStackFrom(t *testing.T, perMinute int, requireSender bool, webhookKeys *
 	if webhookKeys != nil {
 		reg = webhooks.Registrar{Pool: pool, Keys: webhookKeys, Policy: webhooks.TargetPolicy{}, MaxEndpoints: 10}
 	}
+	registry := metrics.NewRegistry()
+	metrics.RegisterPool(registry, pool)
 	api := httpapi.New(httpapi.Deps{
 		Logger:        logger,
+		HTTPMetrics:   metrics.NewHTTP(registry),
 		Emails:        svc,
 		Webhooks:      reg,
 		Templates:     templates.NewStore(pool, 200, 500, 50<<20, 1_000_000),
@@ -94,7 +100,7 @@ func newStackFrom(t *testing.T, perMinute int, requireSender bool, webhookKeys *
 	})
 	srv := httptest.NewServer(api.Handler())
 	t.Cleanup(srv.Close)
-	return &stack{pool: pool, q: q, srv: srv}
+	return &stack{pool: pool, q: q, srv: srv, metrics: registry}
 }
 
 // project creates a project with a key holding the given scopes (nil = all).
