@@ -1,4 +1,5 @@
-# CI: the same gates as `make ci`. No secrets, no cloud access, no AWS.
+# CI: the same gates as `make ci` (the vulnerability scan runs in
+# vulncheck.yml). No secrets, no cloud access, no AWS.
 name: ci
 
 on:

@@ -113,6 +113,17 @@ test: ## Go, dashboard and deploy script unit tests (no external dependencies)
 test-integration: ## Go integration tests against Compose PostgreSQL (needs `make up`)
 	go test -race -tags=integration -count=1 ./...
 
+.PHONY: vulncheck
+vulncheck: ## Known vulnerabilities: govulncheck (reachable Go code) + pnpm audit (production deps, high+); needs network
+	@want=$$(sed -n 's/^toolchain //p' go.mod); have=$$(go env GOVERSION); \
+	if [ "$$have" != "$$want" ]; then echo "vulncheck: running $$have but go.mod pins $$want (the shipped standard library); retry with GOTOOLCHAIN=$$want"; exit 1; fi
+	@# Built for the host, scanning the linux build the images ship; both
+	@# scanners always run so one run shows every finding.
+	@rc=0; bin=$$(go tool -modfile=tools/govulncheck/go.mod -n govulncheck) || exit 1; \
+	GOOS=linux "$$bin" ./... || rc=1; \
+	$(PNPM) audit --prod --audit-level high || rc=1; \
+	exit $$rc
+
 .PHONY: build
 build: ## Build Go binaries into ./bin and the dashboard
 	go build -trimpath -o bin/ ./cmd/...
@@ -122,7 +133,7 @@ build: ## Build Go binaries into ./bin and the dashboard
 check: fmt-check lint test build ## Fast full gate (no Docker needed)
 
 .PHONY: ci
-ci: check test-alerts test-integration smoke restore-test deploy-check test-e2e ## Local superset of CI gates (needs `make up migrate`)
+ci: check vulncheck test-alerts test-integration smoke restore-test deploy-check test-e2e ## Local superset of CI gates (needs `make up migrate`)
 
 .PHONY: smoke
 smoke: ## Real API + worker: health, send, idempotency, 422/429, log leaks, SIGTERM
