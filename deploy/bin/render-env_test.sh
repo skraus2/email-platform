@@ -10,10 +10,11 @@ failures=0
 fail() { echo "FAIL: $*" >&2; failures=$((failures + 1)); }
 
 # The stub prints $work/params (Name<TAB>Value lines) and records its
-# arguments; exit code from $work/exit.
+# arguments and environment; exit code from $work/exit.
 cat >"$work/bin/aws" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$@" >"$WORK/args"
+env >"$WORK/env"
 cat "$WORK/params"
 exit "$(cat "$WORK/exit" 2>/dev/null || echo 0)"
 STUB
@@ -22,8 +23,11 @@ chmod +x "$work/bin/aws"
 secret_db='postgres://app:pa55w0rd-SECRET@db.example.internal:5432/ep?sslmode=verify-full&sslrootcert=/etc/email-platform/db-ca.pem'
 secret_kek='k1:c2VjcmV0LWtleS1lbmNyeXB0aW9uLWtleS0zMmJ5dGVzIQ=='
 params() { printf '%s\n' "$@" >"$work/params"; }
+# A forgotten `aws configure` of the operator: must not be used.
+mkdir -p "$work/home/.aws"
+printf '[default]\naws_access_key_id = AKIASTATICKEY\naws_secret_access_key = static\n' >"$work/home/.aws/credentials"
 render() {
-  env -i PATH="$work/bin:/usr/bin:/bin" WORK="$work" AWS_REGION=eu-central-1 APP_ENV_FILE="$work/run/app.env" "$@" \
+  env -i PATH="$work/bin:/usr/bin:/bin" HOME="$work/home" WORK="$work" AWS_REGION=eu-central-1 APP_ENV_FILE="$work/run/app.env" "$@" \
     bash "$here/render-env" >"$work/stdout" 2>"$work/stderr"
 }
 leaked() { grep -qF -e "pa55w0rd-SECRET" -e "c2VjcmV0" "$work/stdout" "$work/stderr"; }
@@ -41,6 +45,9 @@ leaked && fail "a value reached stdout/stderr"
 grep -qx -- '--with-decryption' "$work/args" && grep -qx '/email-platform/prod/' "$work/args" && grep -qx 'eu-central-1' "$work/args" ||
   fail "aws called with $(tr '\n' ' ' <"$work/args")"
 [[ -z "$(find "$work/run" -name '.app.env.*')" ]] || fail "temporary files left behind"
+for want in AWS_SHARED_CREDENTIALS_FILE=/dev/null AWS_CONFIG_FILE=/dev/null AWS_IGNORE_CONFIGURED_ENDPOINT_URLS=true AWS_EC2_METADATA_V1_DISABLED=true; do
+  grep -qxF "$want" "$work/env" || fail "aws ran without $want"
+done
 
 # 2. Failures keep the previous file and leak nothing.
 before="$(cat "$work/run/app.env")"
@@ -62,11 +69,19 @@ params "/email-platform/prod/DATABASE_URL	$secret_db" "/email-platform/prod/WEBH
 check_refused "single quote"
 params "/email-platform/prod/DATABASE_URL	$secret_db" "/email-platform/prod/WEBHOOK_KEKS	$secret_kek" "/email-platform/prod/WEBHOOK_KEKS	$secret_kek"
 check_refused "duplicate"
+params "/email-platform/prod/DATABASE_URL	$secret_db" "/email-platform/prod/WEBHOOK_KEKS	k1:first-line" "c2VjcmV0-continued"
+check_refused "value with a line break"
+params "/email-platform/prod/DATABASE_URL	$secret_db" "/email-platform/prod/WEBHOOK_KEKS	k1:first-line" "" "/email-platform/prod/LOG_LEVEL	info"
+check_refused "blank line"
+params "/email-platform/prod/DATABASE_URL	$secret_db" "/email-platform/prod/WEBHOOK_KEKS	$secret_kek" "/email-platform/prod/AWS_ACCESS_KEY_ID	AKIAEXAMPLE"
+check_refused "AWS credential as a parameter"
 params "/email-platform/prod/DATABASE_URL	$secret_db" "/email-platform/prod/WEBHOOK_KEKS	$secret_kek"
 echo 255 >"$work/exit"
 check_refused "aws failure"
 rm -f "$work/exit"
-for v in AWS_ACCESS_KEY_ID=AKIAEXAMPLE AWS_SECRET_ACCESS_KEY=x AWS_SESSION_TOKEN=x AWS_PROFILE=default AWS_SHARED_CREDENTIALS_FILE=/x AWS_CONFIG_FILE=/x AWS_EC2_METADATA_DISABLED=true; do
+for v in AWS_ACCESS_KEY_ID=AKIAEXAMPLE AWS_SECRET_ACCESS_KEY=x AWS_SESSION_TOKEN=x AWS_PROFILE=default AWS_SHARED_CREDENTIALS_FILE=/x AWS_CONFIG_FILE=/x \
+  AWS_EC2_METADATA_DISABLED=true AWS_WEB_IDENTITY_TOKEN_FILE=/x AWS_ROLE_ARN=arn:aws:iam::1:role/x AWS_CONTAINER_CREDENTIALS_FULL_URI=http://x \
+  AWS_CONTAINER_CREDENTIALS_RELATIVE_URI=/x AWS_ENDPOINT_URL=https://evil.example AWS_ENDPOINT_URL_SSM=https://evil.example; do
   rm -f "$work/args"
   check_refused "static credentials ($v)" "$v"
   [[ ! -f "$work/args" ]] || fail "$v: aws was called anyway"
