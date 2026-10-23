@@ -47,8 +47,9 @@ func sample(t *testing.T, reg *prometheus.Registry, name string, labels map[stri
 	return 0
 }
 
-// canceledBroadcastEmail stores a queued email of a cancelled broadcast.
-func canceledBroadcastEmail(t *testing.T, pool *pgxpool.Pool, projectID uuid.UUID) jobs.SendEmailArgs {
+// broadcastEmailIn stores a queued email of a broadcast in the given status
+// (sending or canceled) for a subscribed contact.
+func broadcastEmailIn(t *testing.T, pool *pgxpool.Pool, projectID uuid.UUID, status string) jobs.SendEmailArgs {
 	t.Helper()
 	ctx := context.Background()
 	var templateID, audienceID, contactID, broadcastID, emailID uuid.UUID
@@ -57,10 +58,10 @@ func canceledBroadcastEmail(t *testing.T, pool *pgxpool.Pool, projectID uuid.UUI
 		sql  string
 		args []any
 	}{
-		{&templateID, "INSERT INTO templates (project_id, slug, latest_version) VALUES ($1, 'news', 1) RETURNING id", []any{projectID}},
-		{&audienceID, "INSERT INTO audiences (project_id, name) VALUES ($1, 'list') RETURNING id", []any{projectID}},
-		{&contactID, "INSERT INTO contacts (project_id, email, status, consent_source, unsubscribe_token) VALUES ($1, 'c@example.test', 'subscribed', 'x', $2) RETURNING id",
-			[]any{projectID, "tok_" + strings.Repeat("b", 39)}},
+		{&templateID, "INSERT INTO templates (project_id, slug, latest_version) VALUES ($1, $2, 1) RETURNING id", []any{projectID, "news-" + uuid.NewString()[:8]}},
+		{&audienceID, "INSERT INTO audiences (project_id, name) VALUES ($1, $2) RETURNING id", []any{projectID, "list-" + uuid.NewString()[:8]}},
+		{&contactID, "INSERT INTO contacts (project_id, email, status, consent_source, unsubscribe_token) VALUES ($1, $2, 'subscribed', 'x', $3) RETURNING id",
+			[]any{projectID, "c-" + uuid.NewString()[:8] + "@example.test", "tok_" + strings.ReplaceAll(uuid.NewString(), "-", "")[:32] + strings.Repeat("b", 7)}},
 	} {
 		if err := pool.QueryRow(ctx, step.sql, step.args...).Scan(step.dst); err != nil {
 			t.Fatal(err)
@@ -71,8 +72,8 @@ func canceledBroadcastEmail(t *testing.T, pool *pgxpool.Pool, projectID uuid.UUI
 		t.Fatal(err)
 	}
 	if err := pool.QueryRow(ctx, `INSERT INTO broadcasts (project_id, audience_id, sender, template_id, template_version, unsubscribe_url, status, scheduled_at, started_at, finished_at)
-		VALUES ($1, $2, 'noreply@example.test', $3, 1, 'https://app.example.test/u?t={token}', 'canceled', now(), now(), now()) RETURNING id`,
-		projectID, audienceID, templateID).Scan(&broadcastID); err != nil {
+		VALUES ($1, $2, 'noreply@example.test', $3, 1, 'https://app.example.test/u?t={token}', $4, now(), now(), CASE WHEN $4 = 'canceled' THEN now() END) RETURNING id`,
+		projectID, audienceID, templateID, status).Scan(&broadcastID); err != nil {
 		t.Fatal(err)
 	}
 	if err := pool.QueryRow(ctx, `INSERT INTO emails (project_id, sender, recipient, subject, template_id, template_version, broadcast_id, contact_id)
@@ -152,7 +153,7 @@ func TestDispatchMetricsCountEachOutcomeOnce(t *testing.T) {
 
 	// A queued email of a cancelled broadcast ends canceled, unsent.
 	calls := p.calls
-	if err := run(canceledBroadcastEmail(t, pool, projectID), 1); err != nil {
+	if err := run(broadcastEmailIn(t, pool, projectID, "canceled"), 1); err != nil {
 		t.Fatal(err)
 	}
 	if outcome("canceled") != 1 || p.calls != calls {
@@ -169,6 +170,28 @@ func TestDispatchMetricsCountEachOutcomeOnce(t *testing.T) {
 	}
 	if outcome("snoozed") != 1 {
 		t.Errorf("snoozed = %v, want 1", outcome("snoozed"))
+	}
+	// A bulk (broadcast) email over the cap snoozes on its own branch.
+	if err := run(broadcastEmailIn(t, pool, projectID, "sending"), 1); err == nil {
+		t.Fatal("bulk email over the daily cap was not snoozed")
+	}
+	if outcome("snoozed") != 2 {
+		t.Errorf("snoozed = %v after the bulk email, want 2", outcome("snoozed"))
+	}
+	// The provider rate limit snoozes too (one token, the next is 100 s away).
+	limited := dispatcher(pool, p, nil)
+	limited.Observe(m, "fake")
+	if err := limited.LimitProviderRate(0.01); err != nil {
+		t.Fatal(err)
+	}
+	if err := limited.SendEmail(ctx, args(queued(t, pool, projectID)), attempt(1)); err != nil {
+		t.Fatal(err)
+	}
+	if err := limited.SendEmail(ctx, args(queued(t, pool, projectID)), attempt(1)); err == nil {
+		t.Fatal("rate-limited send was not snoozed")
+	}
+	if outcome("snoozed") != 3 {
+		t.Errorf("snoozed = %v after the rate limit, want 3", outcome("snoozed"))
 	}
 
 	// Expiry by the safety net counts as a failure with code expired.
@@ -194,10 +217,65 @@ func TestDispatchMetricsCountEachOutcomeOnce(t *testing.T) {
 	if outcome("error") != 1 || outcome("retry") != retries {
 		t.Errorf("error = %v, retry %v → %v", outcome("error"), retries, outcome("retry"))
 	}
+	// On the final attempt the same internal error fails the email.
+	if err := run(args(queued(t, pool, projectID)), testMaxAttempts); err != nil {
+		t.Fatal(err)
+	}
+	if failures(emails.CodeInternalError) != 1 {
+		t.Errorf("internal_error = %v, want 1", failures(emails.CodeInternalError))
+	}
 	if t.Failed() {
 		families, _ := reg.Gather()
 		for _, f := range families {
 			t.Log(fmt.Sprint(f))
 		}
+	}
+}
+
+// The provider accepted the message but recording it failed (error), or the
+// email was finalized while it was being sent (skipped).
+func TestDispatchMetricsAfterTheProviderCall(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	pool, projectID := setup(t)
+	reg := prometheus.NewRegistry()
+	m := metrics.NewDispatch(reg, emails.FailureCodes)
+	outcome := func(o string) float64 {
+		return sample(t, reg, "email_platform_dispatch_total", map[string]string{"outcome": o})
+	}
+
+	var finalize uuid.UUID
+	p := &fakeProvider{send: func(ctx context.Context, msg delivery.Message) (delivery.Result, error) {
+		if msg.ID == finalize {
+			if _, err := pool.Exec(ctx, `UPDATE emails SET status = 'failed', error_code = 'expired', last_error = 'expired', finished_at = now() WHERE id = $1`, msg.ID); err != nil {
+				t.Error(err)
+			}
+		}
+		return captured(ctx, msg)
+	}}
+	d := dispatcher(pool, p, nil)
+	d.Observe(m, "fake")
+
+	e := queued(t, pool, projectID)
+	finalize = e.ID
+	if err := d.SendEmail(ctx, args(e), attempt(1)); err != nil {
+		t.Fatal(err)
+	}
+	if outcome("skipped") != 1 || outcome("handed_off") != 0 {
+		t.Errorf("finalized during the send: skipped %v, handed_off %v", outcome("skipped"), outcome("handed_off"))
+	}
+
+	if _, err := pool.Exec(ctx, `
+		CREATE FUNCTION refuse_captured() RETURNS trigger LANGUAGE plpgsql AS
+		$$ BEGIN RAISE EXCEPTION 'injected fault'; END $$;
+		CREATE TRIGGER refuse_captured BEFORE UPDATE ON emails
+		FOR EACH ROW WHEN (NEW.status = 'captured') EXECUTE FUNCTION refuse_captured();`); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.SendEmail(ctx, args(queued(t, pool, projectID)), attempt(1)); err == nil {
+		t.Fatal("an unrecorded hand-off must be retried")
+	}
+	if outcome("error") != 1 || outcome("handed_off") != 0 {
+		t.Errorf("unrecorded hand-off: error %v, handed_off %v", outcome("error"), outcome("handed_off"))
 	}
 }

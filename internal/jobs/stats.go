@@ -13,8 +13,10 @@ func Queues() []string {
 	return []string{river.QueueDefault, QueueBroadcasts, QueueAutomations, QueueWebhooks}
 }
 
-// UnfinishedStates are the job states counted as backlog.
-var UnfinishedStates = []string{"available", "pending", "retryable", "running", "scheduled"}
+// UnfinishedStates lists the job states counted as backlog.
+func UnfinishedStates() []string {
+	return []string{"available", "pending", "retryable", "running", "scheduled"}
+}
 
 // QueueStats is a snapshot of the job queue for monitoring.
 type QueueStats struct {
@@ -33,10 +35,12 @@ const (
 )
 
 // Stats reads the queue snapshot from River's tables (no project data).
+// This file holds only these two statements: they read queue names, states,
+// priorities and times, never job args (which carry project and email ids).
 func Stats(ctx context.Context, pool *pgxpool.Pool) (QueueStats, error) {
 	s := QueueStats{Jobs: map[[2]string]int64{}, OldestAvailable: map[[2]string]float64{}}
 	rows, err := pool.Query(ctx, `SELECT queue, state::text, count(*) FROM river_job
-		WHERE state IN ('available', 'pending', 'retryable', 'running', 'scheduled') GROUP BY 1, 2`)
+		WHERE state::text = ANY($1) GROUP BY 1, 2`, UnfinishedStates())
 	if err != nil {
 		return s, fmt.Errorf("count jobs: %w", err)
 	}

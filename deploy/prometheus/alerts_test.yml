@@ -481,3 +481,113 @@ tests:
       - eval_time: 45m
         alertname: EmailPlatformUsageRollupStale
         exp_alerts: []
+  # APIErrors: 20 server errors are only 2 % of 1000 requests
+  - interval: 1m
+    input_series:
+      - series: 'email_platform_http_requests_total{job="email-platform-api",instance="a1",route="POST /v1/emails",code="500"}'
+        values: "0+2x20"
+      - series: 'email_platform_http_requests_total{job="email-platform-api",instance="a1",route="POST /v1/emails",code="202"}'
+        values: "0+98x20"
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: EmailPlatformAPIErrors
+        exp_alerts: []
+  # ProviderRetries: 75 retries are only 7 % of provider calls
+  - interval: 1m
+    input_series:
+      - series: 'email_platform_dispatch_total{job="email-platform-worker",instance="w1",outcome="retry"}'
+        values: "0+5x40"
+      - series: 'email_platform_dispatch_total{job="email-platform-worker",instance="w1",outcome="handed_off"}'
+        values: "0+65x40"
+    alert_rule_test:
+      - eval_time: 35m
+        alertname: EmailPlatformProviderRetries
+        exp_alerts: []
+  # WebhookFailures: 30 failed against 600 delivered
+  - interval: 1m
+    input_series:
+      - series: 'email_platform_webhook_deliveries_total{job="email-platform-worker",instance="w1",result="failed"}'
+        values: "0+1x40"
+      - series: 'email_platform_webhook_deliveries_total{job="email-platform-worker",instance="w1",result="delivered"}'
+        values: "0+20x40"
+    alert_rule_test:
+      - eval_time: 35m
+        alertname: EmailPlatformWebhookFailures
+        exp_alerts: []
+  # ComplaintRate: below 1000 hand-offs a day the rate is not judged
+  - interval: 1h
+    input_series:
+      - series: 'email_platform_provider_events_total{job="email-platform-worker",instance="w1",type="complained",bounce_type="none",outcome="stored"}'
+        values: "0+1x30"
+      - series: 'email_platform_dispatch_total{job="email-platform-worker",instance="w1",outcome="handed_off"}'
+        values: "0+30x30"
+    alert_rule_test:
+      - eval_time: 25h
+        alertname: EmailPlatformComplaintRate
+        exp_alerts: []
+  # DailyCapNearlyUsed: 800 of 1000 used
+  - interval: 1m
+    input_series:
+      - series: 'email_platform_provider_handoffs_24h{job="email-platform-worker",instance="w1",provider="ses"}'
+        values: "800x10"
+      - series: 'email_platform_provider_daily_limit{job="email-platform-worker",instance="w1",provider="ses"}'
+        values: "1000x10"
+    alert_rule_test:
+      - eval_time: 7m
+        alertname: EmailPlatformDailyCapNearlyUsed
+        exp_alerts: []
+  # TransactionalQueueLag: one of two workers sees the lag (both read the same queue)
+  - interval: 1m
+    input_series:
+      - series: 'email_platform_queue_oldest_available_seconds{job="email-platform-worker",instance="w1",queue="default",class="transactional"}'
+        values: "0x10"
+      - series: 'email_platform_queue_oldest_available_seconds{job="email-platform-worker",instance="w2",queue="default",class="transactional"}'
+        values: "200x10"
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: EmailPlatformTransactionalQueueLag
+        exp_alerts:
+          - exp_labels:
+              job: "email-platform-worker"
+              queue: "default"
+              class: "transactional"
+              severity: "critical"
+            exp_annotations:
+              summary: "Transactional emails wait more than 2 minutes for a worker."
+              runbook: transactional-queue-lag
+  # BulkQueueStalled: two workers, one stalled backlog, hand-offs summed over both
+  - interval: 1m
+    input_series:
+      - series: 'email_platform_queue_oldest_available_seconds{job="email-platform-worker",instance="w1",queue="default",class="bulk"}'
+        values: "30000x70"
+      - series: 'email_platform_queue_oldest_available_seconds{job="email-platform-worker",instance="w2",queue="default",class="bulk"}'
+        values: "0x70"
+      - series: 'email_platform_dispatch_total{job="email-platform-worker",instance="w1",outcome="handed_off"}'
+        values: "100x70"
+      - series: 'email_platform_dispatch_total{job="email-platform-worker",instance="w2",outcome="handed_off"}'
+        values: "100x70"
+    alert_rule_test:
+      - eval_time: 65m
+        alertname: EmailPlatformBulkQueueStalled
+        exp_alerts:
+          - exp_labels:
+              job: "email-platform-worker"
+              queue: "default"
+              class: "bulk"
+              severity: "warning"
+            exp_annotations:
+              summary: "Broadcast or automation emails have waited over 6 hours and nothing was handed to the provider for 30 minutes."
+              runbook: bulk-queue-stalled
+  # BulkQueueStalled: hand-offs on the other worker keep it silent
+  - interval: 1m
+    input_series:
+      - series: 'email_platform_queue_oldest_available_seconds{job="email-platform-worker",instance="w1",queue="default",class="bulk"}'
+        values: "30000x70"
+      - series: 'email_platform_dispatch_total{job="email-platform-worker",instance="w1",outcome="handed_off"}'
+        values: "100x70"
+      - series: 'email_platform_dispatch_total{job="email-platform-worker",instance="w2",outcome="handed_off"}'
+        values: "0+5x70"
+    alert_rule_test:
+      - eval_time: 65m
+        alertname: EmailPlatformBulkQueueStalled
+        exp_alerts: []

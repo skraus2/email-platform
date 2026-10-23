@@ -143,7 +143,7 @@ func run() error {
 			Metrics:    metrics.Handler(registry),
 		})
 		if !cfg.AdminBindIsLoopback() {
-			logger.Warn("admin API listens beyond loopback without TLS: admin passwords and session tokens cross the network in clear",
+			logger.Warn("admin API listens beyond loopback without TLS: admin passwords and session tokens cross the network in clear, and /metrics is readable without a session",
 				slog.String("admin_addr", cfg.AdminHTTPAddr))
 		}
 		servers = append(servers, newServer(adminAPI.Handler()))

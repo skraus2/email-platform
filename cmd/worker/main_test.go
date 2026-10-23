@@ -121,7 +121,7 @@ func TestServeMetrics(t *testing.T) {
 	if err != nil || stop == nil {
 		t.Fatalf("off: %v", err)
 	}
-	stop()
+	stop(time.Second)
 
 	// A busy port fails the start.
 	busy, err := net.Listen("tcp", "127.0.0.1:0")
@@ -149,7 +149,8 @@ func TestServeMetrics(t *testing.T) {
 	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), "go_goroutines") {
 		t.Errorf("GET /metrics = %d", resp.StatusCode)
 	}
-	stop()
+	stop(time.Second)
+	stop(time.Second) // a second stop does nothing
 	if resp, err := http.Get("http://" + addr + "/metrics"); err == nil {
 		_ = resp.Body.Close()
 		t.Error("metrics listener still serving after stop")

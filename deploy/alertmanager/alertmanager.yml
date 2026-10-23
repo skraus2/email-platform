@@ -1,5 +1,5 @@
-# Alert routing. The receiver is a placeholder: the operator replaces its URL
-# with the team's chat or paging webhook before the first deployment. It must
+# Alert routing. The receiver's URL (a chat or paging webhook, which is a
+# secret) is read from a file on the VM, never from this repository; it must
 # not depend on this platform's own mail path (an outage would silence it).
 route:
   receiver: team
@@ -15,5 +15,5 @@ route:
 receivers:
   - name: team
     webhook_configs:
-      - url: http://127.0.0.1:9095/alerts
+      - url_file: /etc/alertmanager/secrets/webhook-url
         send_resolved: true

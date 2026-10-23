@@ -14,8 +14,8 @@ LOG_FORMAT        ?= text
 export NEXT_TELEMETRY_DISABLED := 1
 export POSTGRES_PORT DATABASE_URL TEST_DATABASE_URL TEST_MAILPIT_URL TEST_SMTP_ADDR LOG_FORMAT APP_ENV HTTP_ADDR LOG_LEVEL SHUTDOWN_TIMEOUT
 
-PROMETHEUS_IMAGE   := prom/prometheus:v3.15.1
-ALERTMANAGER_IMAGE := prom/alertmanager:v0.34.1
+PROMETHEUS_IMAGE   := prom/prometheus:v3.15.1@sha256:fa3302279710be2f21a8301ec17a8b4f2301fd829bd113839b3b6b02b6f191a2
+ALERTMANAGER_IMAGE := prom/alertmanager:v0.34.1@sha256:e9733bafb1bdef9b00e25a21f8f99dc26a22224bf16641ad754d1649f4c3357a
 
 GOLANGCI_LINT := go tool -modfile=tools/go.mod golangci-lint
 PNPM          := pnpm
@@ -129,9 +129,9 @@ smoke: ## Real API + worker: health, send, idempotency, 422/429, log leaks, SIGT
 
 .PHONY: test-alerts
 test-alerts: ## Alert rules and routing: promtool check + rule unit tests, amtool check-config (Docker)
-	docker run --rm -v "$(CURDIR)/deploy:/deploy:ro" --workdir /deploy/prometheus --entrypoint promtool $(PROMETHEUS_IMAGE) check config prometheus.yml
-	docker run --rm -v "$(CURDIR)/deploy:/deploy:ro" --workdir /deploy/prometheus --entrypoint promtool $(PROMETHEUS_IMAGE) test rules alerts_test.yml
-	docker run --rm -v "$(CURDIR)/deploy:/deploy:ro" --entrypoint amtool $(ALERTMANAGER_IMAGE) check-config /deploy/alertmanager/alertmanager.yml
+	docker run --rm --network none -v "$(CURDIR)/deploy:/deploy:ro" --workdir /deploy/prometheus --entrypoint promtool $(PROMETHEUS_IMAGE) check config prometheus.yml
+	docker run --rm --network none -v "$(CURDIR)/deploy:/deploy:ro" --workdir /deploy/prometheus --entrypoint promtool $(PROMETHEUS_IMAGE) test rules alerts_test.yml
+	docker run --rm --network none -v "$(CURDIR)/deploy:/deploy:ro" --entrypoint amtool $(ALERTMANAGER_IMAGE) check-config /deploy/alertmanager/alertmanager.yml
 
 .PHONY: restore-test
 restore-test: ## Backup + restore drill: pg_dump -> fresh DB -> checks -> api on the restored DB

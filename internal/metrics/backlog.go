@@ -2,6 +2,8 @@ package metrics
 
 import (
 	"context"
+	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -38,6 +40,7 @@ type Backlog struct {
 	pool       *pgxpool.Pool
 	provider   string
 	dailyLimit int
+	logger     *slog.Logger
 
 	mu      sync.Mutex
 	at      time.Time
@@ -49,9 +52,9 @@ type Backlog struct {
 }
 
 // RegisterBacklog registers the backlog gauges for the configured provider
-// and its daily cap.
-func RegisterBacklog(reg prometheus.Registerer, pool *pgxpool.Pool, provider string, limit int) *Backlog {
-	b := &Backlog{pool: pool, provider: provider, dailyLimit: limit}
+// and its daily cap; failed snapshots are logged to logger.
+func RegisterBacklog(reg prometheus.Registerer, pool *pgxpool.Pool, provider string, limit int, logger *slog.Logger) *Backlog {
+	b := &Backlog{pool: pool, provider: provider, dailyLimit: limit, logger: logger}
 	reg.MustRegister(b)
 	return b
 }
@@ -78,7 +81,7 @@ func (b *Backlog) Collect(ch chan<- prometheus.Metric) {
 	}
 	ch <- prometheus.MustNewConstMetric(dbUp, prometheus.GaugeValue, 1)
 	for _, q := range jobs.Queues() {
-		for _, s := range jobs.UnfinishedStates {
+		for _, s := range jobs.UnfinishedStates() {
 			ch <- prometheus.MustNewConstMetric(queueJobs, prometheus.GaugeValue, float64(b.queue.Jobs[[2]string{q, s}]), q, s)
 		}
 		for _, c := range []string{jobs.ClassTransactional, jobs.ClassBulk} {
@@ -94,22 +97,31 @@ func (b *Backlog) Collect(ch chan<- prometheus.Metric) {
 
 func (b *Backlog) refresh() {
 	b.at = time.Now()
+	if err := b.read(); err != nil {
+		b.ok = false
+		// At most once per snapshot interval, like the queries themselves.
+		b.logger.Warn("metrics: backlog snapshot failed; db_up is 0", slog.Any("error", err))
+		return
+	}
+	b.ok = true
+}
+
+func (b *Backlog) read() error {
 	ctx, cancel := context.WithTimeout(context.Background(), backlogTimeout)
 	defer cancel()
 	q := store.New(b.pool)
 	var err error
-	b.ok = false
 	if b.queue, err = jobs.Stats(ctx, b.pool); err != nil {
-		return
+		return err
 	}
 	if b.open, err = q.CountOpenEmails(ctx); err != nil {
-		return
+		return fmt.Errorf("count open emails: %w", err)
 	}
 	if b.hooks, err = q.WebhookBacklog(ctx); err != nil {
-		return
+		return fmt.Errorf("webhook backlog: %w", err)
 	}
 	if b.handoff, err = q.CountProviderHandoffs(ctx, &b.provider); err != nil {
-		return
+		return fmt.Errorf("count hand-offs: %w", err)
 	}
-	b.ok = true
+	return nil
 }

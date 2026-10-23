@@ -64,4 +64,26 @@ func TestDeliverCountsResults(t *testing.T) {
 	if got := deliveryResults(t, reg); got["delivered"] != 1 || got["retry"] != 1 || got["failed"] != 1 {
 		t.Errorf("results %v, want delivered 1, retry 1, failed 1", got)
 	}
+
+	// A 4xx answer fails the delivery without a retry.
+	h := newDeliveryFixture(t)
+	gone := newReceiver(t, http.StatusGone)
+	h.endpoint(t, gone.srv.URL+"/hook")
+	_, refused := h.change(t, "captured")
+	d3 := h.deliverer(t, lax, 5, 5*time.Second)
+	d3.Observe(m)
+	if err := d3.Deliver(ctx, refused[0], attempt(1)); err != nil {
+		t.Fatal(err)
+	}
+	// A delivery stuck pending for 30 days is expired by the safety net.
+	_, stale := h.change(t, "failed")
+	if _, err := h.pool.Exec(ctx, "UPDATE webhook_deliveries SET created_at = now() - interval '30 days', updated_at = now() - interval '30 days' WHERE id = $1", stale[0].DeliveryID); err != nil {
+		t.Fatal(err)
+	}
+	if err := d3.Cleanup(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := deliveryResults(t, reg); got["failed"] != 3 || got["retry"] != 1 {
+		t.Errorf("after a 4xx and an expiry: %v, want failed 3, retry 1", got)
+	}
 }

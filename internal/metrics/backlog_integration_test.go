@@ -3,8 +3,11 @@
 package metrics_test
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -73,7 +76,7 @@ func TestBacklogGauges(t *testing.T) {
 	exec(`UPDATE river_job SET scheduled_at = now() - interval '90 seconds' WHERE priority = 1`)
 
 	reg := prometheus.NewRegistry()
-	metrics.RegisterBacklog(reg, pool, "mailpit", 500)
+	metrics.RegisterBacklog(reg, pool, "mailpit", 500, slog.New(slog.DiscardHandler))
 	got := series(t, reg, "email_platform_")
 	for _, want := range []string{
 		"email_platform_db_up{} 1",
@@ -123,7 +126,8 @@ func TestBacklogGauges(t *testing.T) {
 	// A database that is gone gives db_up 0 and no stale backlog values.
 	down := testdb.NewMigrated(t)
 	regDown := prometheus.NewRegistry()
-	metrics.RegisterBacklog(regDown, down, "mailpit", 0)
+	var logs bytes.Buffer
+	metrics.RegisterBacklog(regDown, down, "mailpit", 0, slog.New(slog.NewJSONHandler(&logs, nil)))
 	down.Close()
 	start := time.Now()
 	got = series(t, regDown, "email_platform_")
@@ -132,6 +136,9 @@ func TestBacklogGauges(t *testing.T) {
 	}
 	if time.Since(start) > 4*time.Second {
 		t.Errorf("scrape took %v with the database down", time.Since(start))
+	}
+	if !strings.Contains(logs.String(), "backlog snapshot failed") {
+		t.Errorf("failed snapshot not logged: %s", logs.String())
 	}
 }
 

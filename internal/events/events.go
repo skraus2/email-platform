@@ -16,6 +16,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
+	"slices"
 	"time"
 
 	"github.com/google/uuid"
@@ -56,7 +58,7 @@ func (r *Recorder) Observe(m *metrics.ProviderEvents) { r.metrics = m }
 
 // ProviderEventTypes lists the provider event types Ingest accepts.
 func ProviderEventTypes() []string {
-	return []string{"send", "delivered", "bounced", "complained", "rejected", "delivery_delayed"}
+	return slices.Sorted(maps.Keys(providerTypes))
 }
 
 // IngestOutcomes lists the outcomes of a successful Ingest.

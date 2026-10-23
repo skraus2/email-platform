@@ -10,8 +10,10 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -72,13 +74,14 @@ func run() error {
 
 	registry := metrics.NewRegistry()
 	metrics.RegisterPool(registry, pool)
+	metrics.RegisterBacklog(registry, pool, cfg.MailProvider, cfg.ProviderDailyLimit, logger)
 	// The metrics listener starts before the database wait: a database that
-	// is down shows in the metrics, and a busy port fails the start at once.
+	// is down shows as db_up 0, and a busy port fails the start at once.
 	stopMetrics, err := serveMetrics(ctx, cfg.MetricsAddr, registry, logger)
 	if err != nil {
 		return err
 	}
-	defer stopMetrics()
+	defer stopMetrics(metricsShutdownTimeout) // no-op after the regular stop below
 
 	if !waitReady(ctx, logger, func(ctx context.Context) error { return database.Ready(ctx, pool, migrator) }) {
 		logger.Info("shutdown before ready")
@@ -91,7 +94,6 @@ func run() error {
 	dispatcher := emails.NewDispatcher(pool, provider, logger, cfg.ProviderTimeout, cfg.BodyMaxAge)
 	dispatcher.Observe(metrics.NewDispatch(registry, emails.FailureCodes), cfg.MailProvider)
 	dispatcher.Events().Observe(metrics.NewProviderEvents(registry, events.ProviderEventTypes(), events.IngestOutcomes()))
-	metrics.RegisterBacklog(registry, pool, cfg.MailProvider, cfg.ProviderDailyLimit)
 	if err := dispatcher.LimitProviderRate(cfg.ProviderRatePerSecond); err != nil {
 		return err
 	}
@@ -197,6 +199,7 @@ func run() error {
 		}
 		timer.Stop()
 	}
+	stopMetrics(max(time.Until(deadline), minMetricsShutdown))
 	logger.Info("shutdown complete")
 	return nil
 }
@@ -204,36 +207,49 @@ func run() error {
 const workerConcurrency = 10
 
 // serveMetrics serves the registry on addr ("" = off) until the returned
-// stop function is called, which shuts the listener down within a short
-// deadline.
-func serveMetrics(ctx context.Context, addr string, reg *prometheus.Registry, logger *slog.Logger) (func(), error) {
+// stop function is called; stop shuts the listener down within its timeout
+// and does nothing after the first call.
+func serveMetrics(ctx context.Context, addr string, reg *prometheus.Registry, logger *slog.Logger) (func(time.Duration), error) {
 	if addr == "" {
-		return func() {}, nil
+		return func(time.Duration) {}, nil
 	}
 	ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", addr)
 	if err != nil {
 		return nil, fmt.Errorf("listen on METRICS_ADDR %s: %w", addr, err)
 	}
 	host, _, _ := net.SplitHostPort(addr)
+	if ip, err := netip.ParseAddr(host); err != nil || !ip.IsLoopback() {
+		logger.Warn("metrics listener binds beyond loopback: anyone who reaches it can read the (aggregate, unauthenticated) metrics",
+			slog.String("metrics_addr", addr))
+	}
 	srv := metrics.NewServer(reg, host, logger)
 	done := make(chan error, 1)
 	go func() { done <- srv.Serve(ln) }()
 	logger.Info("metrics listener started", slog.String("metrics_addr", ln.Addr().String()))
-	return func() {
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), metricsShutdownTimeout)
-		defer cancel()
-		if err := srv.Shutdown(shutdownCtx); err != nil {
-			logger.Warn("metrics listener did not stop cleanly", slog.Any("error", err))
-		}
-		if err := <-done; !errors.Is(err, http.ErrServerClosed) {
-			logger.Warn("metrics listener failed", slog.Any("error", err))
-		}
+	var once sync.Once
+	return func(timeout time.Duration) {
+		once.Do(func() {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), timeout)
+			defer cancel()
+			if err := srv.Shutdown(shutdownCtx); err != nil {
+				logger.Warn("metrics listener did not stop cleanly", slog.Any("error", err))
+				_ = srv.Close()
+			}
+			if err := <-done; !errors.Is(err, http.ErrServerClosed) {
+				logger.Warn("metrics listener failed", slog.Any("error", err))
+			}
+		})
 	}, nil
 }
 
-// metricsShutdownTimeout bounds the metrics listener's shutdown (scrapes
-// are short).
-const metricsShutdownTimeout = 2 * time.Second
+const (
+	// metricsShutdownTimeout bounds the metrics listener's shutdown on an
+	// early return (scrapes are short).
+	metricsShutdownTimeout = 2 * time.Second
+	// minMetricsShutdown is what the listener gets when the worker used up
+	// the shutdown deadline.
+	minMetricsShutdown = 100 * time.Millisecond
+)
 
 // newProvider builds the configured provider. An SES client exists only with
 // the complete SES opt-in, which config.Load enforces; everything else gets
