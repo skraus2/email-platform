@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# Renders the runtime environment of the production stack from AWS SSM
+# Parameter Store (SecureString parameters under one path) into a file only
+# root can read, on tmpfs, before `docker compose up`. Credentials come only
+# from the instance role (IMDSv2); static keys or profiles in the
+# environment are refused. Values are never printed.
+#
+#   AWS_REGION=<region> deploy/bin/render-env
+#
+#   SSM_PREFIX   parameter path (default /email-platform/prod/); the name
+#                after the prefix is the variable name (UPPER_SNAKE_CASE)
+#   APP_ENV_FILE output file (default /run/email-platform/app.env)
+set -euo pipefail
+umask 077
+
+prefix="${SSM_PREFIX:-/email-platform/prod/}"
+out="${APP_ENV_FILE:-/run/email-platform/app.env}"
+required=(DATABASE_URL WEBHOOK_KEKS)
+
+die() {
+  echo "render-env: $*" >&2
+  exit 1
+}
+
+for v in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_PROFILE AWS_SHARED_CREDENTIALS_FILE AWS_CONFIG_FILE; do
+  [[ -z "${!v:-}" ]] || die "$v is set; credentials must come from the instance role only"
+done
+[[ "${AWS_EC2_METADATA_DISABLED:-}" != true ]] || die "AWS_EC2_METADATA_DISABLED=true leaves no instance role"
+[[ -n "${AWS_REGION:-}" ]] || die "AWS_REGION is not set"
+[[ "$prefix" =~ ^/[A-Za-z0-9_./-]*/$ ]] || die "SSM_PREFIX must be a path like /email-platform/prod/"
+
+dir="$(dirname "$out")"
+mkdir -p -m 700 "$dir"
+tmp="$(mktemp "$dir/.app.env.XXXXXX")"
+trap 'rm -f "$tmp" "$tmp.raw" "$tmp.err"' EXIT
+
+# Name<TAB>Value per line (the CLI follows pagination itself).
+if ! aws ssm get-parameters-by-path --region "$AWS_REGION" --path "$prefix" --recursive --with-decryption \
+  --query 'Parameters[].[Name,Value]' --output text >"$tmp.raw" 2>"$tmp.err"; then
+  # The CLI's error names the call, never parameter values.
+  head -3 "$tmp.err" >&2
+  rm -f "$tmp.raw" "$tmp.err"
+  die "reading $prefix failed"
+fi
+rm -f "$tmp.err"
+
+names=()
+has() { [[ " ${names[*]:-} " == *" $1 "* ]]; }
+while IFS=$'\t' read -r name value; do
+  [[ -n "$name" ]] || continue
+  key="${name#"$prefix"}"
+  [[ "$name" == "$prefix$key" && "$key" =~ ^[A-Z][A-Z0-9_]*$ ]] || { rm -f "$tmp.raw"; die "parameter name '$name' is not $prefix<UPPER_SNAKE_CASE>"; }
+  ! has "$key" || { rm -f "$tmp.raw"; die "$key is defined twice"; }
+  [[ -n "$value" && "$value" != "None" ]] || { rm -f "$tmp.raw"; die "$key is empty"; }
+  # Compose env files take single-quoted values literally.
+  [[ "$value" != *"'"* ]] || { rm -f "$tmp.raw"; die "$key contains a single quote"; }
+  printf "%s='%s'\n" "$key" "$value" >>"$tmp"
+  names+=("$key")
+done <"$tmp.raw"
+rm -f "$tmp.raw"
+
+for key in "${required[@]}"; do
+  has "$key" || die "required parameter $prefix$key is missing"
+done
+
+chmod 600 "$tmp"
+mv -f "$tmp" "$out"
+trap - EXIT
+if [[ "$(uname -s)" == Linux && "$(stat -f -c %T "$dir" 2>/dev/null)" != tmpfs ]]; then
+  echo "render-env: warning: $dir is not on tmpfs; the secrets are on disk" >&2
+fi
+echo "render-env: wrote ${#names[@]} variables to $out: ${names[*]:-}"

@@ -88,6 +88,8 @@ jobs:
           persist-credentials: false
       - name: Alert rules, rule unit tests and routing (promtool, amtool)
         run: make test-alerts
+      - name: Secrets rendering from SSM (stubbed aws CLI)
+        run: ./deploy/bin/render-env_test.sh
 
   deploy-check:
     runs-on: ubuntu-24.04
