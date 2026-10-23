@@ -287,3 +287,27 @@ func TestFanoutStopsForADisabledProject(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestFanoutIgnoresForeignProject(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t, 20)
+	f.members(t)
+	b := f.scheduled(t)
+	var other uuid.UUID
+	if err := f.pool.QueryRow(f.ctx, "INSERT INTO projects (name) VALUES ('other') RETURNING id").Scan(&other); err != nil {
+		t.Fatal(err)
+	}
+	fo := f.fanout(t, nil, nil)
+	for _, project := range []uuid.UUID{other, uuid.New()} {
+		args := jobs.BroadcastFanoutArgs{BroadcastID: b.ID, ProjectID: project}
+		if err := fo.Run(f.ctx, args, jobs.Attempt{Number: 1, MaxAttempts: 25}); err != nil {
+			t.Fatalf("foreign project: %v (want the job to end)", err)
+		}
+	}
+	if n := f.count(t, "SELECT count(*) FROM emails"); n != 0 {
+		t.Fatalf("emails from a job with a foreign project: %d", n)
+	}
+	if got, err := f.store.Get(f.ctx, f.project, b.ID); err != nil || got.Status != broadcasts.StatusScheduled || got.StartedAt != nil {
+		t.Fatalf("broadcast changed by a foreign job: %+v %v", got, err)
+	}
+}
