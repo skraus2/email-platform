@@ -37,7 +37,12 @@ func New(t testing.TB) *pgxpool.Pool {
 	return pool
 }
 
-const dropTimeout = time.Minute
+// CREATE and DROP DATABASE wait for checkpoints, which take long on a busy
+// machine with many test packages writing at once.
+const (
+	createTimeout = time.Minute
+	dropTimeout   = 3 * time.Minute
+)
 
 // NewURL creates an empty database and returns its connection URL.
 func NewURL(t testing.TB) string {
@@ -46,7 +51,7 @@ func NewURL(t testing.TB) string {
 	if adminURL == "" {
 		t.Fatalf("testdb: %s is not set; run `make test-integration` (needs `make up`)", EnvVar)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), createTimeout)
 	defer cancel()
 
 	admin, err := pgx.Connect(ctx, adminURL)
