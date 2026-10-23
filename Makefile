@@ -124,6 +124,10 @@ ci: check test-integration smoke test-e2e ## Local superset of CI gates (needs `
 smoke: ## Real API + worker: health, send, idempotency, 422/429, log leaks, SIGTERM
 	./scripts/smoke.sh
 
+.PHONY: restore-test
+restore-test: ## Backup + restore drill: pg_dump -> fresh DB -> checks -> api on the restored DB
+	./scripts/restore-test.sh
+
 .PHONY: test-e2e
 test-e2e: ## Dashboard browser E2E (Playwright, Chromium) against real API + worker on a throwaway DB (needs `make up`)
 	./scripts/e2e.sh $(ARGS)
