@@ -78,6 +78,14 @@ type request struct {
 // send performs r with the token and returns status and raw body.
 func (s *stack) send(t *testing.T, token string, r request) (int, string) {
 	t.Helper()
+	code, body, _ := s.sendFull(t, token, r)
+	return code, body
+}
+
+// sendFull is send that also returns the response headers, rendered
+// without Date and X-Request-Id (which differ between any two calls).
+func (s *stack) sendFull(t *testing.T, token string, r request) (int, string, string) {
+	t.Helper()
 	req, err := http.NewRequestWithContext(context.Background(), r.method, s.srv.URL+r.path, strings.NewReader(r.body))
 	if err != nil {
 		t.Fatal(err)
@@ -98,7 +106,13 @@ func (s *stack) send(t *testing.T, token string, r request) (int, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return resp.StatusCode, string(raw)
+	resp.Header.Del("Date")
+	resp.Header.Del("X-Request-Id")
+	var hdr strings.Builder
+	if err := resp.Header.Write(&hdr); err != nil {
+		t.Fatal(err)
+	}
+	return resp.StatusCode, string(raw), hdr.String()
 }
 
 // tenant is one project's key and the resources the fixture created for it.
@@ -209,6 +223,29 @@ func (s *stack) fingerprint(t *testing.T, project uuid.UUID) map[string]string {
 	return out
 }
 
+// jobs maps every queued job to the project in its args ("" = none).
+func (s *stack) jobs(t *testing.T) map[int64]string {
+	t.Helper()
+	rows, err := s.pool.Query(context.Background(), `SELECT id, coalesce(args->>'project_id', '') FROM river_job`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	out := map[int64]string{}
+	for rows.Next() {
+		var id int64
+		var project string
+		if err := rows.Scan(&id, &project); err != nil {
+			t.Fatal(err)
+		}
+		out[id] = project
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
 type probe struct {
 	op, ref string
 	// same: the foreign request answers exactly like the unknown one.
@@ -255,6 +292,7 @@ func TestEveryRouteIsolatesProjects(t *testing.T) {
 	}
 	a, b := newTenant("a"), newTenant("b")
 	before := s.fingerprint(t, a.id)
+	jobsBefore := s.jobs(t)
 
 	unknown := func() string { return uuid.Must(uuid.NewV7()).String() }
 	cursor := func(path string) string {
@@ -339,6 +377,7 @@ func TestEveryRouteIsolatesProjects(t *testing.T) {
 		get("GET /v1/automations", "cursor", "/v1/automations?limit=1&cursor="+cursor("/v1/automations?limit=1")),
 		same("GET /v1/automations/{id}", "id", "GET", "/v1/automations/{ref}", "", A["automation1"]),
 		same("PATCH /v1/automations/{id}", "id", "PATCH", "/v1/automations/{ref}", `{"name":"renamed"}`, A["automation1"]),
+		same("PATCH /v1/automations/{id}", "id, archive", "PATCH", "/v1/automations/{ref}", `{"status":"archived"}`, A["automation1"]),
 		same("GET /v1/automations/{id}/runs", "id", "GET", "/v1/automations/{ref}/runs", "", A["automation1"]),
 		same("GET /v1/automations/{id}/runs", "contact_id filter", "GET", "/v1/automations/"+b.ids["automation1"]+"/runs?contact_id={ref}", "", A["contact1"]),
 		get("GET /v1/automations/{id}/runs", "cursor", "/v1/automations/"+b.ids["automation1"]+"/runs?limit=1&cursor="+cursor("/v1/automations/"+A["automation1"]+"/runs?limit=1")),
@@ -388,17 +427,21 @@ func TestEveryRouteIsolatesProjects(t *testing.T) {
 	}
 	for _, p := range probes {
 		name := p.op + " [" + p.ref + "]"
-		code, body := s.send(t, b.token, p.foreign)
+		code, body, hdr := s.sendFull(t, b.token, p.foreign)
 		for _, m := range markers {
-			if strings.Contains(body, m) {
+			if strings.Contains(body+hdr, m) {
 				t.Errorf("%s: answer contains %q of project A: %s", name, m, body)
 			}
 		}
 		switch p.mode {
 		case "same":
-			ucode, ubody := s.send(t, b.token, p.unknown)
-			if code != ucode || normalize(body, ids(p.foreign, p.unknown)...) != normalize(ubody, ids(p.foreign, p.unknown)...) {
+			ucode, ubody, uhdr := s.sendFull(t, b.token, p.unknown)
+			ref := ids(p.foreign, p.unknown)
+			if code != ucode || normalize(body, ref...) != normalize(ubody, ref...) {
 				t.Errorf("%s: foreign %d %s, unknown %d %s", name, code, body, ucode, ubody)
+			}
+			if normalize(hdr, ref...) != normalize(uhdr, ref...) {
+				t.Errorf("%s: headers differ:\nforeign %s\nunknown %s", name, hdr, uhdr)
 			}
 		case "fresh":
 			if code != p.want {
@@ -436,6 +479,17 @@ func TestEveryRouteIsolatesProjects(t *testing.T) {
 		}
 		if n != 0 {
 			t.Errorf("%d rows of project B in %s refer to project A", n, table)
+		}
+	}
+	// B's calls enqueued no job for A (a handler that took A's project from
+	// a row it found globally would) and no job without a project.
+	jobsAfter := s.jobs(t)
+	for id, project := range jobsAfter {
+		if _, old := jobsBefore[id]; old {
+			continue
+		}
+		if project != b.id.String() {
+			t.Errorf("project B's calls enqueued job %d for project %q", id, project)
 		}
 	}
 	var jobsReferringToA int

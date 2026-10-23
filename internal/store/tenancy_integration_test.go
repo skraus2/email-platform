@@ -18,6 +18,12 @@ var childTables = map[string]string{
 	"email_contents":   "read through the email (primary key email_id)",
 }
 
+// unpinnedRefs are <x>_id uuid columns of project tables without an FK, with
+// the reason that is safe.
+var unpinnedRefs = map[string]string{
+	"broadcasts.cursor_contact_id": "fan-out keyset position; only compared with contact ids of the same broadcast's project, the contact may be deleted meanwhile",
+}
+
 // globalUniques are unique indexes on project tables without project_id.
 // Each covers only server-generated or provider-assigned values, so it can
 // neither collide across projects on client input nor reveal another
@@ -137,7 +143,53 @@ func TestTenantSchemaInvariants(t *testing.T) {
 		}
 	}
 
-	// Indexes: leading project_id, and unique indexes without project_id.
+	// Every uuid column naming another row (<x>_id) is held by an FK that
+	// includes project_id, so it cannot point into another project.
+	rows, err = pool.Query(ctx, `
+		SELECT c.relname, a.attname
+		FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid
+		WHERE c.relnamespace = 'public'::regnamespace AND c.relkind IN ('r', 'p') AND NOT a.attisdropped
+		  AND a.attnum > 0 AND a.atttypid = 'uuid'::regtype AND a.attname LIKE '%\_id' AND a.attname <> 'project_id'
+		  AND NOT EXISTS (SELECT 1 FROM pg_constraint k
+		                  WHERE k.contype = 'f' AND k.conrelid = c.oid AND a.attnum = ANY (k.conkey)
+		                    AND EXISTS (SELECT 1 FROM unnest(k.conkey) n JOIN pg_attribute p ON p.attrelid = c.oid AND p.attnum = n
+		                                WHERE p.attname = 'project_id'))`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	usedRefs := map[string]bool{}
+	for rows.Next() {
+		var table, column string
+		if err := rows.Scan(&table, &column); err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Contains(tenantTables, table) {
+			continue
+		}
+		if _, ok := unpinnedRefs[table+"."+column]; ok {
+			usedRefs[table+"."+column] = true
+			continue
+		}
+		t.Errorf("%s.%s names another row but no FK including project_id holds it", table, column)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	for ref := range unpinnedRefs {
+		if !usedRefs[ref] {
+			t.Errorf("stale unpinnedRefs entry %s", ref)
+		}
+	}
+	var exclusions int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM pg_constraint WHERE contype = 'x' AND connamespace = 'public'::regnamespace`).Scan(&exclusions); err != nil {
+		t.Fatal(err)
+	}
+	if exclusions != 0 {
+		t.Errorf("%d exclusion constraints: classify them like unique indexes before allowing them", exclusions)
+	}
+
+	// Indexes: leading project_id, and unique indexes without project_id
+	// among their key columns (INCLUDE columns do not scope uniqueness).
 	type index struct {
 		table, name                      string
 		lead, unique, hasProject, idOnly bool
@@ -146,7 +198,7 @@ func TestTenantSchemaInvariants(t *testing.T) {
 		SELECT t.relname, i.relname,
 		       coalesce((SELECT a.attname FROM pg_attribute a WHERE a.attrelid = t.oid AND a.attnum = x.indkey[0]) = 'project_id', false),
 		       x.indisunique,
-		       EXISTS (SELECT 1 FROM unnest(x.indkey) k(n) JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = k.n
+		       EXISTS (SELECT 1 FROM unnest((x.indkey::int2[])[0:x.indnkeyatts - 1]) k(n) JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = k.n
 		               WHERE a.attname = 'project_id'),
 		       coalesce(x.indnatts = 1 AND (SELECT a.attname FROM pg_attribute a WHERE a.attrelid = t.oid AND a.attnum = x.indkey[0]) = 'id', false)
 		FROM pg_index x

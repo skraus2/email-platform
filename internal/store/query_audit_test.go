@@ -18,6 +18,13 @@ var unscopedQueries = map[string]string{
 	"AdminGetBroadcast":     "operator console (all projects)",
 	"AdminGetAutomation":    "operator console (all projects)",
 	"AdminGetAutomationRun": "operator console (all projects)",
+	// Operator lists: the project filter is optional (NULL = all projects).
+	"AdminSearchEmails":         "operator console, optional project filter",
+	"AdminListTemplates":        "operator console, optional project filter",
+	"AdminListSenders":          "operator console, optional project filter",
+	"AdminListWebhookEndpoints": "operator console, optional project filter",
+	"AdminListBroadcasts":       "operator console, optional project filter",
+	"AdminListAutomations":      "operator console, optional project filter",
 	// Children of a parent the caller already loaded by id and project.
 	"CountAudienceMembers":   "audience checked by caller; composite FK pins members to its project",
 	"CountAudienceMembersIn": "audience checked by caller; composite FK pins members to its project",
@@ -45,7 +52,7 @@ var unscopedQueries = map[string]string{
 	// The project is not known yet: these resolve it.
 	"GetActiveKeyByPrefix": "authentication resolves the project from the key",
 	"RevokeAPIKey":         "admin CLI revokes by globally unique key prefix",
-	"ProviderEventOwner":   "provider events are routed to the project of their email",
+	"ProviderEventOwner":   "duplicate-owner check on a provider-assigned global event id",
 }
 
 // param is a sqlc query parameter.
@@ -64,6 +71,9 @@ var (
 		`|` + param + `\s*=\s*(\w+\.)?project_id\b` +
 		`|\([^()]*\bproject_id\b[^()]*\)\s*(=|in)\s*\(\s*` + param)
 	insertColumns = regexp.MustCompile(`(?is)^\s*insert\s+into\s+[a-z_]+(\s+as\s+\w+)?\s*\(([^)]*)\)`)
+	// "sqlc.narg(project_id) IS NULL OR project_id = …" scopes nothing when
+	// the argument is NULL.
+	optionalProject = regexp.MustCompile(`(?i)(sqlc\.narg\(\s*'?|@)\w*project_id'?\s*\)?(::uuid)?\s+is\s+null\b`)
 	// Joining the project registry names a project; it scopes nothing.
 	projectJoin = regexp.MustCompile(`(?i)\bjoin\s+projects\s+\w+\s+on\s+\w+\.id\s*=\s*\w+\.project_id\b`)
 )
@@ -131,6 +141,9 @@ func touchesProjectTables(body string) bool {
 // scopedByProject: a project_id comparison anywhere, or a plain INSERT …
 // VALUES that writes project_id and reads no project table.
 func scopedByProject(body string) bool {
+	if optionalProject.MatchString(body) {
+		return false
+	}
 	if projectPredicate.MatchString(projectJoin.ReplaceAllString(body, "")) {
 		return true
 	}

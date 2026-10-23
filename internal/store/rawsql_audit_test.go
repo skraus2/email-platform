@@ -5,6 +5,7 @@ import (
 	"go/parser"
 	"go/token"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -81,5 +82,68 @@ func TestNoRawSQLOutsideStore(t *testing.T) {
 		if !seen[name] {
 			t.Errorf("stale rawSQLFiles entry %s", name)
 		}
+	}
+}
+
+var adminMethod = regexp.MustCompile(`(?m)^func \(q \*Queries\) (Admin\w+)\(`)
+
+// TestAdminQueriesOnlyInOperatorCode: the Admin* queries read across
+// projects (operator console), so only the operator package may call them;
+// a project-facing handler reusing one would leak other projects' rows.
+func TestAdminQueriesOnlyInOperatorCode(t *testing.T) {
+	files, err := filepath.Glob("*.sql.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	methods := map[string]bool{}
+	for _, f := range files {
+		src, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, m := range adminMethod.FindAllStringSubmatch(string(src), -1) {
+			methods[m[1]] = true
+		}
+	}
+	if len(methods) < 10 {
+		t.Fatalf("found only %d Admin* queries", len(methods))
+	}
+	root := filepath.Join("..", "..")
+	used := 0
+	fset := token.NewFileSet()
+	for _, dir := range []string{"internal", "cmd"} {
+		err := filepath.WalkDir(filepath.Join(root, dir), func(path string, d fs.DirEntry, err error) error {
+			if err != nil || d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+				return err
+			}
+			rel, _ := filepath.Rel(root, path)
+			rel = filepath.ToSlash(rel)
+			if strings.HasPrefix(rel, "internal/store/") {
+				return nil
+			}
+			f, err := parser.ParseFile(fset, path, nil, 0)
+			if err != nil {
+				return err
+			}
+			ast.Inspect(f, func(n ast.Node) bool {
+				sel, ok := n.(*ast.SelectorExpr)
+				if !ok || !methods[sel.Sel.Name] {
+					return true
+				}
+				if strings.HasPrefix(rel, "internal/admin/") {
+					used++
+					return true
+				}
+				t.Errorf("%s: %s reads across projects; only internal/admin may use it", fset.Position(sel.Pos()), sel.Sel.Name)
+				return true
+			})
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if used == 0 {
+		t.Fatal("no Admin* query use found in internal/admin; parsing broke?")
 	}
 }
