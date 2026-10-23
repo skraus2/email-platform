@@ -505,10 +505,11 @@ func validateDatabaseURL(raw, env string) error {
 		return errors.New("DATABASE_URL must be a postgres:// URL with a host")
 	}
 	if env == EnvProduction {
-		switch u.Query().Get("sslmode") {
-		case "require", "verify-ca", "verify-full":
-		default:
-			return errors.New("DATABASE_URL must set sslmode=require, verify-ca or verify-full in production")
+		// The server certificate and host name are verified: require and
+		// verify-ca would let anyone on the path impersonate the database.
+		// Point sslrootcert at the provider's CA bundle (e.g. RDS).
+		if u.Query().Get("sslmode") != "verify-full" {
+			return errors.New("DATABASE_URL must set sslmode=verify-full in production (with sslrootcert for a private CA such as RDS)")
 		}
 	}
 	return nil

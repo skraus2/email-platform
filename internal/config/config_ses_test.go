@@ -87,11 +87,11 @@ func TestLoadRejectsIncompleteSESOptIn(t *testing.T) {
 		{"only the sqs stub", map[string]string{"SQS_ENDPOINT": "http://127.0.0.1:4567"}, "SES_ENDPOINT"},
 		{"only the ses stub", map[string]string{"SES_ENDPOINT": "http://127.0.0.1:4566"}, "SQS_ENDPOINT"},
 		{"stub endpoint in production", map[string]string{
-			"APP_ENV": "production", "DATABASE_URL": "postgres://ep:s3cret@db.internal:5432/ep?sslmode=require",
+			"APP_ENV": "production", "DATABASE_URL": "postgres://ep:s3cret@db.internal:5432/ep?sslmode=verify-full",
 			"SES_ENDPOINT": "http://127.0.0.1:4566",
 		}, "SES_ENDPOINT"},
 		{"sqs stub endpoint in production", map[string]string{
-			"APP_ENV": "production", "DATABASE_URL": "postgres://ep:s3cret@db.internal:5432/ep?sslmode=require",
+			"APP_ENV": "production", "DATABASE_URL": "postgres://ep:s3cret@db.internal:5432/ep?sslmode=verify-full",
 			"SQS_ENDPOINT": "http://127.0.0.1:4567",
 		}, "SQS_ENDPOINT"},
 	}
@@ -107,7 +107,7 @@ func TestLoadRejectsIncompleteSESOptIn(t *testing.T) {
 
 func TestLoadSESInProductionWithoutStubs(t *testing.T) {
 	prod := map[string]string{
-		"APP_ENV": "production", "DATABASE_URL": "postgres://ep:s3cret@db.internal:5432/ep?sslmode=require",
+		"APP_ENV": "production", "DATABASE_URL": "postgres://ep:s3cret@db.internal:5432/ep?sslmode=verify-full",
 	}
 	// The SDK would otherwise honour AWS_ENDPOINT_URL* and profile endpoint
 	// overrides for every client it builds.

@@ -16,7 +16,7 @@ func env(m map[string]string) LookupFunc {
 
 const devURL = "postgres://ep:s3cret@localhost:54320/ep?sslmode=disable"
 
-const prodURL = "postgres://ep:s3cret@db.internal:5432/ep?sslmode=require"
+const prodURL = "postgres://ep:s3cret@db.internal:5432/ep?sslmode=verify-full"
 
 func TestLoadDefaults(t *testing.T) {
 	cfg, err := Load(env(map[string]string{"DATABASE_URL": devURL}))
@@ -155,12 +155,25 @@ func TestLoadReportsAllErrors(t *testing.T) {
 }
 
 func TestLoadProductionRequiresTLS(t *testing.T) {
-	_, err := Load(env(map[string]string{
-		"APP_ENV":      "production",
-		"DATABASE_URL": "postgres://ep:s3cret@db:5432/ep?sslmode=verify-full",
-	}))
-	if err != nil {
-		t.Fatalf("Load: %v", err)
+	for _, url := range []string{
+		"postgres://ep:s3cret@db:5432/ep?sslmode=verify-full",
+		"postgres://ep:s3cret@db:5432/ep?sslmode=verify-full&sslrootcert=/etc/email-platform/rds-ca.pem",
+	} {
+		if _, err := Load(env(map[string]string{"APP_ENV": "production", "DATABASE_URL": url})); err != nil {
+			t.Errorf("%s: %v", url, err)
+		}
+	}
+	// TLS without verifying the server certificate and host name is refused
+	// in production; outside production any mode is accepted.
+	for _, mode := range []string{"", "disable", "allow", "prefer", "require", "verify-ca"} {
+		url := "postgres://ep:s3cret@db:5432/ep?sslmode=" + mode
+		_, err := Load(env(map[string]string{"APP_ENV": "production", "DATABASE_URL": url}))
+		if err == nil || !strings.Contains(err.Error(), "sslmode=verify-full") || strings.Contains(err.Error(), "s3cret") {
+			t.Errorf("production sslmode=%q: err = %v", mode, err)
+		}
+		if _, err := Load(env(map[string]string{"DATABASE_URL": url})); err != nil {
+			t.Errorf("development sslmode=%q: %v", mode, err)
+		}
 	}
 }
 
@@ -313,7 +326,7 @@ func TestLoadWebhookSettings(t *testing.T) {
 		t.Fatalf("explicit = %+v, %v", cfg.WebhookTargets, err)
 	}
 
-	prod := map[string]string{"APP_ENV": "production", "DATABASE_URL": "postgres://ep:s3cret@db.internal:5432/ep?sslmode=require"}
+	prod := map[string]string{"APP_ENV": "production", "DATABASE_URL": "postgres://ep:s3cret@db.internal:5432/ep?sslmode=verify-full"}
 	cfg, err = Load(env(prod))
 	if err != nil || cfg.WebhookTargets.AllowHTTP || cfg.WebhookTargets.AllowPrivate {
 		t.Fatalf("production defaults = %+v, %v; want both off", cfg.WebhookTargets, err)
