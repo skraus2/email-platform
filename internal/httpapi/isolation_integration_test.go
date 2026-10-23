@@ -18,6 +18,7 @@ import (
 
 	"github.com/skraus2/email-platform/internal/auth"
 	"github.com/skraus2/email-platform/internal/emails"
+	"github.com/skraus2/email-platform/internal/usage"
 )
 
 // tenantTables mirrors the project table list of the store tests (which
@@ -257,6 +258,11 @@ func TestEveryRouteIsolatesProjects(t *testing.T) {
 		t.Fatalf("project tables in the schema %v differ from the list %v (%v)", inSchema, tenantTables, err)
 	}
 	a, b := newTenant("a"), newTenant("b")
+	// Usage rows of both tenants exist, so A's are in the fingerprint below
+	// (the usage values themselves are compared in TestUsageIsolation).
+	if _, err := usage.Rollup(ctx, s.pool, time.Now()); err != nil {
+		t.Fatal(err)
+	}
 
 	unknown := func() string { return uuid.Must(uuid.NewV7()).String() }
 	cursor := func(path string) string {

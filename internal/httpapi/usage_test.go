@@ -102,7 +102,7 @@ func TestUsageValidation(t *testing.T) {
 		{"?to=2026-13-01", "to must be a single date (YYYY-MM-DD)"},
 		{"?to=2026-10-1", "to must be a single date (YYYY-MM-DD)"},
 		{"?from=2026-10-02&to=2026-10-01", "from must not be after to"},
-		{"?from=2026-07-22&to=2026-10-23", "from and to may be at most 93 days apart (both included)"},
+		{"?from=2026-07-22&to=2026-10-23", "from and to may cover at most 93 days (both included)"},
 		{"?%zz", "the query string is malformed"},
 	} {
 		rec := getUsage(t, s, tc.query)

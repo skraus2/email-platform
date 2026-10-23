@@ -56,16 +56,16 @@ func (r *Reader) Days(ctx context.Context, projectID uuid.UUID, from, to time.Ti
 	if err != nil {
 		return nil, fmt.Errorf("list usage: %w", err)
 	}
-	stored := make(map[time.Time]Counts, len(rows))
+	stored := make(map[string]Counts, len(rows))
 	for _, row := range rows {
-		stored[row.Day.Time.UTC()] = Counts{
+		stored[row.Day.Time.Format(time.DateOnly)] = Counts{
 			Accepted: row.Accepted, Sent: row.Sent, Failed: row.Failed, Canceled: row.Canceled,
 			Delivered: row.Delivered, Bounced: row.Bounced, Complained: row.Complained,
 		}
 	}
 	out := make([]Day, 0, int(to.Sub(from)/day)+1)
 	for d := from; !d.After(to); d = d.Add(day) {
-		out = append(out, Day{Date: d, Counts: stored[d]})
+		out = append(out, Day{Date: d, Counts: stored[d.Format(time.DateOnly)]})
 	}
 	return out, nil
 }

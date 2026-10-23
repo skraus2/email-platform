@@ -102,7 +102,7 @@ func parseUsageRange(query url.Values, now time.Time) (from, to time.Time, msg s
 	case from.After(to):
 		return from, to, "from must not be after to"
 	case to.Sub(from) >= usage.MaxDays*24*time.Hour:
-		return from, to, "from and to may be at most " + strconv.Itoa(usage.MaxDays) + " days apart (both included)"
+		return from, to, "from and to may cover at most " + strconv.Itoa(usage.MaxDays) + " days (both included)"
 	}
 	return from, to, ""
 }

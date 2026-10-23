@@ -56,11 +56,14 @@ func TestUsageDefaultsAndZeroFill(t *testing.T) {
 	t.Parallel()
 	s := newStack(t)
 	_, token := s.project(t)
+	today := time.Now().UTC().Format(time.DateOnly)
 	s.sendEmails(t, token, 3)
 	if _, err := usage.Rollup(context.Background(), s.pool, time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	today := time.Now().UTC().Format(time.DateOnly)
+	if time.Now().UTC().Format(time.DateOnly) != today {
+		t.Skip("the UTC day changed while the test ran")
+	}
 
 	b := s.usage(t, token, "")
 	if len(b.Data) != 30 || b.To != today || b.Data[29].Date != today || b.Data[0].Date != b.From {

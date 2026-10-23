@@ -141,7 +141,8 @@ func TestRollupCountsPerDay(t *testing.T) {
 	f.event(a, e3, "captured", today, "")
 	f.event(a, e3, "bounced", today, "Transient") // not a hard bounce
 	f.event(a, e3, "complained", today, "")
-	f.event(a, e3, "rejected", today, "") // not counted anywhere
+	f.event(a, e3, "rejected", today, "")         // not counted anywhere
+	f.event(a, e3, "delivery_delayed", today, "") // nor this
 	e4 := f.email(a, today)
 	f.event(a, e4, "canceled", today, "")
 	eb := f.email(b, today)
@@ -165,6 +166,15 @@ func TestRollupIdempotentAndConcurrent(t *testing.T) {
 	}
 	f.email(a, f.today.Add(-day))
 	want := map[int]counts{-1: {Accepted: 1}, 0: {Accepted: 20, Sent: 20}}
+	// More projects and days, so concurrent runs upsert many keys.
+	others := make([]uuid.UUID, 5)
+	for i := range others {
+		others[i] = f.project(fmt.Sprintf("other-%d", i))
+		for d := range 3 {
+			f.email(others[i], f.today.Add(-time.Duration(d)*day+time.Hour))
+		}
+	}
+	wantOther := map[int]counts{-2: {Accepted: 1}, -1: {Accepted: 1}, 0: {Accepted: 1}}
 
 	f.rollup()
 	f.rollup()
@@ -185,6 +195,9 @@ func TestRollupIdempotentAndConcurrent(t *testing.T) {
 		t.Errorf("concurrent rollup: %v", err)
 	}
 	assertRows(t, f.rows(a), want)
+	for _, o := range others {
+		assertRows(t, f.rows(o), wantOther)
+	}
 
 	// New activity raises the counts of its day.
 	e := f.email(a, f.today.Add(2*time.Hour))
@@ -244,7 +257,8 @@ func TestRollupWindow(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
 	a := f.project("a")
-	f.email(a, f.today) // a row stored now: the last rollup is today
+	f.email(a, f.today)
+	// No rollup yet: the first run reaches back to the 14-day cap.
 	if res := f.rollup(); !res.From.Equal(f.today.Add(-13 * day)) {
 		t.Errorf("first run from %v, want the 14-day cap %v", res.From, f.today.Add(-13*day))
 	}

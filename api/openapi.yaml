@@ -1303,7 +1303,8 @@ paths:
 
         Figures are refreshed every 5 minutes and may lag by that much.
         Days without activity are zeros — so are days before usage was
-        first computed and future days.
+        first computed, days missed by a worker outage of more than 14
+        days, and future days.
 
         `limits` are the limits that apply to this project's requests:
         accepted sends and reported contact events per minute.
