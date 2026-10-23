@@ -43,8 +43,10 @@ trap 'rm -f "$tmp" "$tmp.raw" "$tmp.err"' EXIT
 
 # Name<TAB>Value per line (the CLI follows pagination itself).
 # No shared config or credentials files (a forgotten `aws configure` would
-# otherwise win over the instance role), no configured endpoints, IMDSv2 only.
-if ! AWS_SHARED_CREDENTIALS_FILE=/dev/null AWS_CONFIG_FILE=/dev/null AWS_IGNORE_CONFIGURED_ENDPOINT_URLS=true \
+# otherwise win over the instance role), no configured endpoints, IMDSv2 only,
+# no proxy and no custom CA bundle between the CLI and SSM.
+if ! env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u AWS_CA_BUNDLE \
+  AWS_SHARED_CREDENTIALS_FILE=/dev/null AWS_CONFIG_FILE=/dev/null AWS_IGNORE_CONFIGURED_ENDPOINT_URLS=true \
   AWS_EC2_METADATA_V1_DISABLED=true aws ssm get-parameters-by-path --region "$AWS_REGION" --path "$prefix" --recursive --with-decryption \
   --query 'Parameters[].[Name,Value]' --output text >"$tmp.raw" 2>"$tmp.err"; then
   # The CLI's error names the call, never parameter values.

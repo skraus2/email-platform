@@ -36,6 +36,13 @@ x-app: &app
   volumes:
     - ${DB_CA_FILE:-/etc/email-platform/rds-ca.pem}:/etc/email-platform/db-ca.pem:ro
 
+# Settings of every application process that are fixed by this deployment,
+# not by the secret store. With SES against AWS the processes require that
+# configured endpoint overrides are ignored.
+x-app-env: &app-env
+  APP_ENV: production
+  AWS_IGNORE_CONFIGURED_ENDPOINT_URLS: "true"
+
 x-netns-ready: &netns-ready
   netns: { condition: service_healthy }
 
@@ -123,7 +130,7 @@ services:
     command: ["/app/migrate", "up"]
     restart: "no"
     environment:
-      APP_ENV: production
+      <<: *app-env
     depends_on:
       <<: *netns-ready
 
@@ -133,7 +140,7 @@ services:
     mem_limit: 512m
     pids_limit: 256
     environment:
-      APP_ENV: production
+      <<: *app-env
       HTTP_ADDR: 127.0.0.1:8080
       ADMIN_HTTP_ADDR: 127.0.0.1:8081
     healthcheck:
@@ -152,7 +159,7 @@ services:
     mem_limit: 512m
     pids_limit: 256
     environment:
-      APP_ENV: production
+      <<: *app-env
       METRICS_ADDR: 127.0.0.1:9091
     healthcheck:
       test: ["CMD", "/app/healthcheck", "http://127.0.0.1:9091/metrics"]
@@ -171,7 +178,7 @@ services:
     restart: "no"
     profiles: [ops]
     environment:
-      APP_ENV: production
+      <<: *app-env
     depends_on:
       <<: *netns-ready
 

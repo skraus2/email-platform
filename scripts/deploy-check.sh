@@ -177,14 +177,23 @@ inside "http://127.0.0.1:9093/-/ready" >/dev/null || fail "Alertmanager not read
 echo "monitoring -> api + worker up, $rules alert rules loaded, Alertmanager discovered"
 
 # --- Instance metadata only for the application user ----------------------------
-imds() { dc exec -T "$@" wget -T 3 -qO /dev/null http://169.254.169.254/latest/meta-data/ 2>&1 || true; }
-dc exec -T netns iptables -w -S OUTPUT | grep -q -- '-d 169.254.169.254/32 -m owner ! --uid-owner 65532 -j REJECT' ||
-  fail "netns has no metadata rule"
-for svc in caddy prometheus alertmanager; do
-  imds "$svc" | grep -qi 'refused' || fail "$svc reaches the instance metadata address"
+# Probes from the other services must be refused by the guard's rule itself
+# (its packet counter rises); the application user is not probed, so nothing
+# is ever sent to a real metadata service from the test machine.
+rule='-d 169.254.169.254/32 -m owner ! --uid-owner 65532 -j REJECT'
+dc exec -T netns iptables -w -S OUTPUT | grep -qF -- "$rule" || fail "netns has no metadata rule"
+rejected() { dc exec -T netns iptables -w -L OUTPUT -v -x -n | awk '$3 == "REJECT" && $9 == "169.254.169.254" { print $1 }'; }
+for svc in caddy dashboard prometheus alertmanager; do
+  before=$(rejected)
+  out=$(dc exec -T "$svc" wget -T 3 -qO /dev/null http://169.254.169.254/latest/meta-data/ 2>&1 || true)
+  [[ "$out" == *refused* && "$(rejected)" -gt "$before" ]] || fail "$svc reaches the instance metadata address"
 done
-imds --user 65532 netns | grep -qi 'refused' && fail "the application user is refused the instance metadata address"
-echo "instance metadata -> refused for caddy/prometheus/alertmanager, open for uid 65532"
+echo "instance metadata -> refused by the guard for caddy, dashboard, prometheus, alertmanager (only uid 65532 exempt)"
+for svc in migrate api worker; do
+  cid=$(dc ps -a -q "$svc" | head -1)
+  docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$cid" | grep -qx 'AWS_IGNORE_CONFIGURED_ENDPOINT_URLS=true' ||
+    fail "$svc runs without AWS_IGNORE_CONFIGURED_ENDPOINT_URLS=true"
+done
 
 # --- Container hardening -------------------------------------------------------
 for svc in netns api worker dashboard caddy prometheus alertmanager; do
