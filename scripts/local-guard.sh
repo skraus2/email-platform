@@ -8,8 +8,13 @@ if [[ ! "${DATABASE_URL:-}" =~ $local_db_re ]]; then
   echo "refusing to run: DATABASE_URL must be a plain URL of the local Compose database (localhost)" >&2
   exit 1
 fi
-if [[ -n "${DOCKER_HOST:-}" ]]; then
-  echo "refusing to run: DOCKER_HOST is set; these scripts only drive the local Docker engine" >&2
+if [[ -n "${DOCKER_HOST:-}" || -n "${DOCKER_CONTEXT:-}" ]]; then
+  echo "refusing to run: DOCKER_HOST or DOCKER_CONTEXT is set; these scripts only drive the local Docker engine" >&2
+  exit 1
+fi
+docker_endpoint=$(docker context inspect --format '{{.Endpoints.docker.Host}}' 2>/dev/null || true)
+if [[ -n "$docker_endpoint" && "$docker_endpoint" != unix://* ]]; then
+  echo "refusing to run: the current Docker context is not a local engine" >&2
   exit 1
 fi
 # The processes started here must never reach AWS, whatever the caller's
