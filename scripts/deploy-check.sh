@@ -3,7 +3,8 @@
 # for what only exists on AWS (deploy/check/compose.yaml): a TLS PostgreSQL
 # with a generated CA instead of RDS, Mailpit instead of SES, Caddy's internal
 # CA instead of Let's Encrypt. Proves:
-#   - preflight passes with the rendered files and refuses a missing alert receiver,
+#   - render-env (with a stub aws CLI) writes an env file Compose reads as is;
+#     preflight passes with it and refuses a missing alert receiver,
 #   - the app connects with sslmode=verify-full; a wrong CA or a host name not in
 #     the certificate is refused,
 #   - HTTPS serves /healthz and an authenticated send that reaches Mailpit; the
@@ -58,11 +59,17 @@ chmod 755 "$CHECK_DIR" "$CHECK_DIR/certs"
 CHECK_DB_PASSWORD="$(openssl rand -hex 16)"
 KEK="$(openssl rand -base64 32)"
 db_url() { printf 'postgres://email_platform:%s@%s:5433/email_platform?sslmode=verify-full&sslrootcert=%s' "$CHECK_DB_PASSWORD" "$1" "$2"; }
+# render-env reads SSM through a stub aws CLI that prints the parameters.
+mkdir -p "$CHECK_DIR/bin"
 {
-  printf 'DATABASE_URL=%s\n' "$(db_url localhost /etc/email-platform/db-ca.pem)"
-  printf 'WEBHOOK_KEKS=check:%s\n' "$KEK"
-  printf 'MAIL_PROVIDER=mailpit\nSMTP_ADDR=127.0.0.1:1025\nLOG_FORMAT=json\n'
-} >"$CHECK_DIR/app.env"
+  printf '/email-platform/prod/DATABASE_URL\t%s\n' "$(db_url localhost /etc/email-platform/db-ca.pem)"
+  printf '/email-platform/prod/WEBHOOK_KEKS\tcheck:%s\n' "$KEK"
+  printf '/email-platform/prod/MAIL_PROVIDER\tmailpit\n/email-platform/prod/SMTP_ADDR\t127.0.0.1:1025\n/email-platform/prod/LOG_FORMAT\tjson\n'
+} >"$CHECK_DIR/ssm-params"
+printf '#!/usr/bin/env bash\ncat "%s"\n' "$CHECK_DIR/ssm-params" >"$CHECK_DIR/bin/aws"
+chmod 700 "$CHECK_DIR/bin/aws"
+env -i PATH="$CHECK_DIR/bin:/usr/bin:/bin" AWS_REGION=eu-central-1 APP_ENV_FILE="$CHECK_DIR/app.env" \
+  bash "$ROOT/deploy/bin/render-env" >/dev/null || fail "render-env"
 printf '%s\n' "$CHECK_DB_PASSWORD" "$KEK" >"$CHECK_DIR/needles"
 echo "http://127.0.0.1:9095/alerts" >"$CHECK_DIR/alertmanager/webhook-url"
 chmod 755 "$CHECK_DIR/alertmanager"
