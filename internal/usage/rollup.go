@@ -13,6 +13,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/skraus2/email-platform/internal/metrics"
 	"github.com/skraus2/email-platform/internal/store"
 )
 
@@ -59,14 +60,16 @@ func Rollup(ctx context.Context, pool *pgxpool.Pool, now time.Time) (Result, err
 
 // Roller runs the rollup as the worker's periodic job.
 type Roller struct {
-	Pool   *pgxpool.Pool
-	Logger *slog.Logger
+	Pool    *pgxpool.Pool
+	Logger  *slog.Logger
+	Metrics *metrics.UsageRollup // nil: none
 }
 
 // Run rolls up usage as of now and logs the run.
 func (r Roller) Run(ctx context.Context) error {
 	start := time.Now()
 	res, err := Rollup(ctx, r.Pool, start)
+	r.Metrics.Run(time.Now(), err)
 	if err != nil {
 		return err
 	}

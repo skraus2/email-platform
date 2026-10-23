@@ -55,6 +55,27 @@ func (q *Queries) CancelEmail(ctx context.Context, arg CancelEmailParams) (Email
 	return i, err
 }
 
+const countOpenEmails = `-- name: CountOpenEmails :one
+SELECT count(*) FILTER (WHERE status = 'queued' AND coalesce(scheduled_at, created_at) <= now())::bigint AS queued_due,
+       count(*) FILTER (WHERE status = 'sending')::bigint AS sending
+FROM emails
+WHERE status IN ('queued', 'sending')
+`
+
+type CountOpenEmailsRow struct {
+	QueuedDue int64
+	Sending   int64
+}
+
+// Monitoring: emails queued and due now, and emails being sent, over all
+// projects.
+func (q *Queries) CountOpenEmails(ctx context.Context) (CountOpenEmailsRow, error) {
+	row := q.db.QueryRow(ctx, countOpenEmails)
+	var i CountOpenEmailsRow
+	err := row.Scan(&i.QueuedDue, &i.Sending)
+	return i, err
+}
+
 const countOpenScheduled = `-- name: CountOpenScheduled :one
 SELECT count(*) FROM emails WHERE project_id = $1 AND status = 'queued' AND scheduled_at IS NOT NULL
 `

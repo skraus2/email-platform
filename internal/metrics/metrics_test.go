@@ -1,6 +1,7 @@
 package metrics_test
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -9,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
@@ -126,5 +128,57 @@ func TestServerServesOnlyMetrics(t *testing.T) {
 	}
 	if srv.ReadHeaderTimeout == 0 || srv.WriteTimeout == 0 {
 		t.Error("metrics server without timeouts")
+	}
+}
+
+func TestCountersStartAtZero(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	metrics.NewDispatch(reg, []string{"suppressed", "expired"})
+	metrics.NewProviderEvents(reg, []string{"delivered", "bounced"}, []string{"stored", "duplicate"})
+	metrics.NewWebhooks(reg)
+	got := series(t, reg, "email_platform_")
+	for _, want := range []string{
+		"email_platform_dispatch_total{outcome=handed_off} 0",
+		"email_platform_dispatch_total{outcome=snoozed} 0",
+		"email_platform_dispatch_failures_total{error_code=expired} 0",
+		"email_platform_provider_events_total{bounce_type=permanent,outcome=stored,type=bounced} 0",
+		"email_platform_provider_events_total{bounce_type=none,outcome=duplicate,type=delivered} 0",
+		"email_platform_webhook_deliveries_total{result=failed} 0",
+	} {
+		if !slices.Contains(got, want) {
+			t.Errorf("missing %q in %q", want, got)
+		}
+	}
+	if slices.Contains(got, "email_platform_provider_events_total{bounce_type=none,outcome=stored,type=bounced} 0") {
+		t.Error("bounces exported without a bounce type")
+	}
+}
+
+func TestBounceType(t *testing.T) {
+	for _, c := range [][3]string{
+		{"bounced", "Permanent", "permanent"}, {"bounced", "Transient", "transient"},
+		{"bounced", "Undetermined", "undetermined"}, {"bounced", "", "undetermined"},
+		{"delivered", "Permanent", "none"}, {"complained", "", "none"},
+	} {
+		if got := metrics.BounceType(c[0], c[1]); got != c[2] {
+			t.Errorf("BounceType(%q, %q) = %q, want %q", c[0], c[1], got, c[2])
+		}
+	}
+}
+
+func TestUsageRollupMetrics(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := metrics.NewUsageRollup(reg)
+	var nilM *metrics.UsageRollup
+	nilM.Run(time.Now(), nil) // no panic
+	m.Run(time.Unix(1_800_000_000, 0), nil)
+	m.Run(time.Unix(1_800_000_300, 0), errors.New("timeout"))
+	got := series(t, reg, "email_platform_usage_rollup")
+	want := []string{
+		"email_platform_usage_rollup_failures_total{} 1",
+		"email_platform_usage_rollup_last_success_timestamp_seconds{} 1.8e+09",
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("got %q, want %q", got, want)
 	}
 }

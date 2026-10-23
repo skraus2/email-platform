@@ -513,3 +513,25 @@ func (q *Queries) UpdateWebhookSecret(ctx context.Context, arg UpdateWebhookSecr
 	)
 	return err
 }
+
+const webhookBacklog = `-- name: WebhookBacklog :one
+SELECT count(*)::bigint AS pending,
+       coalesce(extract(epoch FROM now() - min(coalesce(next_attempt_at, created_at))
+           FILTER (WHERE coalesce(next_attempt_at, created_at) <= now())), 0)::float8 AS oldest_due_seconds
+FROM webhook_deliveries
+WHERE status = 'pending'
+`
+
+type WebhookBacklogRow struct {
+	Pending          int64
+	OldestDueSeconds float64
+}
+
+// Monitoring: pending deliveries over all projects and how long the oldest
+// one that is due has been waiting.
+func (q *Queries) WebhookBacklog(ctx context.Context) (WebhookBacklogRow, error) {
+	row := q.db.QueryRow(ctx, webhookBacklog)
+	var i WebhookBacklogRow
+	err := row.Scan(&i.Pending, &i.OldestDueSeconds)
+	return i, err
+}

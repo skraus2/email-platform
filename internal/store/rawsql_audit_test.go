@@ -18,6 +18,7 @@ import (
 var rawSQLFiles = map[string]string{
 	"internal/database/database.go": "migration version check",
 	"internal/testdb/testdb.go":     "creates and drops test databases",
+	"internal/jobs/stats.go":        "queue statistics from River's own tables (no project data)",
 	"cmd/loadtest/main.go":          "load measurement tool, reads results directly",
 	"cmd/loadtest/broadcast.go":     "load measurement tool, seeds and reads directly",
 }

@@ -22,6 +22,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/skraus2/email-platform/internal/metrics"
 	"github.com/skraus2/email-platform/internal/store"
 )
 
@@ -42,9 +43,25 @@ type Recorder struct {
 	pool   *pgxpool.Pool
 	logger *slog.Logger
 	hook   Hook
+	// metrics counts ingested provider events (nil: none).
+	metrics *metrics.ProviderEvents
 	// afterInsert runs after a provider event is inserted, before commit
 	// (tests only).
 	afterInsert func()
+}
+
+// Observe sets where ingested provider events are counted. Set it before the
+// recorder is used.
+func (r *Recorder) Observe(m *metrics.ProviderEvents) { r.metrics = m }
+
+// ProviderEventTypes lists the provider event types Ingest accepts.
+func ProviderEventTypes() []string {
+	return []string{"send", "delivered", "bounced", "complained", "rejected", "delivery_delayed"}
+}
+
+// IngestOutcomes lists the outcomes of a successful Ingest.
+func IngestOutcomes() []string {
+	return []string{Stored.String(), Duplicate.String(), UnknownEmail.String(), ProviderMismatch.String(), UnknownEmailSuppressed.String()}
 }
 
 // NewRecorder builds a Recorder without a status-change hook.
@@ -378,6 +395,7 @@ func (r *Recorder) Ingest(ctx context.Context, e ProviderEvent) (Outcome, error)
 	if err != nil {
 		return 0, fmt.Errorf("ingest event: %w", err)
 	}
+	r.metrics.Event(e.Type, metrics.BounceType(e.Type, e.Details["bounce_type"]), out.String())
 	attrs := []any{slog.String("outcome", out.String())}
 	if out == UnknownEmailSuppressed {
 		attrs = append(attrs, slog.Int64("suppressed", added))

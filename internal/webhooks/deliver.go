@@ -20,6 +20,7 @@ import (
 
 	"github.com/skraus2/email-platform/internal/events"
 	"github.com/skraus2/email-platform/internal/jobs"
+	"github.com/skraus2/email-platform/internal/metrics"
 	"github.com/skraus2/email-platform/internal/store"
 )
 
@@ -59,9 +60,14 @@ type DelivererConfig struct {
 
 // Deliverer sends webhook requests.
 type Deliverer struct {
-	cfg    DelivererConfig
-	client *http.Client
+	cfg     DelivererConfig
+	client  *http.Client
+	metrics *metrics.Webhooks // nil: no metrics
 }
+
+// Observe sets where delivery results are counted. Set it before the
+// deliverer is used.
+func (d *Deliverer) Observe(m *metrics.Webhooks) { d.metrics = m }
 
 // NewDeliverer checks the configuration and builds a Deliverer.
 func NewDeliverer(cfg DelivererConfig) (*Deliverer, error) {
@@ -147,11 +153,13 @@ func (d *Deliverer) Deliver(ctx context.Context, args jobs.DeliverWebhookArgs, a
 	}
 	switch {
 	case status >= 200 && status < 300:
-		if _, err := q.MarkDeliveryDelivered(wctx, store.MarkDeliveryDeliveredParams{
+		n, err := q.MarkDeliveryDelivered(wctx, store.MarkDeliveryDeliveredParams{
 			ID: args.DeliveryID, ProjectID: args.ProjectID, LastStatusCode: int32ptr(status),
-		}); err != nil {
+		})
+		if err != nil {
 			return d.internal(ctx, log, args, at, fmt.Errorf("mark delivered: %w", err))
 		}
+		d.metrics.Result(metrics.WebhookDelivered, int(n))
 		log.InfoContext(ctx, "webhook delivered", slog.Int("status", status))
 		return nil
 	case code == CodeForbiddenTarget:
@@ -181,8 +189,10 @@ func (d *Deliverer) Deliver(ctx context.Context, args jobs.DeliverWebhookArgs, a
 	}
 	if res.Status == "failed" {
 		log.WarnContext(ctx, "webhook delivery failed", slog.String("error_code", code), slog.Int("attempts", int(res.Attempts)))
+		d.metrics.Result(metrics.WebhookFailed, 1)
 		return nil
 	}
+	d.metrics.Result(metrics.WebhookRetry, 1)
 	log.WarnContext(ctx, "webhook attempt failed; will retry", slog.String("error_code", code), slog.Int("attempts", int(res.Attempts)))
 	return jobs.Snooze(delay)
 }
@@ -225,12 +235,14 @@ func (d *Deliverer) send(ctx context.Context, target *url.URL, eventID uuid.UUID
 func (d *Deliverer) fail(ctx context.Context, log *slog.Logger, args jobs.DeliverWebhookArgs, code string, status *int32, counted bool) error {
 	wctx, cancel := detached(ctx)
 	defer cancel()
-	if _, err := store.New(d.cfg.Pool).MarkDeliveryFailed(wctx, store.MarkDeliveryFailedParams{
+	n, err := store.New(d.cfg.Pool).MarkDeliveryFailed(wctx, store.MarkDeliveryFailedParams{
 		ID: args.DeliveryID, ProjectID: args.ProjectID, LastErrorCode: &code, Counted: counted, StatusCode: status,
-	}); err != nil {
+	})
+	if err != nil {
 		log.ErrorContext(ctx, "mark webhook delivery failed", slog.Any("error", err))
 		return errors.New(CodeInternal)
 	}
+	d.metrics.Result(metrics.WebhookFailed, int(n))
 	log.WarnContext(ctx, "webhook delivery failed", slog.String("error_code", code))
 	return nil
 }
@@ -257,6 +269,7 @@ func (d *Deliverer) Cleanup(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("expire webhook deliveries: %w", err)
 	}
+	d.metrics.Result(metrics.WebhookFailed, int(n))
 	if n > 0 {
 		d.cfg.Logger.WarnContext(ctx, "webhook deliveries expired", slog.Int64("count", n))
 	}

@@ -89,6 +89,9 @@ func run() error {
 		return err
 	}
 	dispatcher := emails.NewDispatcher(pool, provider, logger, cfg.ProviderTimeout, cfg.BodyMaxAge)
+	dispatcher.Observe(metrics.NewDispatch(registry, emails.FailureCodes), cfg.MailProvider)
+	dispatcher.Events().Observe(metrics.NewProviderEvents(registry, events.ProviderEventTypes(), events.IngestOutcomes()))
+	metrics.RegisterBacklog(registry, pool, cfg.MailProvider, cfg.ProviderDailyLimit)
 	if err := dispatcher.LimitProviderRate(cfg.ProviderRatePerSecond); err != nil {
 		return err
 	}
@@ -113,6 +116,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	deliverer.Observe(metrics.NewWebhooks(registry))
 	pruner := retention.Pruner{
 		Pool: pool, Logger: logger, EventRetention: cfg.EventRetention,
 		DeliveryRetention: cfg.WebhookDeliveryRetention, EmailRetention: cfg.EmailRetention,
@@ -135,7 +139,7 @@ func run() error {
 				return errors.Join(dispatcher.Cleanup(ctx), deliverer.Cleanup(ctx), pruner.Run(ctx),
 					automations.DeleteOldEventWindows(ctx, pool), engine.Requeue(ctx))
 			},
-			UsageRollup: usage.Roller{Pool: pool, Logger: logger}.Run,
+			UsageRollup: usage.Roller{Pool: pool, Logger: logger, Metrics: metrics.NewUsageRollup(registry)}.Run,
 		},
 		Retry:       jobs.RetryPolicy{Base: cfg.RetryBaseDelay, Max: cfg.RetryMaxDelay},
 		Concurrency: workerConcurrency,

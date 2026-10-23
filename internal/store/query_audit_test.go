@@ -50,6 +50,9 @@ var unscopedQueries = map[string]string{
 	"LockEndpointsNotUnderKey":         "secret key rotation over all projects (admin CLI)",
 	// Provider-wide accounting: one daily cap per provider account.
 	"CountProviderHandoffs": "provider-wide daily cap (shared by all projects)",
+	// Monitoring: platform-wide totals exported as metrics, no project data.
+	"CountOpenEmails":       "platform-wide open email counts for metrics",
+	"WebhookBacklog":        "platform-wide webhook backlog for metrics",
 	"HandoffLeavesWindowIn": "provider-wide daily cap (shared by all projects)",
 	// The project is not known yet: these resolve it.
 	"GetActiveKeyByPrefix": "authentication resolves the project from the key",

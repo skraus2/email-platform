@@ -220,3 +220,11 @@ RETURNING id;
 -- name: InsertEmailContentWithUnsubscribe :exec
 INSERT INTO email_contents (email_id, project_id, text_body, html_body, list_unsubscribe_url)
 VALUES ($1, $2, $3, $4, $5);
+
+-- name: CountOpenEmails :one
+-- Monitoring: emails queued and due now, and emails being sent, over all
+-- projects.
+SELECT count(*) FILTER (WHERE status = 'queued' AND coalesce(scheduled_at, created_at) <= now())::bigint AS queued_due,
+       count(*) FILTER (WHERE status = 'sending')::bigint AS sending
+FROM emails
+WHERE status IN ('queued', 'sending');

@@ -297,6 +297,9 @@ grep -q 'email_platform_http_requests_total{code="202",route="POST /v1/emails"}'
 [[ "$(curl -sS -o /dev/null -w '%{http_code}' "http://$ADDR/metrics")" == 404 ]] || fail "/metrics exists on the public listener"
 curl -fsS "http://$METRICS_ADDR/metrics" >"$TMP/worker.metrics" || fail "GET worker /metrics"
 grep -q '^email_platform_db_pool_max_conns' "$TMP/worker.metrics" || fail "worker metrics lack the pool"
+grep -qE '^email_platform_dispatch_total\{outcome="handed_off"\} [1-9]' "$TMP/worker.metrics" || fail "worker metrics lack the hand-offs"
+grep -q '^email_platform_db_up 1' "$TMP/worker.metrics" || fail "worker metrics: db_up is not 1"
+grep -qE '^email_platform_webhook_deliveries_total\{result="delivered"\} [1-9]' "$TMP/worker.metrics" || fail "worker metrics lack delivered webhooks"
 grep -qiFf "$TMP/needles" "$TMP/api.metrics" "$TMP/worker.metrics" && fail "metrics contain a secret or address of this run"
 echo "GET /metrics -> api (admin listener) and worker, no secrets or addresses"
 

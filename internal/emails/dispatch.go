@@ -16,6 +16,7 @@ import (
 	"github.com/skraus2/email-platform/internal/events"
 	"github.com/skraus2/email-platform/internal/jobs"
 	"github.com/skraus2/email-platform/internal/logging"
+	"github.com/skraus2/email-platform/internal/metrics"
 	"github.com/skraus2/email-platform/internal/store"
 	"github.com/skraus2/email-platform/internal/templates"
 )
@@ -38,6 +39,15 @@ type Dispatcher struct {
 	bodyMaxAge time.Duration
 	// compiled caches template versions broadcast emails are rendered from.
 	compiled *templates.Cache
+	metrics  *metrics.Dispatch // nil: no metrics
+	// providerName labels provider call durations.
+	providerName string
+}
+
+// Observe sets where dispatch outcomes are counted; provider names the
+// configured provider. Set it before the dispatcher is used.
+func (d *Dispatcher) Observe(m *metrics.Dispatch, provider string) {
+	d.metrics, d.providerName = m, provider
 }
 
 // NewDispatcher builds a Dispatcher. timeout bounds one provider call;
@@ -152,6 +162,7 @@ func (d *Dispatcher) SendEmail(ctx context.Context, args jobs.SendEmailArgs, at 
 	e, err := store.New(d.pool).GetEmailForDispatch(ctx, key)
 	if errors.Is(err, pgx.ErrNoRows) {
 		log.WarnContext(ctx, "email for dispatch job not found")
+		d.metrics.Outcome(metrics.OutcomeSkipped)
 		return nil
 	}
 	if err != nil {
@@ -161,6 +172,7 @@ func (d *Dispatcher) SendEmail(ctx context.Context, args jobs.SendEmailArgs, at 
 	switch e.Status {
 	case "queued", "sending":
 	default:
+		d.metrics.Outcome(metrics.OutcomeSkipped)
 		return nil // already terminal: a retry after the success was recorded
 	}
 	if e.ProjectStatus != "active" {
@@ -194,15 +206,18 @@ func (d *Dispatcher) SendEmail(ctx context.Context, args jobs.SendEmailArgs, at 
 			// A bulk backlog can be large: spread it over a long
 			// window instead of letting every job wake for the next slot.
 			wait = max(wait, minBulkDailyWait)
+			d.metrics.Outcome(metrics.OutcomeSnoozed)
 			return jobs.Snooze(wait + rand.N(max(wait, bulkDailySpread))) //nolint:gosec // scheduling jitter, not security
 		}
 		log.InfoContext(ctx, "daily provider limit reached; snoozing", slog.Duration("wait", wait))
+		d.metrics.Outcome(metrics.OutcomeSnoozed)
 		return jobs.Snooze(wait + rand.N(min(wait/10, maxDailyJitter)+time.Second)) //nolint:gosec // scheduling jitter, not security
 	}
 
 	if d.limiter != nil {
 		wait, ok := d.limiter.TryTake(maxRateWait)
 		if !ok {
+			d.metrics.Outcome(metrics.OutcomeSnoozed)
 			return jobs.Snooze(wait + rand.N(wait/10+50*time.Millisecond)) //nolint:gosec // scheduling jitter, not security
 		}
 		if wait > 0 {
@@ -248,10 +263,12 @@ func (d *Dispatcher) SendEmail(ctx context.Context, args jobs.SendEmailArgs, at 
 		now, err := store.New(d.pool).GetEmailForDispatch(ctx, key)
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
+			d.metrics.Outcome(metrics.OutcomeSkipped)
 			return nil
 		case err != nil:
 			return d.internalError(ctx, log, key, at, fmt.Errorf("reload email: %w", err))
 		case now.Status != "queued" && now.Status != "sending":
+			d.metrics.Outcome(metrics.OutcomeSkipped)
 			return nil
 		case now.ProjectStatus != "active":
 			return d.fail(ctx, log, key, CodeProjectDisabled, CodeProjectDisabled)
@@ -274,11 +291,13 @@ func (d *Dispatcher) SendEmail(ctx context.Context, args jobs.SendEmailArgs, at 
 	}
 
 	sendCtx, cancel := context.WithTimeout(ctx, d.timeout)
+	sendStart := time.Now()
 	res, sendErr := d.provider.Send(sendCtx, delivery.Message{
 		ID: e.ID, ProjectID: e.ProjectID, From: e.Sender, To: e.Recipient, Subject: e.Subject,
 		Text: text, HTML: html, ListUnsubscribeURL: unsubscribeURL,
 	})
 	cancel()
+	d.metrics.ProviderSend(d.providerName, sendErr == nil, time.Since(sendStart))
 
 	if sendErr == nil {
 		return d.finish(ctx, log, key, res, e.Recipient)
@@ -304,6 +323,7 @@ func (d *Dispatcher) SendEmail(ctx context.Context, args jobs.SendEmailArgs, at 
 		log.ErrorContext(ctx, "record attempt error", slog.Any("error", err))
 	}
 	log.WarnContext(ctx, "send attempt failed; will retry", slog.String("reason", detail), slog.String("error_code", code))
+	d.metrics.Outcome(metrics.OutcomeRetry)
 	return errors.New(detail)
 }
 
@@ -361,6 +381,7 @@ func (d *Dispatcher) refuseListEmail(ctx context.Context, log *slog.Logger, key 
 	}
 	dctx, cancel := detached(ctx)
 	defer cancel()
+	canceled := false
 	err := pgx.BeginFunc(dctx, d.pool, func(tx pgx.Tx) error {
 		q := store.New(tx)
 		if _, err := q.CancelEmail(dctx, store.CancelEmailParams(key)); err != nil {
@@ -372,6 +393,7 @@ func (d *Dispatcher) refuseListEmail(ctx context.Context, log *slog.Logger, key 
 			}
 			return err
 		}
+		canceled = true
 		if err := d.events.Transition(dctx, tx, key.ProjectID, key.ID, events.TypeCanceled, "", ""); err != nil {
 			return err
 		}
@@ -379,7 +401,13 @@ func (d *Dispatcher) refuseListEmail(ctx context.Context, log *slog.Logger, key 
 		return q.DeleteEmailContent(dctx, store.DeleteEmailContentParams{EmailID: key.ID, ProjectID: key.ProjectID})
 	})
 	if err != nil {
+		d.metrics.Outcome(metrics.OutcomeError)
 		return fmt.Errorf("cancel email: %w", err)
+	}
+	if canceled {
+		d.metrics.Outcome(metrics.OutcomeCanceled)
+	} else {
+		d.metrics.Outcome(metrics.OutcomeSkipped)
 	}
 	return nil
 }
@@ -423,6 +451,7 @@ func (d *Dispatcher) internalError(ctx context.Context, log *slog.Logger, key st
 	// A cancelled job (hard shutdown) is interrupted, not failed: the queue
 	// puts the attempt back. A job that ran out of time is a failure.
 	if !at.Final() || errors.Is(ctx.Err(), context.Canceled) {
+		d.metrics.Outcome(metrics.OutcomeError)
 		return err
 	}
 	log.ErrorContext(ctx, "dispatch failed on the final attempt", slog.Any("error", err))
@@ -442,10 +471,14 @@ func (d *Dispatcher) internalError(ctx context.Context, log *slog.Logger, key st
 		return q.DeleteEmailContent(dctx, store.DeleteEmailContentParams{EmailID: key.ID, ProjectID: key.ProjectID})
 	})
 	if ferr != nil {
+		d.metrics.Outcome(metrics.OutcomeError)
 		return errors.Join(err, fmt.Errorf("mark failed: %w", ferr))
 	}
 	if n > 0 {
 		log.WarnContext(ctx, "email failed", slog.String("error_code", code), slog.String("reason", code))
+		d.metrics.Failed(code)
+	} else {
+		d.metrics.Outcome(metrics.OutcomeSkipped)
 	}
 	return nil
 }
@@ -478,12 +511,15 @@ func (d *Dispatcher) finish(ctx context.Context, log *slog.Logger, key store.Get
 	if err != nil {
 		// Provider accepted, but we could not record it: the retry will
 		// start from "sending" and log possible_duplicate_send.
+		d.metrics.Outcome(metrics.OutcomeError)
 		return fmt.Errorf("record dispatch: %w", err)
 	}
 	if n == 0 {
 		log.WarnContext(ctx, "email finalized concurrently while sending")
+		d.metrics.Outcome(metrics.OutcomeSkipped)
 		return nil
 	}
+	d.metrics.Outcome(metrics.OutcomeHandedOff)
 	log.InfoContext(ctx, "email dispatched",
 		slog.String("status", res.Status),
 		slog.String("provider", res.Provider),
@@ -512,10 +548,14 @@ func (d *Dispatcher) fail(ctx context.Context, log *slog.Logger, key store.GetEm
 		return q.DeleteEmailContent(dctx, store.DeleteEmailContentParams{EmailID: key.ID, ProjectID: key.ProjectID})
 	})
 	if err != nil {
+		d.metrics.Outcome(metrics.OutcomeError)
 		return fmt.Errorf("mark failed: %w", err)
 	}
 	if n > 0 {
 		log.WarnContext(ctx, "email failed", slog.String("error_code", code), slog.String("reason", detail))
+		d.metrics.Failed(code)
+	} else {
+		d.metrics.Outcome(metrics.OutcomeSkipped)
 	}
 	return nil
 }
@@ -545,6 +585,7 @@ func (d *Dispatcher) Cleanup(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("cleanup emails: %w", err)
 	}
+	d.metrics.Expired(int(expired))
 	// Separate statement: a problem with the key table must not hold back
 	// expiry and content deletion.
 	keys, err := store.New(d.pool).DeleteIdempotencyKeysOlderThan(ctx, IdempotencyKeyTTL.Seconds())
