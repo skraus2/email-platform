@@ -4,7 +4,7 @@ module github.com/skraus2/email-platform/tools
 
 go 1.26.0
 
-toolchain go1.27.2
+toolchain go1.27.3
 
 tool github.com/golangci/golangci-lint/v2/cmd/golangci-lint
 
