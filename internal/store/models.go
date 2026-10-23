@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 type AdminSession struct {
@@ -247,6 +248,19 @@ type TemplateWriteWindow struct {
 	ProjectID   uuid.UUID
 	WindowStart time.Time
 	Count       int32
+}
+
+type UsageDaily struct {
+	ProjectID  uuid.UUID
+	Day        pgtype.Date
+	Accepted   int64
+	Sent       int64
+	Failed     int64
+	Canceled   int64
+	Delivered  int64
+	Bounced    int64
+	Complained int64
+	ComputedAt time.Time
 }
 
 type WebhookDelivery struct {

@@ -45,6 +45,8 @@ var unscopedQueries = map[string]string{
 	"DeleteRateLimitWindowsBefore":     "maintenance over all projects",
 	"DeleteContactEventWindowsBefore":  "maintenance over all projects",
 	"DeleteTemplateWriteWindowsBefore": "maintenance over all projects",
+	"LastUsageRollup":                  "time of the last usage rollup (no project data)",
+	"RollupUsage":                      "usage aggregate over all projects; every row keeps its project_id",
 	"LockEndpointsNotUnderKey":         "secret key rotation over all projects (admin CLI)",
 	// Provider-wide accounting: one daily cap per provider account.
 	"CountProviderHandoffs": "provider-wide daily cap (shared by all projects)",

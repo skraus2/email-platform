@@ -34,6 +34,7 @@ sql:
       - db/migrations/00034_automations.sql
       - db/migrations/00035_automation_runs.sql
       - db/migrations/00036_automation_run_checks.sql
+      - db/migrations/00037_usage_daily.sql
     queries: db/queries
     gen:
       go:

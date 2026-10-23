@@ -94,6 +94,16 @@ type cleanupArgs struct{}
 
 func (cleanupArgs) Kind() string { return "cleanup_emails" }
 
+type usageRollupArgs struct{}
+
+func (usageRollupArgs) Kind() string { return "usage_rollup" }
+
+// UsageRollupInterval is how often the worker recomputes daily usage.
+const UsageRollupInterval = 5 * time.Minute
+
+// usageRollupTimeout bounds one rollup run, well below its interval.
+const usageRollupTimeout = 2 * time.Minute
+
 // Snooze, returned by a handler, runs the job again after d (at least
 // MinSnooze) without using up an attempt (backpressure, not failure).
 func Snooze(d time.Duration) error { return &snoozeError{d: d} }
@@ -143,6 +153,9 @@ type Handlers struct {
 	// the process runs no automation queue; a worker process sets both).
 	AutomationStep    func(ctx context.Context, args AutomationStepArgs, a Attempt) error
 	AutomationArchive func(ctx context.Context, args AutomationArchiveArgs, a Attempt) error
+	// UsageRollup recomputes daily usage periodically (and once on start);
+	// nil: the process does not roll up usage.
+	UsageRollup func(ctx context.Context) error
 }
 
 // Enqueuer inserts jobs. The API process uses it insert-only.
@@ -327,17 +340,26 @@ func NewWorker(cfg WorkerConfig) (*Worker, error) {
 	if interval <= 0 {
 		interval = time.Hour
 	}
+	periodic := []*river.PeriodicJob{
+		river.NewPeriodicJob(river.PeriodicInterval(interval),
+			func() (river.JobArgs, *river.InsertOpts) { return cleanupArgs{}, nil },
+			&river.PeriodicJobOpts{ID: "cleanup_emails", RunOnStart: true}),
+	}
+	if cfg.Handlers.UsageRollup != nil {
+		river.AddWorker(workers, &usageRollupWorker{fn: cfg.Handlers.UsageRollup})
+		// One attempt: a failed run is not retried by the queue (which would
+		// overlap the next run) but replaced by the next period.
+		periodic = append(periodic, river.NewPeriodicJob(river.PeriodicInterval(UsageRollupInterval),
+			func() (river.JobArgs, *river.InsertOpts) { return usageRollupArgs{}, &river.InsertOpts{MaxAttempts: 1} },
+			&river.PeriodicJobOpts{ID: "usage_rollup", RunOnStart: true}))
+	}
 	c, err := river.NewClient(riverpgxv5.New(cfg.Pool), &river.Config{
 		Logger:               cfg.Logger,
 		Workers:              workers,
 		Queues:               queues,
 		JobTimeout:           cfg.JobTimeout,
 		RescueStuckJobsAfter: cfg.RescueStuckJobsAfter,
-		PeriodicJobs: []*river.PeriodicJob{
-			river.NewPeriodicJob(river.PeriodicInterval(interval),
-				func() (river.JobArgs, *river.InsertOpts) { return cleanupArgs{}, nil },
-				&river.PeriodicJobOpts{ID: "cleanup_emails", RunOnStart: true}),
-		},
+		PeriodicJobs:         periodic,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create job worker: %w", err)
@@ -398,6 +420,20 @@ func (w *cleanupWorker) Work(ctx context.Context, _ *river.Job[cleanupArgs]) err
 // Timeout gives cleanup its own budget: it can touch many rows and must not
 // inherit the short per-email job timeout.
 func (w *cleanupWorker) Timeout(*river.Job[cleanupArgs]) time.Duration { return 5 * time.Minute }
+
+type usageRollupWorker struct {
+	river.WorkerDefaults[usageRollupArgs]
+	fn func(context.Context) error
+}
+
+func (w *usageRollupWorker) Work(ctx context.Context, _ *river.Job[usageRollupArgs]) error {
+	return w.fn(ctx)
+}
+
+// Timeout gives the rollup its own budget (it aggregates days of rows).
+func (w *usageRollupWorker) Timeout(*river.Job[usageRollupArgs]) time.Duration {
+	return usageRollupTimeout
+}
 
 type broadcastFanoutWorker struct {
 	river.WorkerDefaults[BroadcastFanoutArgs]

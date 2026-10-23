@@ -15,7 +15,8 @@ import (
 // globalJobArgs are job kinds that act on all projects at once (maintenance),
 // so their args carry no project.
 var globalJobArgs = map[string]string{
-	"cleanupArgs": "periodic maintenance over all projects (expiry, retention)",
+	"cleanupArgs":     "periodic maintenance over all projects (expiry, retention)",
+	"usageRollupArgs": "periodic aggregate of every project's usage, keyed by project_id in its rows",
 }
 
 // foreignProjectTests name, per job args type, the integration test proving

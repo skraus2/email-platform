@@ -25,6 +25,7 @@ import (
 	"github.com/skraus2/email-platform/internal/logging"
 	"github.com/skraus2/email-platform/internal/retention"
 	"github.com/skraus2/email-platform/internal/templates"
+	"github.com/skraus2/email-platform/internal/usage"
 	"github.com/skraus2/email-platform/internal/webhooks"
 )
 
@@ -119,6 +120,7 @@ func run() error {
 				return errors.Join(dispatcher.Cleanup(ctx), deliverer.Cleanup(ctx), pruner.Run(ctx),
 					automations.DeleteOldEventWindows(ctx, pool), engine.Requeue(ctx))
 			},
+			UsageRollup: usage.Roller{Pool: pool, Logger: logger}.Run,
 		},
 		Retry:       jobs.RetryPolicy{Base: cfg.RetryBaseDelay, Max: cfg.RetryMaxDelay},
 		Concurrency: workerConcurrency,

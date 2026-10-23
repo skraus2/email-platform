@@ -169,6 +169,44 @@ func TestWorkerRunsSendEmailAndCleanup(t *testing.T) {
 	}
 }
 
+// The usage rollup runs on start as its own periodic job with a single
+// attempt: a failing run is not retried by the queue.
+func TestUsageRollupPeriodic(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	pool := testdb.NewMigrated(t)
+	ran := make(chan struct{}, 10)
+	h := newRecorder().handlers()
+	h.UsageRollup = func(context.Context) error {
+		ran <- struct{}{}
+		return errors.New("rollup failed")
+	}
+	startWorker(t, pool, h, 0)
+	select {
+	case <-ran:
+	case <-time.After(15 * time.Second):
+		t.Fatal("usage rollup did not run on start (after leader election)")
+	}
+	var state string
+	var attempts, maxAttempts int
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		err := pool.QueryRow(ctx, `SELECT state, attempt, max_attempts FROM river_job WHERE kind = 'usage_rollup'`).Scan(&state, &attempts, &maxAttempts)
+		if err == nil && state == "discarded" {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if state != "discarded" || attempts != 1 || maxAttempts != 1 {
+		t.Errorf("rollup job state=%s attempt=%d max_attempts=%d, want discarded after its single attempt", state, attempts, maxAttempts)
+	}
+	select {
+	case <-ran:
+		t.Error("failed rollup was retried by the queue")
+	case <-time.After(2 * time.Second):
+	}
+}
+
 // A worker that dies mid-job leaves the job "running". The rescuer must make
 // it available again so the email is not lost (it may be sent twice; the
 // handler detects and logs that case).

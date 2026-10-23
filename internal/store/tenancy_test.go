@@ -38,6 +38,7 @@ var tenantTables = []string{
 	"template_versions",
 	"template_write_windows",
 	"templates",
+	"usage_daily",
 	"webhook_deliveries",
 	"webhook_endpoints",
 }
