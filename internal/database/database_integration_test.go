@@ -109,3 +109,40 @@ func TestReadinessCheckIsReadOnly(t *testing.T) {
 		t.Fatalf("readiness check created %s; it must be read-only", *table)
 	}
 }
+
+// A rollback runs the previous release against a schema one of the newer
+// releases already migrated: its migrate must apply nothing and its processes
+// must report ready.
+func TestOlderBinaryAcceptsNewerSchema(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	pool, err := database.Open(ctx, testdb.NewURL(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	m, err := database.NewMigrator(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = m.Close() })
+	if _, err := m.Up(ctx); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	_, target, err := m.Versions(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A migration of a newer release this binary does not know.
+	if _, err := pool.Exec(ctx, "INSERT INTO goose_db_version (version_id, is_applied) VALUES ($1, true)", target+1); err != nil {
+		t.Fatalf("record newer migration: %v", err)
+	}
+
+	results, err := m.Up(ctx)
+	if err != nil || len(results) != 0 {
+		t.Fatalf("Up against a newer schema applied %d migrations (%v), want 0 and no error", len(results), err)
+	}
+	if err := database.Ready(ctx, pool, m); err != nil {
+		t.Fatalf("Ready against a newer schema = %v, want nil", err)
+	}
+}
