@@ -1,0 +1,18 @@
+# deploy-check only: the production Caddyfile with Caddy's internal CA
+# instead of Let's Encrypt.
+{
+	admin off
+	local_certs
+	skip_install_trust
+}
+
+localhost {
+	header Strict-Transport-Security "max-age=31536000"
+	@api path /v1/* /healthz /readyz
+	handle @api {
+		reverse_proxy 127.0.0.1:8080
+	}
+	handle {
+		respond 404
+	}
+}

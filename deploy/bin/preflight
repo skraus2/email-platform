@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# Checks, before `docker compose up`, that everything the production stack
+# reads from the VM is in place. Prints names, never values.
+#   APP_ENV_FILE       rendered runtime env (default /run/email-platform/app.env)
+#   DB_CA_FILE         CA bundle for DATABASE_URL sslrootcert (default /etc/email-platform/rds-ca.pem)
+#   ALERT_SECRETS_DIR  holds webhook-url, the alert receiver (default /etc/email-platform/alertmanager)
+#   API_DOMAIN, ACME_EMAIL  for Caddy
+set -euo pipefail
+
+env_file="${APP_ENV_FILE:-/run/email-platform/app.env}"
+ca_file="${DB_CA_FILE:-/etc/email-platform/rds-ca.pem}"
+alert_file="${ALERT_SECRETS_DIR:-/etc/email-platform/alertmanager}/webhook-url"
+problems=0
+bad() { echo "preflight: $*" >&2; problems=$((problems + 1)); }
+
+mode() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"; }
+
+if [[ ! -f "$env_file" ]]; then
+  bad "APP_ENV_FILE $env_file is missing (run deploy/bin/render-env)"
+else
+  [[ "$(mode "$env_file")" =~ ^[0-7]00$ ]] || bad "APP_ENV_FILE must not be readable by group or others (chmod 600)"
+  for key in DATABASE_URL WEBHOOK_KEKS; do
+    grep -q "^$key=." "$env_file" || bad "APP_ENV_FILE lacks $key"
+  done
+  db_url=$(sed -n 's/^DATABASE_URL=//p' "$env_file" | head -1)
+  [[ "$db_url" == *sslmode=verify-full* ]] || bad "DATABASE_URL must use sslmode=verify-full"
+  [[ "$db_url" == *sslrootcert=/etc/email-platform/db-ca.pem* ]] || bad "DATABASE_URL must set sslrootcert=/etc/email-platform/db-ca.pem"
+  unset db_url
+fi
+[[ -s "$ca_file" ]] || bad "DB_CA_FILE $ca_file is missing or empty"
+grep -q "BEGIN CERTIFICATE" "$ca_file" 2>/dev/null || bad "DB_CA_FILE holds no PEM certificate"
+if [[ ! -s "$alert_file" ]]; then
+  bad "alert receiver $alert_file is missing or empty (Alertmanager would drop every alert silently)"
+elif [[ "$(wc -l <"$alert_file" | tr -d ' ')" -gt 1 ]] || ! grep -qE '^https?://[^[:space:]]+$' "$alert_file"; then
+  bad "alert receiver file must hold exactly one http(s) URL"
+fi
+[[ -n "${API_DOMAIN:-}" ]] || bad "API_DOMAIN is not set"
+[[ -n "${ACME_EMAIL:-}" ]] || bad "ACME_EMAIL is not set"
+
+if [[ $problems -gt 0 ]]; then
+  echo "preflight: $problems problem(s); not starting" >&2
+  exit 1
+fi
+echo "preflight: env file, database CA, alert receiver and TLS settings present"

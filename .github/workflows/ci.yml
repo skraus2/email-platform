@@ -89,6 +89,16 @@ jobs:
       - name: Alert rules, rule unit tests and routing (promtool, amtool)
         run: make test-alerts
 
+  deploy-check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Production Compose stack with local stand-ins (TLS database, HTTPS, monitoring)
+        run: ./scripts/deploy-check.sh
+
   web:
     runs-on: ubuntu-24.04
     timeout-minutes: 15

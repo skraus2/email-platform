@@ -121,7 +121,7 @@ build: ## Build Go binaries into ./bin and the dashboard
 check: fmt-check lint test build ## Fast full gate (no Docker needed)
 
 .PHONY: ci
-ci: check test-alerts test-integration smoke restore-test test-e2e ## Local superset of CI gates (needs `make up migrate`)
+ci: check test-alerts test-integration smoke restore-test deploy-check test-e2e ## Local superset of CI gates (needs `make up migrate`)
 
 .PHONY: smoke
 smoke: ## Real API + worker: health, send, idempotency, 422/429, log leaks, SIGTERM
@@ -132,6 +132,10 @@ test-alerts: ## Alert rules and routing: promtool check + rule unit tests, amtoo
 	docker run --rm --network none -v "$(CURDIR)/deploy:/deploy:ro" --workdir /deploy/prometheus --entrypoint promtool $(PROMETHEUS_IMAGE) check config prometheus.yml
 	docker run --rm --network none -v "$(CURDIR)/deploy:/deploy:ro" --workdir /deploy/prometheus --entrypoint promtool $(PROMETHEUS_IMAGE) test rules alerts_test.yml
 	docker run --rm --network none -v "$(CURDIR)/deploy:/deploy:ro" --entrypoint amtool $(ALERTMANAGER_IMAGE) check-config /deploy/alertmanager/alertmanager.yml
+
+.PHONY: deploy-check
+deploy-check: ## Production Compose stack locally: TLS DB (verify-full), HTTPS via Caddy, send to Mailpit, monitoring (Docker, ~3 min)
+	./scripts/deploy-check.sh
 
 .PHONY: restore-test
 restore-test: ## Backup + restore drill: pg_dump -> fresh DB -> checks -> api on the restored DB
