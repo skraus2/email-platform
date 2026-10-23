@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -116,7 +117,11 @@ func hasProjectID(st *ast.StructType) bool {
 		if types(f.Type) != "uuid.UUID" || f.Tag == nil || len(f.Names) != 1 || f.Names[0].Name != "ProjectID" {
 			continue
 		}
-		tag := reflect.StructTag(strings.Trim(f.Tag.Value, "`"))
+		raw, err := strconv.Unquote(f.Tag.Value)
+		if err != nil {
+			continue
+		}
+		tag := reflect.StructTag(raw)
 		if tag.Get("json") == "project_id" {
 			return true
 		}

@@ -23,6 +23,16 @@ var rawSQLFiles = map[string]string{
 }
 
 // sqlStatement matches SQL as written in this code base: upper-case keywords.
+// generatedStore reports the files sqlc writes; hand-written files in
+// internal/store are audited like any other.
+func generatedStore(rel string) bool {
+	if !strings.HasPrefix(rel, "internal/store/") {
+		return false
+	}
+	name := strings.TrimPrefix(rel, "internal/store/")
+	return strings.HasSuffix(name, ".sql.go") || name == "db.go" || name == "models.go"
+}
+
 var sqlStatement = regexp.MustCompile(`^\s*(SELECT|INSERT|UPDATE|DELETE|WITH|CREATE|DROP|ALTER|TRUNCATE)\b[\s\S]*\b(FROM|INTO|SET|VALUES|TABLE|DATABASE)\b`)
 
 // TestNoRawSQLOutsideStore keeps every product query in db/queries, where the
@@ -39,7 +49,7 @@ func TestNoRawSQLOutsideStore(t *testing.T) {
 			}
 			rel, _ := filepath.Rel(root, path)
 			rel = filepath.ToSlash(rel)
-			if strings.HasPrefix(rel, "internal/store/") {
+			if generatedStore(rel) {
 				return nil
 			}
 			f, err := parser.ParseFile(fset, path, nil, parser.ImportsOnly|parser.ParseComments)

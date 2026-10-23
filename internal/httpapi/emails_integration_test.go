@@ -28,6 +28,7 @@ import (
 	"github.com/skraus2/email-platform/internal/store"
 	"github.com/skraus2/email-platform/internal/templates"
 	"github.com/skraus2/email-platform/internal/testdb"
+	"github.com/skraus2/email-platform/internal/webhooks"
 )
 
 // stack is the API wired exactly like cmd/api, on a throwaway database.
@@ -51,6 +52,13 @@ func newLimitedStack(t *testing.T, perMinute int) *stack {
 // newStackWith also sets whether senders must be verified identities.
 func newStackWith(t *testing.T, perMinute int, requireSender bool) *stack {
 	t.Helper()
+	return newStackFrom(t, perMinute, requireSender, nil)
+}
+
+// newStackFrom is newStackWith that also registers webhook endpoints with
+// the given keys (nil: registration disabled).
+func newStackFrom(t *testing.T, perMinute int, requireSender bool, webhookKeys *webhooks.Keyring) *stack {
+	t.Helper()
 	pool := testdb.NewMigrated(t)
 	q := store.New(pool)
 	logger := slog.New(slog.DiscardHandler)
@@ -62,9 +70,14 @@ func newStackWith(t *testing.T, perMinute int, requireSender bool) *stack {
 	if requireSender {
 		svc.RequireVerifiedSenders()
 	}
+	var reg httpapi.WebhookRegistrar
+	if webhookKeys != nil {
+		reg = webhooks.Registrar{Pool: pool, Keys: webhookKeys, Policy: webhooks.TargetPolicy{}, MaxEndpoints: 10}
+	}
 	api := httpapi.New(httpapi.Deps{
 		Logger:        logger,
 		Emails:        svc,
+		Webhooks:      reg,
 		Templates:     templates.NewStore(pool, 200, 500, 50<<20, 1_000_000),
 		Contacts:      contacts.NewStore(pool, 1000),
 		Audiences:     contacts.NewAudiences(pool, 100, 1000),

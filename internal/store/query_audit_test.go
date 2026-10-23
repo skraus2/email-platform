@@ -73,7 +73,8 @@ var (
 	insertColumns = regexp.MustCompile(`(?is)^\s*insert\s+into\s+[a-z_]+(\s+as\s+\w+)?\s*\(([^)]*)\)`)
 	// "sqlc.narg(project_id) IS NULL OR project_id = …" scopes nothing when
 	// the argument is NULL.
-	optionalProject = regexp.MustCompile(`(?i)(sqlc\.narg\(\s*'?|@)\w*project_id'?\s*\)?(::uuid)?\s+is\s+null\b`)
+	optionalProject = regexp.MustCompile(`(?i)(sqlc\.narg\(\s*'?|@)\w*project_id'?\s*\)?(::uuid)?\s+is\s+null\b` +
+		`|\$\d+(::uuid)?\s+is\s+null\s+or\s+(\w+\.)?project_id\b`)
 	// Joining the project registry names a project; it scopes nothing.
 	projectJoin = regexp.MustCompile(`(?i)\bjoin\s+projects\s+\w+\s+on\s+\w+\.id\s*=\s*\w+\.project_id\b`)
 )

@@ -138,7 +138,7 @@ func TestTenantSchemaInvariants(t *testing.T) {
 			}
 		}
 		// Children get their project through the parent's composite FK.
-		if _, child := childTables[name]; !toProjects && !child && !referencesTenant(fks, name) {
+		if !toProjects && !referencesTenant(fks, name) {
 			t.Errorf("project table %s has no FK pinning project_id to projects", name)
 		}
 	}
@@ -240,6 +240,11 @@ func TestTenantSchemaInvariants(t *testing.T) {
 			t.Errorf("project table %s has no index starting with project_id", name)
 		case lead && child:
 			t.Errorf("child table %s has an index starting with project_id; drop it from childTables", name)
+		}
+	}
+	for name := range childTables {
+		if !slices.Contains(tenantTables, name) {
+			t.Errorf("stale childTables entry %s", name)
 		}
 	}
 	var stale []string

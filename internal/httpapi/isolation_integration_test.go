@@ -4,10 +4,9 @@ package httpapi_test
 
 import (
 	"context"
+	"encoding/json"
 	"io"
-	"log/slog"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"regexp"
 	"slices"
@@ -18,16 +17,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/skraus2/email-platform/internal/auth"
-	"github.com/skraus2/email-platform/internal/automations"
-	"github.com/skraus2/email-platform/internal/broadcasts"
-	"github.com/skraus2/email-platform/internal/contacts"
 	"github.com/skraus2/email-platform/internal/emails"
-	"github.com/skraus2/email-platform/internal/httpapi"
-	"github.com/skraus2/email-platform/internal/jobs"
-	"github.com/skraus2/email-platform/internal/store"
-	"github.com/skraus2/email-platform/internal/templates"
-	"github.com/skraus2/email-platform/internal/testdb"
-	"github.com/skraus2/email-platform/internal/webhooks"
 )
 
 // tenantTables mirrors the project table list of the store tests (which
@@ -43,31 +33,7 @@ var tenantTables = []string{
 // including webhook registration.
 func newFullStack(t *testing.T) *stack {
 	t.Helper()
-	pool := testdb.NewMigrated(t)
-	q := store.New(pool)
-	logger := slog.New(slog.DiscardHandler)
-	enq, err := jobs.NewEnqueuer(pool, logger, 5)
-	if err != nil {
-		t.Fatal(err)
-	}
-	api := httpapi.New(httpapi.Deps{
-		Logger:        logger,
-		Emails:        emails.NewService(pool, enq, logger, 1_000_000),
-		Templates:     templates.NewStore(pool, 200, 500, 50<<20, 1_000_000),
-		Webhooks:      webhooks.Registrar{Pool: pool, Keys: testKeys(t), Policy: webhooks.TargetPolicy{}, MaxEndpoints: 10},
-		Contacts:      contacts.NewStore(pool, 1000),
-		Audiences:     contacts.NewAudiences(pool, 100, 1000),
-		Broadcasts:    broadcasts.NewStore(pool, enq, 20),
-		Automations:   automations.NewStore(pool, enq, 50),
-		ContactEvents: automations.NewEvents(pool, enq, logger, 1_000_000),
-		Runs:          automations.NewRuns(pool),
-		Authenticate: func(ctx context.Context, token string) (auth.Principal, error) {
-			return auth.Authenticate(ctx, q.GetActiveKeyByPrefix, token)
-		},
-	})
-	srv := httptest.NewServer(api.Handler())
-	t.Cleanup(srv.Close)
-	return &stack{pool: pool, q: q, srv: srv}
+	return newStackFrom(t, 1_000_000, false, testKeys(t))
 }
 
 type request struct {
@@ -291,8 +257,6 @@ func TestEveryRouteIsolatesProjects(t *testing.T) {
 		t.Fatalf("project tables in the schema %v differ from the list %v (%v)", inSchema, tenantTables, err)
 	}
 	a, b := newTenant("a"), newTenant("b")
-	before := s.fingerprint(t, a.id)
-	jobsBefore := s.jobs(t)
 
 	unknown := func() string { return uuid.Must(uuid.NewV7()).String() }
 	cursor := func(path string) string {
@@ -318,7 +282,7 @@ func TestEveryRouteIsolatesProjects(t *testing.T) {
 		return probe{op: op, ref: ref, mode: "fresh", foreign: r, want: want}
 	}
 	A := a.ids
-	sendBody := `{"from":"app@example.test","to":"x@b.test","template_id":"{ref}","template_version":1,"variables":{"unsubscribe_url":"u","name":"n"}}`
+	templateSend := `{"from":"app@example.test","to":"x@b.test","template_id":"{ref}","template_version":1,"variables":{"unsubscribe_url":"u","name":"n"}}`
 	broadcast := func(audience, tmpl string) string {
 		return jsonBody(t, map[string]any{"name": "X", "audience_id": audience, "from": "news@example.test", "template_id": tmpl,
 			"template_version": 1, "unsubscribe_url": "https://app.example.test/u?t={token}"})
@@ -327,7 +291,7 @@ func TestEveryRouteIsolatesProjects(t *testing.T) {
 		"steps": []any{map[string]any{"type": "send", "from": "news@example.test", "template_id": "{ref}", "template_version": 1,
 			"unsubscribe_url": "https://app.example.test/u?t={token}"}}})
 	probes := []probe{
-		same("POST /v1/emails", "template_id", "POST", "/v1/emails", sendBody, A["template"]),
+		same("POST /v1/emails", "template_id", "POST", "/v1/emails", templateSend, A["template"]),
 		fresh("POST /v1/emails", "Idempotency-Key", 202, request{method: "POST", path: "/v1/emails", header: map[string]string{"Idempotency-Key": "a-shared-key"},
 			body: `{"from":"app@example.test","to":"a-recipient@a.test","subject":"Hi","text":"x"}`}),
 		fresh("POST /v1/emails", "suppressed recipient", 202, request{method: "POST", path: "/v1/emails", body: `{"from":"app@example.test","to":"sup@a.test","subject":"Hi","text":"x"}`}),
@@ -363,7 +327,7 @@ func TestEveryRouteIsolatesProjects(t *testing.T) {
 		get("GET /v1/audiences/{id}/contacts", "cursor", "/v1/audiences/"+b.ids["audience1"]+"/contacts?limit=1&cursor="+cursor("/v1/audiences/"+A["audience1"]+"/contacts?limit=1")),
 		same("PUT /v1/audiences/{id}/contacts/{contact_id}", "id", "PUT", "/v1/audiences/{ref}/contacts/"+b.ids["contact1"], "", A["audience2"]),
 		same("PUT /v1/audiences/{id}/contacts/{contact_id}", "contact_id", "PUT", "/v1/audiences/"+b.ids["audience2"]+"/contacts/{ref}", "", A["contact1"]),
-		same("DELETE /v1/audiences/{id}/contacts/{contact_id}", "id", "DELETE", "/v1/audiences/{ref}/contacts/"+A["contact1"], "", A["audience1"]),
+		same("DELETE /v1/audiences/{id}/contacts/{contact_id}", "id", "DELETE", "/v1/audiences/{ref}/contacts/"+b.ids["contact1"], "", A["audience1"]),
 		same("DELETE /v1/audiences/{id}/contacts/{contact_id}", "contact_id", "DELETE", "/v1/audiences/"+b.ids["audience1"]+"/contacts/{ref}", "", A["contact1"]),
 		same("POST /v1/broadcasts", "audience_id", "POST", "/v1/broadcasts", broadcast("{ref}", b.ids["template"]), A["audience1"]),
 		same("POST /v1/broadcasts", "template_id", "POST", "/v1/broadcasts", broadcast(b.ids["audience1"], "{ref}"), A["template"]),
@@ -395,6 +359,10 @@ func TestEveryRouteIsolatesProjects(t *testing.T) {
 		same("GET /v1/templates/{id}/versions/{version}", "id", "GET", "/v1/templates/{ref}/versions/1", "", A["template"]),
 		fresh("POST /v1/webhook-endpoints", "none: takes no reference", 201, request{method: "POST", path: "/v1/webhook-endpoints", body: `{"url":"https://hooks.example.test/a"}`}),
 	}
+
+	// Snapshots after A's own cursor calls above, so only B's calls count.
+	before := s.fingerprint(t, a.id)
+	jobsBefore := s.jobs(t)
 
 	// Every contract operation has at least one probe.
 	covered := map[string]bool{}
@@ -439,6 +407,12 @@ func TestEveryRouteIsolatesProjects(t *testing.T) {
 			ref := ids(p.foreign, p.unknown)
 			if code != ucode || normalize(body, ref...) != normalize(ubody, ref...) {
 				t.Errorf("%s: foreign %d %s, unknown %d %s", name, code, body, ucode, ubody)
+			}
+			// The unknown value must reach the lookup (not found), or the
+			// probe proves nothing: 404, 422 *_not_found, or 200 for filters
+			// and bulk adds that report misses in the body.
+			if ucode != 200 && ucode != 404 && (ucode != 422 || !strings.HasSuffix(errCode(ubody), "_not_found")) {
+				t.Errorf("%s: unknown value did not reach the lookup: %d %s", name, ucode, ubody)
 			}
 			if normalize(hdr, ref...) != normalize(uhdr, ref...) {
 				t.Errorf("%s: headers differ:\nforeign %s\nunknown %s", name, hdr, uhdr)
@@ -503,6 +477,13 @@ func TestEveryRouteIsolatesProjects(t *testing.T) {
 	if code, body := s.send(t, b.token, request{method: "GET", path: "/v1/contacts/" + b.ids["contact1"]}); code != 200 {
 		t.Errorf("B's contact: %d %s", code, body)
 	}
+}
+
+// errCode returns the error code of a raw error body.
+func errCode(body string) string {
+	var m map[string]any
+	_ = json.Unmarshal([]byte(body), &m)
+	return errorCode(m)
 }
 
 // ids returns the uuids that differ between the foreign and the unknown
