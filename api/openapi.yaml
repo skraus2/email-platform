@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Email Platform API
-  version: 0.6.0
+  version: 0.8.0
   description: |
     Internal email sending API. Every request is authenticated with a
     project API key and only ever sees data of that project.
@@ -34,6 +34,9 @@ info:
     (`POST /v1/contact-events`): each run waits, checks conditions and
     sends template emails to the contact (consent-gated like broadcasts),
     step by step, with its state visible through `/v1/automation-runs`.
+
+    Daily usage per project (`GET /v1/usage`) reports what happened on
+    each UTC day and the per-project limits.
 
     Key scopes: `emails:send`, `emails:read`, `templates:read`,
     `templates:write`, `webhooks:write`, `contacts:read`,
@@ -1279,6 +1282,63 @@ paths:
           $ref: "#/components/responses/UnprocessableEntity"
         "429":
           $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /v1/usage:
+    get:
+      operationId: getUsage
+      summary: Daily usage and limits of the authenticated project
+      description: |
+        Requires scope `emails:read`. One entry per UTC day from `from` to
+        `to` (both inclusive, ascending), counting what happened on that
+        day: `accepted` emails (one per recipient email, including
+        broadcast and automation emails — not API requests), emails handed
+        to the provider (`sent`: `captured` or `submitted`; an email SES
+        later rejects stays counted here), `failed`, `canceled`, and with a
+        real provider `delivered`, `bounced` (permanent bounces only) and
+        `complained`. Each email counts once per kind and day; `totals`
+        sums the days, so an email that bounced on two days counts twice.
+
+        Figures are refreshed every 5 minutes and may lag by that much.
+        Days without activity are zeros — so are days before usage was
+        first computed and future days.
+
+        `limits` are the limits that apply to this project's requests:
+        accepted sends and reported contact events per minute.
+
+        Unknown or repeated parameters, malformed dates, `from` after `to`
+        and ranges over 93 days give `400 invalid_filter`; the message
+        names the parameter, never its value.
+      parameters:
+        - name: from
+          in: query
+          required: false
+          description: First UTC day (`YYYY-MM-DD`); default `to` minus 29 days.
+          schema:
+            type: string
+            format: date
+        - name: to
+          in: query
+          required: false
+          description: Last UTC day (`YYYY-MM-DD`); default today (UTC).
+          schema:
+            type: string
+            format: date
+      responses:
+        "200":
+          description: Daily usage of the project.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Usage"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "500":
           $ref: "#/components/responses/InternalError"
         "503":
@@ -2732,6 +2792,75 @@ components:
               automation_id:
                 type: string
                 format: uuid
+    UsageCounts:
+      type: object
+      required:
+        [accepted, sent, failed, canceled, delivered, bounced, complained]
+      properties:
+        accepted:
+          type: integer
+          format: int64
+          minimum: 0
+        sent:
+          type: integer
+          format: int64
+          minimum: 0
+        failed:
+          type: integer
+          format: int64
+          minimum: 0
+        canceled:
+          type: integer
+          format: int64
+          minimum: 0
+        delivered:
+          type: integer
+          format: int64
+          minimum: 0
+        bounced:
+          type: integer
+          format: int64
+          minimum: 0
+        complained:
+          type: integer
+          format: int64
+          minimum: 0
+    UsageDay:
+      allOf:
+        - type: object
+          required: [date]
+          properties:
+            date:
+              type: string
+              format: date
+        - $ref: "#/components/schemas/UsageCounts"
+    Usage:
+      type: object
+      required: [from, to, data, totals, limits]
+      properties:
+        from:
+          type: string
+          format: date
+        to:
+          type: string
+          format: date
+        data:
+          type: array
+          maxItems: 93
+          items:
+            $ref: "#/components/schemas/UsageDay"
+        totals:
+          $ref: "#/components/schemas/UsageCounts"
+        limits:
+          type: object
+          required: [sends_per_minute, contact_events_per_minute]
+          properties:
+            sends_per_minute:
+              type: integer
+              minimum: 1
+            contact_events_per_minute:
+              type: integer
+              minimum: 1
     Error:
       type: object
       required: [error]

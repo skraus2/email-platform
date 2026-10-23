@@ -41,6 +41,8 @@ type Deps struct {
 	Automations   AutomationService
 	ContactEvents ContactEventService
 	Runs          AutomationRunService
+	Usage         UsageService
+	UsageLimits   UsageLimits
 }
 
 // Server holds the HTTP handler and readiness state.
@@ -57,13 +59,15 @@ type Server struct {
 	automations   AutomationService
 	contactEvents ContactEventService
 	runs          AutomationRunService
+	usage         UsageService
+	usageLimits   UsageLimits
 	draining      atomic.Bool
 	handler       http.Handler
 }
 
 // New builds the API handler.
 func New(d Deps) *Server {
-	s := &Server{logger: d.Logger, checks: d.Checks, authenticate: d.Authenticate, emails: d.Emails, templates: d.Templates, webhooks: d.Webhooks, contacts: d.Contacts, audiences: d.Audiences, broadcasts: d.Broadcasts, automations: d.Automations, contactEvents: d.ContactEvents, runs: d.Runs}
+	s := &Server{logger: d.Logger, checks: d.Checks, authenticate: d.Authenticate, emails: d.Emails, templates: d.Templates, webhooks: d.Webhooks, contacts: d.Contacts, audiences: d.Audiences, broadcasts: d.Broadcasts, automations: d.Automations, contactEvents: d.ContactEvents, runs: d.Runs, usage: d.Usage, usageLimits: d.UsageLimits}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
@@ -134,6 +138,8 @@ func New(d Deps) *Server {
 	mux.HandleFunc("/v1/automation-runs/{id}/cancel", methodNotAllowed(http.MethodPost))
 	mux.HandleFunc("POST /v1/contact-events", s.requireScope(auth.ScopeEventsWrite, s.handleCreateContactEvent))
 	mux.HandleFunc("/v1/contact-events", methodNotAllowed(http.MethodPost))
+	mux.HandleFunc("GET /v1/usage", s.requireScope(auth.ScopeEmailsRead, s.handleGetUsage))
+	mux.HandleFunc("/v1/usage", methodNotAllowed(http.MethodGet))
 	mux.HandleFunc("/", handleNotFound)
 
 	s.handler = requestLogger(s.logger, mux)

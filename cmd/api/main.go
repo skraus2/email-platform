@@ -27,6 +27,7 @@ import (
 	"github.com/skraus2/email-platform/internal/logging"
 	"github.com/skraus2/email-platform/internal/store"
 	"github.com/skraus2/email-platform/internal/templates"
+	"github.com/skraus2/email-platform/internal/usage"
 	"github.com/skraus2/email-platform/internal/webhooks"
 )
 
@@ -102,6 +103,8 @@ func run() error {
 		Automations:   automationStore,
 		ContactEvents: automations.NewEvents(pool, enqueuer, logger, cfg.ContactEventRatePerMinute),
 		Runs:          automations.NewRuns(pool),
+		Usage:         usage.NewReader(pool),
+		UsageLimits:   httpapi.UsageLimits{SendsPerMinute: cfg.APIRateLimitPerMinute, ContactEventsPerMinute: cfg.ContactEventRatePerMinute},
 		Authenticate: func(ctx context.Context, token string) (auth.Principal, error) {
 			return auth.Authenticate(ctx, queries.GetActiveKeyByPrefix, token)
 		},

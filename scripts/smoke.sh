@@ -8,7 +8,8 @@
 # event runs an automation whose email reaches Mailpit, that a suppressed recipient
 # is refused, that a second API requiring verified senders refuses an
 # unverified one (422) and accepts it once verified, and that the project
-# rate limit answers 429, then sends SIGTERM and requires a clean shutdown.
+# rate limit answers 429, that the worker rolls up daily usage and the API
+# serves it, then sends SIGTERM and requires a clean shutdown.
 # Needs `make up migrate` first.
 set -euo pipefail
 
@@ -286,6 +287,17 @@ done
 grep -qiE '^retry-after: [0-9]+' "$TMP/rl.headers" || fail "429 without Retry-After"
 echo "project rate limit -> 429 with $(grep -i '^retry-after' "$TMP/rl.headers" | tr -d '\r')"
 
+
+# Daily usage: the worker rolls it up on start; the API serves it per day.
+for _ in $(seq 1 150); do
+  grep -q '"usage rolled up"' "$TMP/worker.log" && break
+  sleep 0.1
+done
+grep -q '"usage rolled up"' "$TMP/worker.log" || fail "worker did not roll up usage"
+today=$(date -u +%Y-%m-%d)
+code=$(curl -sS -o "$TMP/usage.json" -w '%{http_code}' "http://$ADDR/v1/usage?from=$today&to=$today" -H @"$TMP/auth.header")
+[[ "$code" == 200 ]] && grep -q "\"data\":\[{\"date\":\"$today\"" "$TMP/usage.json" || fail "GET /v1/usage: $code $(cat "$TMP/usage.json")"
+echo "GET /v1/usage -> 200, usage rolled up by the worker"
 
 kill -TERM "$API_PID" "$API2_PID" "$WORKER_PID" "$RECV_PID"
 wait "$API_PID" || fail "api exited non-zero after SIGTERM"

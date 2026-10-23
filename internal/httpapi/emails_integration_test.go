@@ -28,6 +28,7 @@ import (
 	"github.com/skraus2/email-platform/internal/store"
 	"github.com/skraus2/email-platform/internal/templates"
 	"github.com/skraus2/email-platform/internal/testdb"
+	"github.com/skraus2/email-platform/internal/usage"
 	"github.com/skraus2/email-platform/internal/webhooks"
 )
 
@@ -85,6 +86,8 @@ func newStackFrom(t *testing.T, perMinute int, requireSender bool, webhookKeys *
 		Automations:   automations.NewStore(pool, enq, 50),
 		ContactEvents: automations.NewEvents(pool, enq, logger, 1_000_000),
 		Runs:          automations.NewRuns(pool),
+		Usage:         usage.NewReader(pool),
+		UsageLimits:   httpapi.UsageLimits{SendsPerMinute: perMinute, ContactEventsPerMinute: 1_000_000},
 		Authenticate: func(ctx context.Context, token string) (auth.Principal, error) {
 			return auth.Authenticate(ctx, q.GetActiveKeyByPrefix, token)
 		},

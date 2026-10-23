@@ -26,7 +26,7 @@ var tenantTables = []string{
 	"api_keys", "audience_members", "audiences", "automation_runs", "automations", "broadcasts",
 	"contact_event_windows", "contact_events", "contacts", "email_contents", "email_events", "emails",
 	"idempotency_keys", "rate_limit_windows", "sender_identities", "suppressions", "template_versions",
-	"template_write_windows", "templates", "webhook_deliveries", "webhook_endpoints",
+	"template_write_windows", "templates", "usage_daily", "webhook_deliveries", "webhook_endpoints",
 }
 
 // newFullStack is the API with every service wired as cmd/api does,
@@ -357,6 +357,7 @@ func TestEveryRouteIsolatesProjects(t *testing.T) {
 		same("GET /v1/templates/{id}", "id", "GET", "/v1/templates/{ref}", "", A["template"]),
 		same("POST /v1/templates/{id}/versions", "id", "POST", "/v1/templates/{ref}/versions", `{"subject":"S","text":"t"}`, A["template"]),
 		same("GET /v1/templates/{id}/versions/{version}", "id", "GET", "/v1/templates/{ref}/versions/1", "", A["template"]),
+		get("GET /v1/usage", "list", "/v1/usage"),
 		fresh("POST /v1/webhook-endpoints", "none: takes no reference", 201, request{method: "POST", path: "/v1/webhook-endpoints", body: `{"url":"https://hooks.example.test/a"}`}),
 	}
 
