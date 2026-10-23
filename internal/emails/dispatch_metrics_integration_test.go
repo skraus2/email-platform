@@ -221,8 +221,8 @@ func TestDispatchMetricsCountEachOutcomeOnce(t *testing.T) {
 	if err := run(args(queued(t, pool, projectID)), testMaxAttempts); err != nil {
 		t.Fatal(err)
 	}
-	if failures(emails.CodeInternalError) != 1 {
-		t.Errorf("internal_error = %v, want 1", failures(emails.CodeInternalError))
+	if failures(emails.CodeInternalError) != 1 || outcome("error") != 1 {
+		t.Errorf("internal_error = %v, error = %v; want 1, 1", failures(emails.CodeInternalError), outcome("error"))
 	}
 	if t.Failed() {
 		families, _ := reg.Gather()

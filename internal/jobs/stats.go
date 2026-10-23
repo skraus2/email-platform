@@ -40,7 +40,7 @@ const (
 func Stats(ctx context.Context, pool *pgxpool.Pool) (QueueStats, error) {
 	s := QueueStats{Jobs: map[[2]string]int64{}, OldestAvailable: map[[2]string]float64{}}
 	rows, err := pool.Query(ctx, `SELECT queue, state::text, count(*) FROM river_job
-		WHERE state::text = ANY($1) GROUP BY 1, 2`, UnfinishedStates())
+		WHERE state = ANY($1::text[]::river_job_state[]) GROUP BY 1, 2`, UnfinishedStates())
 	if err != nil {
 		return s, fmt.Errorf("count jobs: %w", err)
 	}

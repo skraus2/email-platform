@@ -13,6 +13,7 @@ import (
 	"net/netip"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -218,7 +219,7 @@ func serveMetrics(ctx context.Context, addr string, reg *prometheus.Registry, lo
 		return nil, fmt.Errorf("listen on METRICS_ADDR %s: %w", addr, err)
 	}
 	host, _, _ := net.SplitHostPort(addr)
-	if ip, err := netip.ParseAddr(host); err != nil || !ip.IsLoopback() {
+	if ip, err := netip.ParseAddr(host); !strings.EqualFold(host, "localhost") && (err != nil || !ip.IsLoopback()) {
 		logger.Warn("metrics listener binds beyond loopback: anyone who reaches it can read the (aggregate, unauthenticated) metrics",
 			slog.String("metrics_addr", addr))
 	}

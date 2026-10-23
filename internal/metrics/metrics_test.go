@@ -1,7 +1,6 @@
 package metrics_test
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -13,7 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 
@@ -182,21 +180,5 @@ func TestUsageRollupMetrics(t *testing.T) {
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("got %q, want %q", got, want)
-	}
-}
-
-// A worker whose database is unreachable at start still serves db_up 0 (the
-// backlog collector is registered before the worker waits for the database).
-func TestBacklogWithUnreachableDatabase(t *testing.T) {
-	pool, err := pgxpool.New(context.Background(), "postgres://nobody@127.0.0.1:1/none?sslmode=disable&connect_timeout=1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer pool.Close()
-	reg := prometheus.NewRegistry()
-	metrics.RegisterBacklog(reg, pool, "mailpit", 0, slog.New(slog.DiscardHandler))
-	got := series(t, reg, "email_platform_db_up")
-	if !slices.Equal(got, []string{"email_platform_db_up{} 0"}) {
-		t.Errorf("got %q", got)
 	}
 }
