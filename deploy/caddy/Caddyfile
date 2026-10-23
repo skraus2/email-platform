@@ -1,18 +1,7 @@
-# TLS for the public API with a Let's Encrypt certificate. Only the /v1 API
-# and the probes are proxied; the operator API, metrics and the dashboard are
-# never reachable through this proxy.
+# TLS for the public API with a Let's Encrypt certificate for API_DOMAIN.
 {
 	email {$ACME_EMAIL}
 	admin off
 }
 
-{$API_DOMAIN} {
-	header Strict-Transport-Security "max-age=31536000"
-	@api path /v1/* /healthz /readyz
-	handle @api {
-		reverse_proxy 127.0.0.1:8080
-	}
-	handle {
-		respond 404
-	}
-}
+import /etc/caddy/site.caddy

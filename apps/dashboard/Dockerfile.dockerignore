@@ -11,3 +11,4 @@ apps/dashboard/test-results
 apps/dashboard/e2e
 apps/dashboard/tsconfig.tsbuildinfo
 apps/dashboard/playwright.config.ts
+apps/dashboard/.env*

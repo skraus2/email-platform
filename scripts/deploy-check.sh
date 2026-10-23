@@ -5,15 +5,18 @@
 # CA instead of Let's Encrypt. Proves:
 #   - render-env (with a stub aws CLI) writes an env file Compose reads as is;
 #     preflight passes with it and refuses a missing alert receiver,
+#   - a second `up` on the existing volumes succeeds (release / rollback),
 #   - the app connects with sslmode=verify-full; a wrong CA or a host name not in
-#     the certificate is refused,
+#     the certificate is refused, and migrate refuses sslmode=require,
+#   - only the application user reaches the instance metadata address,
 #   - HTTPS serves /healthz and an authenticated send that reaches Mailpit; the
 #     operator API, /metrics and everything else are 404 through the proxy;
 #     plain HTTP redirects to HTTPS,
 #   - the dashboard login page is served on the host's loopback only,
 #   - Prometheus scrapes api and worker, loaded every alert rule and found
 #     Alertmanager,
-#   - every container runs as a non-root user with a read-only root file system.
+#   - every container except netns runs as a non-root user, all with a
+#     read-only root file system, memory and process limits.
 # Uses its own Compose project and ports; removes everything at the end.
 # Needs Docker and openssl; no AWS, no real mail.
 set -euo pipefail
@@ -86,25 +89,39 @@ export APP_IMAGE=email-platform-app:deploy-check DASHBOARD_IMAGE=email-platform-
 mv "$CHECK_DIR/alertmanager/webhook-url" "$CHECK_DIR/alertmanager/missing"
 if "$ROOT/deploy/bin/preflight" 2>/dev/null; then fail "preflight accepted a missing alert receiver"; fi
 mv "$CHECK_DIR/alertmanager/missing" "$CHECK_DIR/alertmanager/webhook-url"
-echo "preflight -> passes; refuses a missing alert receiver"
+if [[ "$(uname -s)" == Linux && "$(id -u)" != 65534 ]]; then
+  chmod 600 "$CHECK_DIR/alertmanager/webhook-url"
+  if "$ROOT/deploy/bin/preflight" 2>/dev/null; then fail "preflight accepted a receiver file Alertmanager cannot read"; fi
+  chmod 644 "$CHECK_DIR/alertmanager/webhook-url"
+fi
+echo "preflight -> passes; refuses a missing (and on Linux an unreadable) alert receiver"
 
 # --- Up ----------------------------------------------------------------------
 dc build --quiet || fail "build"
 dc up -d --wait --wait-timeout 180 || fail "stack did not become healthy"
 echo "compose up -> all services running/healthy"
+# A release or rollback runs `up` again on the existing volumes: every one-shot
+# service (migrate, caddy-init) must succeed a second time.
+dc up -d --wait --wait-timeout 180 || fail "second compose up on the existing volumes failed"
+echo "compose up again -> one-shot services re-run, all services healthy"
 
 # --- Database TLS --------------------------------------------------------------
-run_migrate() { dc run --rm --no-deps -e DATABASE_URL="$1" migrate >"$CHECK_DIR/migrate.out" 2>&1; }
+# The URL (with the password) reaches the container through the environment,
+# never the command line.
+run_migrate() { DATABASE_URL="$1" dc run --rm --no-deps -e DATABASE_URL migrate >"$CHECK_DIR/migrate.out" 2>&1; }
 run_migrate "$(db_url localhost /etc/email-platform/db-ca.pem)" || fail "verify-full with the right CA: $(grep -vFf "$CHECK_DIR/needles" "$CHECK_DIR/migrate.out" | tail -3)"
 cp "$CHECK_DIR/wrong/ca.pem" "$CHECK_DIR/certs/wrong-ca.pem"
 chmod 644 "$CHECK_DIR/certs/wrong-ca.pem"
-dc run --rm --no-deps -v "$CHECK_DIR/certs/wrong-ca.pem:/etc/email-platform/wrong-ca.pem:ro" \
-  -e DATABASE_URL="$(db_url localhost /etc/email-platform/wrong-ca.pem)" migrate >"$CHECK_DIR/migrate.out" 2>&1 &&
+DATABASE_URL="$(db_url localhost /etc/email-platform/wrong-ca.pem)" dc run --rm --no-deps \
+  -v "$CHECK_DIR/certs/wrong-ca.pem:/etc/email-platform/wrong-ca.pem:ro" -e DATABASE_URL migrate >"$CHECK_DIR/migrate.out" 2>&1 &&
   fail "a server certificate from another CA was accepted"
 grep -qiE 'x509|certificate' "$CHECK_DIR/migrate.out" || fail "wrong CA refused for another reason: $(grep -vFf "$CHECK_DIR/needles" "$CHECK_DIR/migrate.out" | tail -2)"
 run_migrate "$(db_url 127.0.0.1 /etc/email-platform/db-ca.pem)" && fail "a host name not in the certificate was accepted"
 grep -qiE 'x509|certificate' "$CHECK_DIR/migrate.out" || fail "wrong host refused for another reason: $(grep -vFf "$CHECK_DIR/needles" "$CHECK_DIR/migrate.out" | tail -2)"
-echo "database TLS -> verify-full passes; wrong CA and wrong host name refused"
+run_migrate "postgres://email_platform:$CHECK_DB_PASSWORD@localhost:5433/email_platform?sslmode=require" &&
+  fail "migrate accepted sslmode=require"
+grep -q 'sslmode=verify-full' "$CHECK_DIR/migrate.out" || fail "sslmode=require refused for another reason: $(grep -vFf "$CHECK_DIR/needles" "$CHECK_DIR/migrate.out" | tail -2)"
+echo "database TLS -> verify-full passes; wrong CA, wrong host name and migrate with sslmode=require refused"
 
 # --- Public HTTPS surface ------------------------------------------------------
 dc exec -T caddy cat /data/caddy/pki/authorities/local/root.crt >"$CHECK_DIR/caddy-root.pem" || fail "Caddy root CA"
@@ -132,7 +149,7 @@ id=$(sed -nE 's/.*"id":"([0-9a-f-]{36})".*/\1/p' "$CHECK_DIR/send.json")
 inside() { dc exec -T prometheus wget -qO- "$1"; }
 count=0
 for _ in $(seq 1 100); do
-  count=$(inside "http://127.0.0.1:8025/api/v1/search?query=message-id:%22$id@email-platform.local%22" | sed -E 's/.*"messages_count":([0-9]+).*/\1/')
+  count=$(inside "http://127.0.0.1:8025/api/v1/search?query=message-id:%22$id@email-platform.local%22" | sed -E 's/.*"messages_count":([0-9]+).*/\1/' || true)
   [[ "$count" == 1 ]] && break
   sleep 0.2
 done
@@ -147,7 +164,7 @@ echo "dashboard -> login page on 127.0.0.1:$DASHBOARD_PORT only"
 # --- Monitoring ----------------------------------------------------------------
 up=""
 for _ in $(seq 1 60); do
-  up=$(inside "http://127.0.0.1:9090/api/v1/query?query=sum(up%7Bjob%3D~%22email-platform-.*%22%7D)" | sed -nE 's/.*"value":\[[0-9.]+,"([0-9]+)"\].*/\1/p')
+  up=$(inside "http://127.0.0.1:9090/api/v1/query?query=sum(up%7Bjob%3D~%22email-platform-.*%22%7D)" | sed -nE 's/.*"value":\[[0-9.]+,"([0-9]+)"\].*/\1/p' || true)
   [[ "$up" == 2 ]] && break
   sleep 1
 done
@@ -159,14 +176,29 @@ inside "http://127.0.0.1:9090/api/v1/alertmanagers" | grep -q '"url":"http://127
 inside "http://127.0.0.1:9093/-/ready" >/dev/null || fail "Alertmanager not ready"
 echo "monitoring -> api + worker up, $rules alert rules loaded, Alertmanager discovered"
 
+# --- Instance metadata only for the application user ----------------------------
+imds() { dc exec -T "$@" wget -T 3 -qO /dev/null http://169.254.169.254/latest/meta-data/ 2>&1 || true; }
+dc exec -T netns iptables -w -S OUTPUT | grep -q -- '-d 169.254.169.254/32 -m owner ! --uid-owner 65532 -j REJECT' ||
+  fail "netns has no metadata rule"
+for svc in caddy prometheus alertmanager; do
+  imds "$svc" | grep -qi 'refused' || fail "$svc reaches the instance metadata address"
+done
+imds --user 65532 netns | grep -qi 'refused' && fail "the application user is refused the instance metadata address"
+echo "instance metadata -> refused for caddy/prometheus/alertmanager, open for uid 65532"
+
 # --- Container hardening -------------------------------------------------------
-for svc in api worker dashboard caddy prometheus alertmanager; do
+for svc in netns api worker dashboard caddy prometheus alertmanager; do
   cid=$(dc ps -q "$svc")
   [[ "$(docker inspect -f '{{.HostConfig.ReadonlyRootfs}}' "$cid")" == true ]] || fail "$svc root file system is writable"
+  [[ "$(docker inspect -f '{{.HostConfig.Memory}} {{.HostConfig.PidsLimit}}' "$cid")" =~ ^[1-9][0-9]*\ [1-9][0-9]*$ ]] ||
+    fail "$svc has no memory or process limit"
+  [[ "$(docker inspect -f '{{.HostConfig.SecurityOpt}}' "$cid")" == *no-new-privileges* ]] || fail "$svc runs without no-new-privileges"
+  [[ "$svc" == netns ]] && continue
   user=$(docker exec "$cid" id -u 2>/dev/null || docker inspect -f '{{.Config.User}}' "$cid")
+  user="${user%%:*}"
   [[ -n "$user" && "$user" != 0 && "$user" != root ]] || fail "$svc runs as root"
 done
-echo "containers -> non-root, read-only root file systems"
+echo "containers -> non-root (netns: root with NET_ADMIN only), read-only, limits, no-new-privileges"
 
-dc logs --no-color api worker 2>/dev/null | grep -qiFf "$CHECK_DIR/needles" && fail "logs contain a secret of this run"
+dc logs --no-color 2>/dev/null | grep -qiFf "$CHECK_DIR/needles" && fail "logs contain a secret of this run"
 echo "DEPLOY CHECK OK"
