@@ -215,7 +215,7 @@ services:
 
   prometheus:
     <<: *hardened
-    image: prom/prometheus:v3.13.5@sha256:aafa9d694e6a883c02db516d9f6e5b84e14195f49a2a6456a4cca815edda72b9
+    image: prom/prometheus:v3.15.0@sha256:efd719c99d83b060d9daefdcf00360461adf279f45ef5391f8d111892118753e
     mem_limit: 1g
     command:
       - --config.file=/etc/prometheus/prometheus.yml
