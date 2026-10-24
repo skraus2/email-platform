@@ -12,7 +12,7 @@ failures=0
 fail() { echo "FAIL: $*" >&2; failures=$((failures + 1)); }
 
 files="go.mod Dockerfile deploy/caddy/Dockerfile deploy/caddy/go.mod apps/dashboard/Dockerfile
-package.json pnpm-lock.yaml .nvmrc Makefile deploy/compose.yaml"
+package.json pnpm-lock.yaml .nvmrc Makefile deploy/compose.yaml .github/workflows/ci.yml"
 tool_mods=$(cd "$repo" && find tools -name go.mod | sort)
 # fresh <case>: a copy of the pin files in $work/<case>
 fresh() {
@@ -48,7 +48,8 @@ node_ver=$(sed -n 's/.*"version": "^\(.*\)",/\1/p' "$repo/package.json")
 golang_ref=$(awk '$1 == "FROM" && $2 ~ /^golang:/ { print $2 }' "$repo/Dockerfile")
 prom_ref=$(sed -n 's/^PROMETHEUS_IMAGE *:= *//p' "$repo/Makefile")
 am_ref=$(sed -n 's/^ALERTMANAGER_IMAGE *:= *//p' "$repo/Makefile")
-[[ -n "$go_ver" && -n "$node_ver" && -n "$golang_ref" && -n "$prom_ref" && -n "$am_ref" ]] ||
+lint_ver=$(sed -n 's|^[[:space:]]*github.com/golangci/golangci-lint/v2 \(v[0-9.]*\).*|\1|p' "$repo/tools/go.mod")
+[[ -n "$go_ver" && -n "$node_ver" && -n "$golang_ref" && -n "$prom_ref" && -n "$am_ref" && -n "$lint_ver" ]] ||
   fail "could not read the current pins"
 other_digest=sha256:0000000000000000000000000000000000000000000000000000000000000000
 
@@ -144,6 +145,17 @@ edit missing deploy/compose.yaml "s|image: $prom_ref|image:|"
 edit missing go.mod "/^toolchain /d"
 expect FAIL missing
 says missing "deploy/compose.yaml: no image for service prometheus found" "go.mod: no 'toolchain goX.Y.Z' line found"
+
+# 13. golangci-lint bumped in tools/go.mod only (as a tools update pull
+# request does), and the CI version missing.
+fresh lint
+edit lint tools/go.mod "s|golangci-lint/v2 $lint_ver|golangci-lint/v2 v9.9.9|"
+expect FAIL lint
+says lint ".github/workflows/ci.yml installs golangci-lint $lint_ver but tools/go.mod pins v9.9.9"
+fresh lint-missing
+edit lint-missing .github/workflows/ci.yml "s|^\([[:space:]]*\)version: $lint_ver|\1verzion: $lint_ver|"
+expect FAIL lint-missing
+says lint-missing ".github/workflows/ci.yml: no golangci-lint-action version found"
 
 if [[ $failures -gt 0 ]]; then echo "check-pins_test: $failures failure(s)" >&2; exit 1; fi
 echo "check-pins_test: ok"

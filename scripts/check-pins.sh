@@ -11,7 +11,10 @@
 #      .nvmrc names its major (or the full version);
 #   3. Prometheus and Alertmanager: PROMETHEUS_IMAGE / ALERTMANAGER_IMAGE in
 #      the Makefile are byte-identical to the image of the service of the
-#      same name in deploy/compose.yaml.
+#      same name in deploy/compose.yaml;
+#   4. golangci-lint: the version CI's golangci-lint action installs
+#      (.github/workflows/ci.yml) is the one tools/go.mod pins for
+#      `make lint`.
 # Usage: check-pins.sh [repository root]
 set -euo pipefail
 root="${1:-$(cd "$(dirname "$0")/.." && pwd)}"
@@ -141,8 +144,21 @@ for pair in PROMETHEUS_IMAGE:prometheus ALERTMANAGER_IMAGE:alertmanager; do
 		err "Makefile $var is $make_ref but deploy/compose.yaml service $svc uses $compose_ref"
 done
 
+## golangci-lint
+
+lint_mod=$(sed -n 's|^[[:space:]]*github.com/golangci/golangci-lint/v2 \(v[0-9][0-9.]*\).*|\1|p' tools/go.mod)
+lint_ci=$(awk '
+	/uses:[[:space:]]*golangci\/golangci-lint-action@/ { in_action = 1; next }
+	in_action && /^[[:space:]]*-[[:space:]]/ { exit }
+	in_action && /^[[:space:]]*version:/ { sub(/^[[:space:]]*version:[[:space:]]*/, ""); sub(/[[:space:]]*#.*/, ""); print; exit }' .github/workflows/ci.yml)
+if need tools/go.mod "github.com/golangci/golangci-lint/v2 requirement" "$lint_mod" &&
+	need .github/workflows/ci.yml "golangci-lint-action version" "$lint_ci"; then
+	[ "$lint_mod" = "$lint_ci" ] ||
+		err ".github/workflows/ci.yml installs golangci-lint $lint_ci but tools/go.mod pins $lint_mod"
+fi
+
 if [ "$errors" -gt 0 ]; then
 	echo "check-pins: $errors mismatch(es)" >&2
 	exit 1
 fi
-echo "check-pins: Go $go_version (golang image, caddy, tools), Node $node_version (images, devEngines, lockfile, .nvmrc), prometheus and alertmanager images consistent"
+echo "check-pins: Go $go_version (golang image, caddy, tools), Node $node_version (images, devEngines, lockfile, .nvmrc), prometheus and alertmanager images, golangci-lint $lint_mod (tools, CI) consistent"

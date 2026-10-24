@@ -33,10 +33,15 @@ updates:
     allow:
       - dependency-type: all
     # Not resolvable from sqlc's module graph: cel-go moved to cel.dev/cel-go,
-    # the TiDB parser only exists in incompatible versions.
+    # the TiDB parser only exists in incompatible versions. A tool's own
+    # dependencies move past what the tool requires only within a major
+    # (glob v1 and the yaml v4 release candidates break the tool builds).
     ignore:
       - dependency-name: github.com/google/cel-go
       - dependency-name: github.com/pingcap/tidb/pkg/parser
+      - dependency-name: go.yaml.in/yaml/v4
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
     groups:
       go-tools:
         patterns: ["*"]
@@ -47,8 +52,12 @@ updates:
     schedule: { interval: weekly, day: monday }
     cooldown: { default-days: 7 }
     # Node's type definitions follow the Node major the dashboard runs on.
+    # TypeScript majors wait until typescript-eslint supports them (7.0 is
+    # refused by typescript-eslint as of 2026-10).
     ignore:
       - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: typescript
         update-types: ["version-update:semver-major"]
     groups:
       npm:
