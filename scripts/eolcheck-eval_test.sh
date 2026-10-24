@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Tests scripts/eolcheck-eval.sh with hand-written endoflife.date release
 # objects (no network): end of life, warning window and its boundaries,
-# cycles without a date, unlisted cycles, end of active support.
+# cycles without a date, unlisted cycles, end of active support; and
+# eolcheck.sh reading the pinned cycles (--list) and refusing malformed
+# --cycles input before any lookup.
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -71,34 +73,41 @@ expect FAIL "invalid json" '{'
 
 # 8. Reading the cycles from the files (eolcheck.sh --list, no network).
 repo="$work/repo"
-mkdir -p "$repo/scripts" "$repo/apps/dashboard" "$repo/deploy/netns"
+mkdir -p "$repo/scripts" "$repo/deploy"
 cp "$here/eolcheck.sh" "$repo/scripts/"
 fixture() {
   printf 'module x\n\ngo 1.26.0\n\ntoolchain go1.27.3\n' >"$repo/go.mod"
   echo 24 >"$repo/.nvmrc"
-  printf 'FROM golang:1.27.3-alpine@sha256:aa AS build\nFROM gcr.io/distroless/static-debian12:nonroot@sha256:bb\n' >"$repo/Dockerfile"
-  printf 'FROM node:24.22.1-bookworm-slim@sha256:cc AS build\nFROM node:24.22.1-alpine3.24@sha256:dd\n' >"$repo/apps/dashboard/Dockerfile"
-  printf 'FROM alpine:3.24@sha256:ee\n' >"$repo/deploy/netns/Dockerfile"
   printf 'services:\n  postgres:\n    image: postgres:18.6-alpine\n' >"$repo/compose.yaml"
   printf 'services:\n  prometheus:\n    image: prom/prometheus:v3.13.5@sha256:ff\n' >"$repo/deploy/compose.yaml"
 }
 list() { (cd "$repo" && ./scripts/eolcheck.sh --list) >"$work/out" 2>&1; }
 fixture
 list || fail "list: refused a complete tree: $(cat "$work/out")"
-for want in "go 1.27 go.mod" "nodejs 24 .nvmrc" "debian 12 Dockerfile" "alpine-linux 3.24 apps/dashboard/Dockerfile" \
-  "alpine-linux 3.24 deploy/netns/Dockerfile" "postgresql 18 compose.yaml" "prometheus 3.13 deploy/compose.yaml"; do
+for want in "go 1.27 go.mod" "nodejs 24 .nvmrc" "postgresql 18 compose.yaml" "prometheus 3.13 deploy/compose.yaml"; do
   grep -qx "$want" "$work/out" || fail "list: missing '$want': $(cat "$work/out")"
 done
-# Each shipped runtime base must name its cycle; nothing is skipped silently.
-fixture; printf 'FROM alpine@sha256:ee\n' >"$repo/deploy/netns/Dockerfile"
-list && fail "list: netns base without a version accepted"
-grep -q "no alpine-linux version found in deploy/netns/Dockerfile" "$work/out" || fail "list: netns not named: $(cat "$work/out")"
-fixture; printf 'FROM gcr.io/distroless/static:nonroot@sha256:bb\n' >"$repo/Dockerfile"
-list && fail "list: distroless without a Debian version accepted"
-fixture; rm "$repo/apps/dashboard/Dockerfile"
-list && fail "list: missing Dockerfile accepted"
+[[ $(wc -l <"$work/out") -eq 4 ]] || fail "list: unexpected entries: $(cat "$work/out")"
+# The image operating systems come from the image scan, not from Dockerfiles.
+printf 'FROM gcr.io/distroless/static-debian12:nonroot@sha256:bb\n' >"$repo/Dockerfile"
+list && grep -qE '^(debian|alpine-linux) ' "$work/out" && fail "list: operating system read from a Dockerfile: $(cat "$work/out")"
 fixture; printf 'module x\n\ngo 1.26.0\n' >"$repo/go.mod"
 list && fail "list: go.mod without toolchain accepted"
+grep -q "no go version found in go.mod" "$work/out" || fail "list: go.mod not named: $(cat "$work/out")"
+fixture; printf 'services:\n  prometheus:\n    image: prom/prometheus:latest\n' >"$repo/deploy/compose.yaml"
+list && fail "list: prometheus without a version accepted"
+
+# 9. --cycles (the image operating systems): every line is checked before
+# any lookup; a malformed one, an empty file or a missing file fails
+# without network.
+cycles() { printf "$1" >"$work/cycles"; (cd "$repo" && ./scripts/eolcheck.sh --cycles "$work/cycles") >"$work/out" 2>&1; }
+for bad in 'alpine-linux 3.23\n' 'alpine-linux 3.23.7 caddy image\n' 'alpine-linux edge caddy image\n' '../go 1.27 x\n' \
+  'Debian 12 app image\n' 'debian 12 app\001image\n' 'debian 12 app image\nnodejs\n'; do
+  cycles "$bad" && fail "cycles: accepted '$bad': $(cat "$work/out")"
+  grep -q 'not "<product> <cycle> <source>"' "$work/out" || fail "cycles '$bad': not named: $(cat "$work/out")"
+done
+cycles '' && fail "cycles: empty file accepted"
+(cd "$repo" && ./scripts/eolcheck.sh --cycles "$work/missing") >"$work/out" 2>&1 && fail "cycles: missing file accepted"
 
 if [[ $failures -gt 0 ]]; then echo "eolcheck-eval_test: $failures failure(s)" >&2; exit 1; fi
 echo "eolcheck-eval_test: ok"

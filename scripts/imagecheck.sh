@@ -4,14 +4,17 @@
 # and the third-party images deploy/compose.yaml pins by digest. Each image
 # is exported with `docker save` and scanned by grype from that archive
 # (no Docker socket in the scanner); scripts/imagecheck-eval.sh decides the
-# result against the ignore rules in .grype.yaml.
+# result against the ignore rules in .grype.yaml. The operating system grype
+# finds in each image is then checked for end of life: mapped to its
+# endoflife.date cycle by scripts/imagecheck-os.sh and looked up on the host
+# by scripts/eolcheck.sh (the scanner container stays offline).
 #
 # The app image's own Go binaries are excluded: govulncheck (make vulncheck)
 # scans them with reachability analysis. Their base layer is scanned.
 #
 # Needs Docker and network (vulnerability database, ~200 MB download,
 # ~3 GB unpacked, cached in GRYPE_DB_DIR and updated when a newer one is
-# published).
+# published; endoflife.date).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -81,4 +84,9 @@ done
 
 # Optional copy of the raw grype reports for inspection.
 if [[ -n "${IMAGECHECK_REPORTS:-}" ]]; then mkdir -p "$IMAGECHECK_REPORTS" && cp "$work"/*.json "$IMAGECHECK_REPORTS"/; fi
-./scripts/imagecheck-eval.sh "$(date -u +%Y-%m-%d)" "$work"/*.json
+# All three steps always run, so one run shows every problem.
+rc=0
+./scripts/imagecheck-eval.sh "$(date -u +%Y-%m-%d)" "$work"/*.json || rc=1
+./scripts/imagecheck-os.sh "$work/os-cycles" "$work"/*.json || rc=1
+./scripts/eolcheck.sh --cycles "$work/os-cycles" || rc=1
+exit $rc

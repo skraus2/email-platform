@@ -1,6 +1,7 @@
 # Known-vulnerability scans: the Go and dashboard dependencies (`make
-# vulncheck`), the production container images (`make imagecheck`), the end
-# of life of pinned runtimes (`make eolcheck`) and, weekly, the development
+# vulncheck`), the production container images and the end of life of
+# their operating systems (`make imagecheck`), the end of life of pinned
+# runtimes (`make eolcheck`) and, weekly, the development
 # tools (`make vulncheck-dev`, report only).
 # Separate from ci.yml because it also runs weekly: the advisory databases
 # change without any commit. No secrets, no cloud access.
@@ -38,7 +39,7 @@ jobs:
           node-version-file: .nvmrc
       - name: govulncheck (reachable Go code) and pnpm audit (production dependencies, high and critical)
         run: make vulncheck
-      - name: End of life of pinned runtimes and base systems (fails at end of life, warns 90 days before)
+      - name: End of life of pinned runtimes (fails at end of life, warns 90 days before)
         if: ${{ !cancelled() }}
         run: make eolcheck
 
@@ -49,7 +50,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: grype (production container images, high and critical with a fix)
+      - name: grype (production container images, high and critical with a fix) and end of life of each image's operating system
         run: make imagecheck
         env:
           GRYPE_DB_DIR: ${{ runner.temp }}/grype-db

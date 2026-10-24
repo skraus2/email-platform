@@ -113,6 +113,7 @@ test: ## Go, dashboard and deploy script unit tests (no external dependencies)
 	$(PNPM) --filter dashboard test
 	./deploy/bin/render-env_test.sh
 	./scripts/imagecheck-eval_test.sh
+	./scripts/imagecheck-os_test.sh
 	./scripts/eolcheck-eval_test.sh
 	./scripts/check-pins_test.sh
 
@@ -136,7 +137,7 @@ vulncheck: ## Known vulnerabilities: govulncheck (reachable Go code, incl. the c
 	exit $$rc
 
 .PHONY: eolcheck
-eolcheck: ## End of life of pinned Go, Node, Alpine, Debian, PostgreSQL, Prometheus (endoflife.date): fails at EOL, warns 90 days before; needs network
+eolcheck: ## End of life of pinned Go, Node, PostgreSQL, Prometheus (endoflife.date): fails at EOL, warns 90 days before; needs network
 	./scripts/eolcheck.sh
 
 .PHONY: vulncheck-dev
@@ -144,7 +145,7 @@ vulncheck-dev: ## Known vulnerabilities in dev/CI-only code: Go tools in tools/ 
 	PNPM="$(PNPM)" ./scripts/vulncheck-dev.sh
 
 .PHONY: imagecheck
-imagecheck: ## Known vulnerabilities in the production container images (grype; High/Critical with a fix fail); needs Docker + network
+imagecheck: ## Known vulnerabilities in the production container images (grype; High/Critical with a fix fail) + end of life of each image's OS; needs Docker + network
 	./scripts/imagecheck.sh
 
 .PHONY: build
