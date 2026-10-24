@@ -41,6 +41,10 @@ updates:
     directory: "/"
     schedule: { interval: weekly, day: monday }
     cooldown: { default-days: 7 }
+    # Node's type definitions follow the Node major the dashboard runs on.
+    ignore:
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
     groups:
       npm:
         patterns: ["*"]
@@ -54,6 +58,14 @@ updates:
       - "/deploy/netns"
     schedule: { interval: weekly, day: monday }
     cooldown: { default-days: 7 }
+    # Runtime lines change deliberately (with devEngines, .nvmrc and the
+    # go.mod toolchain): Node stays on its LTS major, Go on its minor.
+    ignore:
+      - dependency-name: node
+        update-types: ["version-update:semver-major"]
+      - dependency-name: golang
+        update-types:
+          ["version-update:semver-major", "version-update:semver-minor"]
     groups:
       images:
         patterns: ["*"]
@@ -65,6 +77,12 @@ updates:
       - "/deploy"
     schedule: { interval: weekly, day: monday }
     cooldown: { default-days: 7 }
+    # Prometheus follows its long-term support line (3.13); a newer minor is
+    # a short-lived non-LTS release. Patch releases of the line still arrive.
+    ignore:
+      - dependency-name: prom/prometheus
+        update-types:
+          ["version-update:semver-major", "version-update:semver-minor"]
     groups:
       compose:
         patterns: ["*"]
