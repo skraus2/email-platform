@@ -74,3 +74,9 @@ ignore:
   - vulnerability: GHSA-2v4p-qf9q-27wj
     package: { location: "/bin/amtool" }
     reason: "alertmanager v0.34.1 is the latest release and was built before this fix. Server side: plain HTTP/1 on 127.0.0.1:9093, reachable only from the containers sharing the stack network namespace (no HTTP/2 or TLS server). Client side: requests go only to operator-configured receivers. Remove with the next release; revisit by 2026-11-24."
+  - vulnerability: GHSA-2v4p-qf9q-27wj
+    package: { location: "/bin/prometheus" }
+    reason: "Prometheus v3.13.5 (latest LTS release) ships grpc v1.83.1; the advisory affects gRPC xDS servers only and Prometheus runs no xDS server. Remove with the next 3.13 patch release; revisit by 2026-11-24."
+  - vulnerability: GHSA-2v4p-qf9q-27wj
+    package: { location: "/bin/promtool" }
+    reason: "Prometheus v3.13.5 (latest LTS release) ships grpc v1.83.1; the advisory affects gRPC xDS servers only and Prometheus runs no xDS server. Remove with the next 3.13 patch release; revisit by 2026-11-24."
