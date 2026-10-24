@@ -1,0 +1,66 @@
+# Weekly version-update pull requests. Minor and patch updates are grouped
+# into one pull request per ecosystem; major updates arrive one by one.
+# New releases wait 7 days before they are proposed, so a compromised or
+# withdrawn release has time to be noticed (security updates do not wait).
+# Versions that live outside these manifests (Makefile image variables,
+# devEngines, .nvmrc) are not updated here; scripts/check-pins.sh fails the
+# lint job until they match again.
+version: 2
+
+updates:
+  - package-ecosystem: gomod
+    directories:
+      - "/"
+      - "/deploy/caddy"
+      - "/tools"
+      - "/tools/actionlint"
+      - "/tools/govulncheck"
+      - "/tools/sqlc"
+    schedule: { interval: weekly, day: monday }
+    cooldown: { default-days: 7 }
+    groups:
+      go:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  - package-ecosystem: npm
+    directory: "/"
+    schedule: { interval: weekly, day: monday }
+    cooldown: { default-days: 7 }
+    groups:
+      npm:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  - package-ecosystem: docker
+    directories:
+      - "/"
+      - "/apps/dashboard"
+      - "/deploy/caddy"
+      - "/deploy/netns"
+    schedule: { interval: weekly, day: monday }
+    cooldown: { default-days: 7 }
+    groups:
+      images:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  - package-ecosystem: docker-compose
+    directories:
+      - "/"
+      - "/deploy"
+    schedule: { interval: weekly, day: monday }
+    cooldown: { default-days: 7 }
+    groups:
+      compose:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule: { interval: weekly, day: monday }
+    cooldown: { default-days: 7 }
+    groups:
+      actions:
+        patterns: ["*"]
+        update-types: [minor, patch]
