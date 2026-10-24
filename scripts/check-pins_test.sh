@@ -12,7 +12,7 @@ failures=0
 fail() { echo "FAIL: $*" >&2; failures=$((failures + 1)); }
 
 files="go.mod Dockerfile deploy/caddy/Dockerfile deploy/caddy/go.mod apps/dashboard/Dockerfile
-package.json pnpm-lock.yaml .nvmrc Makefile deploy/compose.yaml .github/workflows/ci.yml"
+package.json pnpm-lock.yaml .nvmrc Makefile deploy/compose.yaml compose.yaml .github/workflows/ci.yml"
 tool_mods=$(cd "$repo" && find tools -name go.mod | sort)
 # fresh <case>: a copy of the pin files in $work/<case>
 fresh() {
@@ -49,7 +49,10 @@ golang_ref=$(awk '$1 == "FROM" && $2 ~ /^golang:/ { print $2 }' "$repo/Dockerfil
 prom_ref=$(sed -n 's/^PROMETHEUS_IMAGE *:= *//p' "$repo/Makefile")
 am_ref=$(sed -n 's/^ALERTMANAGER_IMAGE *:= *//p' "$repo/Makefile")
 lint_ver=$(sed -n 's|^[[:space:]]*github.com/golangci/golangci-lint/v2 \(v[0-9.]*\).*|\1|p' "$repo/tools/go.mod")
-[[ -n "$go_ver" && -n "$node_ver" && -n "$golang_ref" && -n "$prom_ref" && -n "$am_ref" && -n "$lint_ver" ]] ||
+pg_ref=$(sed -n 's|^    image: \(postgres:.*\)|\1|p' "$repo/compose.yaml")
+mp_ref=$(sed -n 's|^    image: \(axllent/mailpit:.*\)|\1|p' "$repo/compose.yaml")
+[[ -n "$go_ver" && -n "$node_ver" && -n "$golang_ref" && -n "$prom_ref" && -n "$am_ref" && -n "$lint_ver" &&
+  -n "$pg_ref" && -n "$mp_ref" ]] ||
   fail "could not read the current pins"
 other_digest=sha256:0000000000000000000000000000000000000000000000000000000000000000
 
@@ -57,7 +60,7 @@ other_digest=sha256:000000000000000000000000000000000000000000000000000000000000
 "$here/check-pins.sh" >"$work/out" 2>&1 || fail "repository tree: $(cat "$work/out")"
 fresh clean
 expect PASS clean
-says clean "Go $go_ver" "Node $node_ver"
+says clean "Go $go_ver" "Node $node_ver" "CI service images (postgres, mailpit) consistent"
 
 # 2. Application build image on another Go version than the toolchain.
 fresh go-app
@@ -156,6 +159,34 @@ fresh lint-missing
 edit lint-missing .github/workflows/ci.yml "s|^\([[:space:]]*\)version: $lint_ver|\1verzion: $lint_ver|"
 expect FAIL lint-missing
 says lint-missing ".github/workflows/ci.yml: no golangci-lint-action version found"
+
+# 14. CI service image changed in one job only (the go job's mailpit).
+fresh ci-svc
+edit ci-svc .github/workflows/ci.yml "1,\\|image: $mp_ref|s|image: $mp_ref|image: axllent/mailpit:v0.0.1|"
+expect FAIL ci-svc
+says ci-svc ".github/workflows/ci.yml job go service mailpit uses axllent/mailpit:v0.0.1 but compose.yaml service mailpit uses $mp_ref" \
+  "1 mismatch(es)"
+
+# 15. compose.yaml bumped alone (as an update pull request does): every job
+# running that service is reported.
+fresh ci-compose
+edit ci-compose compose.yaml "s|image: $pg_ref|image: postgres:99.0-alpine|"
+expect FAIL ci-compose
+says ci-compose ".github/workflows/ci.yml job go service postgres uses $pg_ref but compose.yaml service postgres uses postgres:99.0-alpine" \
+  ".github/workflows/ci.yml job e2e service postgres uses $pg_ref but compose.yaml service postgres uses postgres:99.0-alpine" \
+  "2 mismatch(es)"
+
+# 16. A service image missing on either side, or no services at all, is an error.
+fresh ci-missing
+edit ci-missing .github/workflows/ci.yml "/^  e2e:/,\$s|image: $pg_ref|imagex: $pg_ref|"
+edit ci-missing compose.yaml "s|image: $mp_ref|image:|"
+expect FAIL ci-missing
+says ci-missing ".github/workflows/ci.yml: no image for service postgres of job e2e found" \
+  "compose.yaml: no image for service mailpit found"
+fresh ci-none
+edit ci-none .github/workflows/ci.yml "s|^    services:|    servicez:|"
+expect FAIL ci-none
+says ci-none ".github/workflows/ci.yml: no job services: found"
 
 if [[ $failures -gt 0 ]]; then echo "check-pins_test: $failures failure(s)" >&2; exit 1; fi
 echo "check-pins_test: ok"

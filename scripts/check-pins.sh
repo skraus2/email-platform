@@ -14,7 +14,11 @@
 #      same name in deploy/compose.yaml;
 #   4. golangci-lint: the version CI's golangci-lint action installs
 #      (.github/workflows/ci.yml) is the one tools/go.mod pins for
-#      `make lint`.
+#      `make lint`;
+#   5. CI service containers: every `services:` image of every job in
+#      .github/workflows/ci.yml is byte-identical to the image of the
+#      service of the same name in compose.yaml (update pull requests bump
+#      compose.yaml only).
 # Usage: check-pins.sh [repository root]
 set -euo pipefail
 root="${1:-$(cd "$(dirname "$0")/.." && pwd)}"
@@ -128,16 +132,21 @@ if need .nvmrc "Node version" "$nvmrc" && [ -n "$node_version" ]; then
 		err ".nvmrc names Node $nvmrc but package.json devEngines.runtime.version is $engine (expected $want)"
 fi
 
+# compose_image <file> <service>: the image line of a top-level service.
+compose_image() {
+	awk -v svc="$2" '
+		/^[^[:space:]#]/ { top = $1; cur = "" }
+		top == "services:" && /^  [^[:space:]#][^:]*:/ { cur = $1; sub(/:$/, "", cur) }
+		cur == svc && /^    image:/ { sub(/^    image:[[:space:]]*/, ""); print; exit }' "$1"
+}
+
 ## Prometheus and Alertmanager
 
 for pair in PROMETHEUS_IMAGE:prometheus ALERTMANAGER_IMAGE:alertmanager; do
 	var=${pair%%:*}
 	svc=${pair#*:}
 	make_ref=$(sed -n "s/^$var[[:space:]]*:=[[:space:]]*//p" Makefile)
-	compose_ref=$(awk -v svc="$svc" '
-		/^[^[:space:]#]/ { top = $1; cur = "" }
-		top == "services:" && /^  [^[:space:]#][^:]*:/ { cur = $1; sub(/:$/, "", cur) }
-		cur == svc && /^    image:/ { sub(/^    image:[[:space:]]*/, ""); print; exit }' deploy/compose.yaml)
+	compose_ref=$(compose_image deploy/compose.yaml "$svc")
 	need Makefile "$var := ... assignment" "$make_ref" || continue
 	need deploy/compose.yaml "image for service $svc" "$compose_ref" || continue
 	[ "$make_ref" = "$compose_ref" ] ||
@@ -157,8 +166,33 @@ if need tools/go.mod "github.com/golangci/golangci-lint/v2 requirement" "$lint_m
 		err ".github/workflows/ci.yml installs golangci-lint $lint_ci but tools/go.mod pins $lint_mod"
 fi
 
+## CI service containers
+
+# One line per service of every job: <job> <service> <image or nothing>.
+ci_services=$(awk '
+	/^[^[:space:]#]/ { top = $1; job = ""; in_services = 0 }
+	top == "jobs:" && /^  [^[:space:]#]/ { job = $1; sub(/:$/, "", job); in_services = 0; next }
+	job != "" && /^    [^[:space:]#]/ { in_services = ($1 == "services:"); svc = ""; next }
+	in_services && /^      [^[:space:]#]/ { svc = $1; sub(/:$/, "", svc); n++; key[n] = job " " svc; next }
+	in_services && svc != "" && /^        image:/ { sub(/^        image:[[:space:]]*/, ""); img[n] = $0 }
+	END { for (i = 1; i <= n; i++) print key[i], img[i] }' .github/workflows/ci.yml)
+ci_service_names=""
+if need .github/workflows/ci.yml "job services:" "$ci_services"; then
+	while read -r job svc ci_ref; do
+		case ", $ci_service_names, " in
+		*", $svc, "*) ;;
+		*) ci_service_names="${ci_service_names:+$ci_service_names, }$svc" ;;
+		esac
+		need .github/workflows/ci.yml "image for service $svc of job $job" "$ci_ref" || continue
+		compose_ref=$(compose_image compose.yaml "$svc")
+		need compose.yaml "image for service $svc" "$compose_ref" || continue
+		[ "$ci_ref" = "$compose_ref" ] ||
+			err ".github/workflows/ci.yml job $job service $svc uses $ci_ref but compose.yaml service $svc uses $compose_ref"
+	done <<<"$ci_services"
+fi
+
 if [ "$errors" -gt 0 ]; then
 	echo "check-pins: $errors mismatch(es)" >&2
 	exit 1
 fi
-echo "check-pins: Go $go_version (golang image, caddy, tools), Node $node_version (images, devEngines, lockfile, .nvmrc), prometheus and alertmanager images, golangci-lint $lint_mod (tools, CI) consistent"
+echo "check-pins: Go $go_version (golang image, caddy, tools), Node $node_version (images, devEngines, lockfile, .nvmrc), prometheus and alertmanager images, golangci-lint $lint_mod (tools, CI), CI service images ($ci_service_names) consistent"
