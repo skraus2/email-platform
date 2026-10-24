@@ -36,6 +36,9 @@ jobs:
           node-version-file: .nvmrc
       - name: govulncheck (reachable Go code) and pnpm audit (production dependencies, high and critical)
         run: make vulncheck
+      - name: Go tools and npm development dependencies (report only)
+        if: ${{ !cancelled() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
+        run: make vulncheck-dev
 
   imagecheck:
     runs-on: ubuntu-24.04

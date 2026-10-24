@@ -134,6 +134,10 @@ vulncheck: ## Known vulnerabilities: govulncheck (reachable Go code, incl. the c
 	$(PNPM) audit --prod --audit-level high || rc=1; \
 	exit $$rc
 
+.PHONY: vulncheck-dev
+vulncheck-dev: ## Known vulnerabilities in dev/CI-only code: Go tools in tools/ + npm dev dependencies; reports, never fails on findings; needs network
+	PNPM="$(PNPM)" ./scripts/vulncheck-dev.sh
+
 .PHONY: imagecheck
 imagecheck: ## Known vulnerabilities in the production container images (grype; High/Critical with a fix fail); needs Docker + network
 	./scripts/imagecheck.sh
