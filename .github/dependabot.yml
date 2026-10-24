@@ -32,6 +32,11 @@ updates:
     cooldown: { default-days: 7 }
     allow:
       - dependency-type: all
+    # Not resolvable from sqlc's module graph: cel-go moved to cel.dev/cel-go,
+    # the TiDB parser only exists in incompatible versions.
+    ignore:
+      - dependency-name: github.com/google/cel-go
+      - dependency-name: github.com/pingcap/tidb/pkg/parser
     groups:
       go-tools:
         patterns: ["*"]
