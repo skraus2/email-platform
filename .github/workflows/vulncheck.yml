@@ -1,6 +1,7 @@
-# Known-vulnerability scan of the Go and dashboard dependencies (`make
-# vulncheck`). Separate from ci.yml because it also runs weekly: the
-# advisory databases change without any commit. No secrets, no cloud access.
+# Known-vulnerability scans: the Go and dashboard dependencies (`make
+# vulncheck`) and the production container images (`make imagecheck`).
+# Separate from ci.yml because it also runs weekly: the advisory databases
+# change without any commit. No secrets, no cloud access.
 name: vulncheck
 
 on:
@@ -35,3 +36,15 @@ jobs:
           node-version-file: .nvmrc
       - name: govulncheck (reachable Go code) and pnpm audit (production dependencies, high and critical)
         run: make vulncheck
+
+  imagecheck:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: grype (production container images, high and critical with a fix)
+        run: make imagecheck
+        env:
+          GRYPE_DB_DIR: ${{ runner.temp }}/grype-db

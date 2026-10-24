@@ -108,21 +108,30 @@ test: ## Go, dashboard and deploy script unit tests (no external dependencies)
 	go test -race ./...
 	$(PNPM) --filter dashboard test
 	./deploy/bin/render-env_test.sh
+	./scripts/imagecheck-eval_test.sh
 
 .PHONY: test-integration
 test-integration: ## Go integration tests against Compose PostgreSQL (needs `make up`)
 	go test -race -tags=integration -count=1 ./...
 
 .PHONY: vulncheck
-vulncheck: ## Known vulnerabilities: govulncheck (reachable Go code) + pnpm audit (production deps, high+); needs network
+vulncheck: ## Known vulnerabilities: govulncheck (reachable Go code, incl. the caddy build) + pnpm audit (production deps, high+); needs network
 	@want=$$(sed -n 's/^toolchain //p' go.mod); have=$$(go env GOVERSION); \
 	if [ "$$have" != "$$want" ]; then echo "vulncheck: running $$have but go.mod pins $$want (the shipped standard library); retry with GOTOOLCHAIN=$$want"; exit 1; fi
+	@want=$$(sed -n 's/^toolchain //p' go.mod); caddy=$$(sed -n 's/^toolchain //p' deploy/caddy/go.mod); \
+	[ -n "$$caddy" ] || caddy=$$(sed -n 's/^go \(.*\)/go\1/p' deploy/caddy/go.mod); \
+	if [ "$$caddy" != "$$want" ]; then echo "vulncheck: deploy/caddy/go.mod pins $$caddy, go.mod pins $$want; keep them equal"; exit 1; fi
 	@# Built for the host, scanning the linux build the images ship; both
 	@# scanners always run so one run shows every finding.
 	@rc=0; bin=$$(go tool -modfile=tools/govulncheck/go.mod -n govulncheck) || exit 1; \
 	GOOS=linux "$$bin" ./... || rc=1; \
+	GOOS=linux "$$bin" -C deploy/caddy -tags nobadger,nomysql,nopgx ./... || rc=1; \
 	$(PNPM) audit --prod --audit-level high || rc=1; \
 	exit $$rc
+
+.PHONY: imagecheck
+imagecheck: ## Known vulnerabilities in the production container images (grype; High/Critical with a fix fail); needs Docker + network
+	./scripts/imagecheck.sh
 
 .PHONY: build
 build: ## Build Go binaries into ./bin and the dashboard
@@ -133,7 +142,7 @@ build: ## Build Go binaries into ./bin and the dashboard
 check: fmt-check lint test build ## Fast full gate (no Docker needed)
 
 .PHONY: ci
-ci: check vulncheck test-alerts test-integration smoke restore-test deploy-check test-e2e ## Local superset of CI gates (needs `make up migrate`)
+ci: check vulncheck imagecheck test-alerts test-integration smoke restore-test deploy-check test-e2e ## Local superset of CI gates (needs `make up migrate`)
 
 .PHONY: smoke
 smoke: ## Real API + worker: health, send, idempotency, 422/429, log leaks, SIGTERM
