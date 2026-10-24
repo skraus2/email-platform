@@ -1,5 +1,7 @@
 # Known-vulnerability scans: the Go and dashboard dependencies (`make
-# vulncheck`) and the production container images (`make imagecheck`).
+# vulncheck`), the production container images (`make imagecheck`), the end
+# of life of pinned runtimes (`make eolcheck`) and, weekly, the development
+# tools (`make vulncheck-dev`, report only).
 # Separate from ci.yml because it also runs weekly: the advisory databases
 # change without any commit. No secrets, no cloud access.
 name: vulncheck
@@ -36,6 +38,9 @@ jobs:
           node-version-file: .nvmrc
       - name: govulncheck (reachable Go code) and pnpm audit (production dependencies, high and critical)
         run: make vulncheck
+      - name: End of life of pinned runtimes and base systems (fails at end of life, warns 90 days before)
+        if: ${{ !cancelled() }}
+        run: make eolcheck
       - name: Go tools and npm development dependencies (report only)
         if: ${{ !cancelled() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
         run: make vulncheck-dev

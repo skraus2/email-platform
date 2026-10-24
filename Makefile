@@ -113,6 +113,7 @@ test: ## Go, dashboard and deploy script unit tests (no external dependencies)
 	$(PNPM) --filter dashboard test
 	./deploy/bin/render-env_test.sh
 	./scripts/imagecheck-eval_test.sh
+	./scripts/eolcheck-eval_test.sh
 	./scripts/check-pins_test.sh
 
 .PHONY: test-integration
@@ -134,6 +135,10 @@ vulncheck: ## Known vulnerabilities: govulncheck (reachable Go code, incl. the c
 	$(PNPM) audit --prod --audit-level high || rc=1; \
 	exit $$rc
 
+.PHONY: eolcheck
+eolcheck: ## End of life of pinned Go, Node, Alpine, Debian, PostgreSQL, Prometheus (endoflife.date): fails at EOL, warns 90 days before; needs network
+	./scripts/eolcheck.sh
+
 .PHONY: vulncheck-dev
 vulncheck-dev: ## Known vulnerabilities in dev/CI-only code: Go tools in tools/ + npm dev dependencies; reports, never fails on findings; needs network
 	PNPM="$(PNPM)" ./scripts/vulncheck-dev.sh
@@ -151,7 +156,7 @@ build: ## Build Go binaries into ./bin and the dashboard
 check: fmt-check lint test build ## Fast full gate (no Docker needed)
 
 .PHONY: ci
-ci: check vulncheck imagecheck test-alerts test-integration smoke restore-test deploy-check test-e2e ## Local superset of CI gates (needs `make up migrate`)
+ci: check vulncheck imagecheck eolcheck test-alerts test-integration smoke restore-test deploy-check test-e2e ## Local superset of CI gates (needs `make up migrate`)
 
 .PHONY: smoke
 smoke: ## Real API + worker: health, send, idempotency, 422/429, log leaks, SIGTERM
