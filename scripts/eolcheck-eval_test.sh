@@ -58,9 +58,47 @@ grep -q "cycle not listed" "$work/out" || fail "not listed: not said: $(cat "$wo
 expect PASS "eoas" "[$(cycle debian 2028-06-30 false 2026-07-11)]"
 grep -q "active support ended 2026-07-11, security fixes only" "$work/out" || fail "eoas: not said: $(cat "$work/out")"
 
+# 6b. Untrusted API text: a date with trailing text fails, control
+# characters never reach the output (they could start a CI command).
+expect FAIL "date with trailing text" '[{"product":"a","cycle":"1","source":"f","release":{"isEol":false,"eolFrom":"2027-12-01\n::error::x","isEoas":false}}]'
+expect PASS "control characters" '[{"product":"a\u001b","cycle":"1","source":"f\n::error::x","release":{"isEol":false,"eolFrom":"2027-12-01","isEoas":true,"eoasFrom":"2026-01-01\n::stop-commands::y"}}]'
+grep -q '^::' "$work/out" && fail "control characters: workflow command line in output: $(cat "$work/out")"
+[[ $(wc -l <"$work/out") -eq 2 ]] || fail "control characters: extra lines: $(cat "$work/out")"
+
 # 7. Nothing to check or no JSON: fail, never pass.
 expect FAIL "empty" '[]'
 expect FAIL "invalid json" '{'
+
+# 8. Reading the cycles from the files (eolcheck.sh --list, no network).
+repo="$work/repo"
+mkdir -p "$repo/scripts" "$repo/apps/dashboard" "$repo/deploy/netns"
+cp "$here/eolcheck.sh" "$repo/scripts/"
+fixture() {
+  printf 'module x\n\ngo 1.26.0\n\ntoolchain go1.27.3\n' >"$repo/go.mod"
+  echo 24 >"$repo/.nvmrc"
+  printf 'FROM golang:1.27.3-alpine@sha256:aa AS build\nFROM gcr.io/distroless/static-debian12:nonroot@sha256:bb\n' >"$repo/Dockerfile"
+  printf 'FROM node:24.22.1-bookworm-slim@sha256:cc AS build\nFROM node:24.22.1-alpine3.24@sha256:dd\n' >"$repo/apps/dashboard/Dockerfile"
+  printf 'FROM alpine:3.24@sha256:ee\n' >"$repo/deploy/netns/Dockerfile"
+  printf 'services:\n  postgres:\n    image: postgres:18.6-alpine\n' >"$repo/compose.yaml"
+  printf 'services:\n  prometheus:\n    image: prom/prometheus:v3.13.5@sha256:ff\n' >"$repo/deploy/compose.yaml"
+}
+list() { (cd "$repo" && ./scripts/eolcheck.sh --list) >"$work/out" 2>&1; }
+fixture
+list || fail "list: refused a complete tree: $(cat "$work/out")"
+for want in "go 1.27 go.mod" "nodejs 24 .nvmrc" "debian 12 Dockerfile" "alpine-linux 3.24 apps/dashboard/Dockerfile" \
+  "alpine-linux 3.24 deploy/netns/Dockerfile" "postgresql 18 compose.yaml" "prometheus 3.13 deploy/compose.yaml"; do
+  grep -qx "$want" "$work/out" || fail "list: missing '$want': $(cat "$work/out")"
+done
+# Each shipped runtime base must name its cycle; nothing is skipped silently.
+fixture; printf 'FROM alpine@sha256:ee\n' >"$repo/deploy/netns/Dockerfile"
+list && fail "list: netns base without a version accepted"
+grep -q "no alpine-linux version found in deploy/netns/Dockerfile" "$work/out" || fail "list: netns not named: $(cat "$work/out")"
+fixture; printf 'FROM gcr.io/distroless/static:nonroot@sha256:bb\n' >"$repo/Dockerfile"
+list && fail "list: distroless without a Debian version accepted"
+fixture; rm "$repo/apps/dashboard/Dockerfile"
+list && fail "list: missing Dockerfile accepted"
+fixture; printf 'module x\n\ngo 1.26.0\n' >"$repo/go.mod"
+list && fail "list: go.mod without toolchain accepted"
 
 if [[ $failures -gt 0 ]]; then echo "eolcheck-eval_test: $failures failure(s)" >&2; exit 1; fi
 echo "eolcheck-eval_test: ok"

@@ -3,7 +3,8 @@
 # reads each release cycle from the files that pin it, looks it up on
 # endoflife.date and lets scripts/eolcheck-eval.sh decide (fail at end of
 # life, warn EOL_WARN_DAYS days before). A cycle that cannot be read from
-# its file fails the check instead of being skipped. Needs network.
+# its file fails the check instead of being skipped. Needs network, except
+# with --list, which only prints the cycles read from the files.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -20,20 +21,28 @@ add() {
 }
 add go go.mod "$(sed -n 's/^toolchain go\([0-9]*\.[0-9]*\).*/\1/p' go.mod)"
 add nodejs .nvmrc "$(sed -n 's/^v\{0,1\}\([0-9][0-9]*\).*/\1/p' .nvmrc)"
-dockerfiles="Dockerfile apps/dashboard/Dockerfile deploy/caddy/Dockerfile deploy/netns/Dockerfile"
-# shellcheck disable=SC2086 # word splitting of the file list is intended
-add alpine-linux "Dockerfiles" "$(grep -ho '^FROM [^ ]*alpine:\{0,1\}[0-9][0-9]*\.[0-9][0-9]*' $dockerfiles | sed 's/.*alpine:\{0,1\}//' | sort -u)"
-# shellcheck disable=SC2086
-add debian "Dockerfile (distroless)" "$(grep -ho '^FROM [^ ]*-debian[0-9][0-9]*' $dockerfiles | sed 's/.*-debian//' | sort -u)"
+# The runtime base of each shipped image is the last FROM line of its
+# Dockerfile; each must name its cycle in the tag. caddy's official
+# alpine-based runtime tag carries no Alpine version and is not checked.
+runtime_base() { [[ -f "$1" ]] || { echo "eolcheck: $1 missing" >&2; exit 1; }; grep '^FROM ' "$1" | tail -n 1; }
+base="$(runtime_base Dockerfile)"
+add debian Dockerfile "$(sed -n 's/^FROM [^ ]*-debian\([0-9][0-9]*\)[:@].*/\1/p' <<<"$base")"
+base="$(runtime_base apps/dashboard/Dockerfile)"
+add alpine-linux apps/dashboard/Dockerfile "$(sed -n 's/^FROM [^ ]*-alpine\([0-9][0-9]*\.[0-9][0-9]*\)[@ ].*/\1/p' <<<"$base")"
+base="$(runtime_base deploy/netns/Dockerfile)"
+add alpine-linux deploy/netns/Dockerfile "$(sed -n 's/^FROM alpine:\([0-9][0-9]*\.[0-9][0-9]*\)[@ ].*/\1/p' <<<"$base")"
 add postgresql compose.yaml "$(sed -n 's/^ *image: *postgres:\([0-9][0-9]*\).*/\1/p' compose.yaml)"
 add prometheus deploy/compose.yaml "$(sed -n 's|^ *image: *prom/prometheus:v\([0-9]*\.[0-9]*\).*|\1|p' deploy/compose.yaml)"
 
+if [[ "${1:-}" == --list ]]; then printf '%s\n' "${cycles[@]}"; exit 0; fi
+
 for entry in "${cycles[@]}"; do
   read -r product cycle source <<<"$entry"
-  file="$work/$product-$cycle.json"
+  file="$work/$product-$cycle-${source//\//_}.json"
   code=$(curl -sS --max-time 15 -o "$file" -w '%{http_code}' "https://endoflife.date/api/v1/products/$product/releases/$cycle")
   case "$code" in
-    200) jq -e '.result.name' "$file" >/dev/null || { echo "eolcheck: unexpected response for $product $cycle" >&2; exit 1; } ;;
+    200) jq -e '.result | (.isEol | type) == "boolean" and has("eolFrom")' "$file" >/dev/null ||
+           { echo "eolcheck: unexpected response for $product $cycle" >&2; exit 1; } ;;
     404) echo 'null' >"$file" ;;
     *) echo "eolcheck: endoflife.date answered $code for $product $cycle" >&2; exit 1 ;;
   esac

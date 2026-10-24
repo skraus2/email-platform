@@ -3,8 +3,9 @@
 # New releases wait 7 days before they are proposed, so a compromised or
 # withdrawn release has time to be noticed (security updates do not wait).
 # Versions that live outside these manifests (Makefile image variables,
-# devEngines, .nvmrc) are not updated here; scripts/check-pins.sh fails the
-# lint job until they match again.
+# devEngines, .nvmrc, the go.mod toolchain lines that must match the golang
+# build image) are not updated here; scripts/check-pins.sh fails the go job
+# until they are aligned by hand in the same pull request.
 version: 2
 
 updates:
@@ -12,14 +13,27 @@ updates:
     directories:
       - "/"
       - "/deploy/caddy"
+    schedule: { interval: weekly, day: monday }
+    cooldown: { default-days: 7 }
+    groups:
+      go:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  # The tool modfiles require everything as indirect (the tool directive
+  # does not count as a direct use), so all dependency types are allowed.
+  - package-ecosystem: gomod
+    directories:
       - "/tools"
       - "/tools/actionlint"
       - "/tools/govulncheck"
       - "/tools/sqlc"
     schedule: { interval: weekly, day: monday }
     cooldown: { default-days: 7 }
+    allow:
+      - dependency-type: all
     groups:
-      go:
+      go-tools:
         patterns: ["*"]
         update-types: [minor, patch]
 

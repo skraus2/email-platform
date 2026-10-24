@@ -16,7 +16,9 @@ warn() { # title, message
 vulncheck="$(go tool -modfile=tools/govulncheck/go.mod -n govulncheck)"
 found=0
 for modfile in tools/go.mod tools/*/go.mod; do
-  for tool in $(sed -n 's|^tool .*/||p' "$modfile"); do
+  tools="$(sed -n 's|^tool .*/||p' "$modfile")"
+  [[ -n "$tools" ]] || { echo "vulncheck-dev: no single-line tool directive in $modfile" >&2; exit 1; }
+  for tool in $tools; do
     bin="$(go tool -modfile="$modfile" -n "$tool")"
     echo "vulncheck-dev: $tool ($modfile)"
     rc=0
@@ -33,11 +35,14 @@ done
 echo "vulncheck-dev: dashboard development dependencies"
 # The exit code mixes findings and failures; the JSON report tells them apart.
 audit="$("$PNPM" audit --dev --json || true)"
-counts="$(jq -er '.metadata.vulnerabilities | "\(.critical) critical, \(.high) high, \(.moderate) moderate, \(.low) low"' <<<"$audit")" ||
+jq -e '.metadata.vulnerabilities | [.critical, .high, .moderate, .low] | all(type == "number")' <<<"$audit" >/dev/null ||
   { echo "vulncheck-dev: pnpm audit returned no report" >&2; echo "$audit" | head -20 >&2; exit 1; }
+counts="$(jq -r '.metadata.vulnerabilities | "\(.critical) critical, \(.high) high, \(.moderate) moderate, \(.low) low"' <<<"$audit")"
+total="$(jq '.metadata.vulnerabilities | .critical + .high + .moderate + .low' <<<"$audit")"
 echo "$counts"
-jq -r '.advisories[]? | "  \(.severity)\t\(.module_name)\t\(.github_advisory_id // .id)\t\(.title)"' <<<"$audit"
-if [[ "$(jq '[.metadata.vulnerabilities[]] | add' <<<"$audit")" != 0 ]]; then
+# Advisory text is untrusted: control characters could start a CI command.
+jq -r '.advisories[]? | "  \(.severity)\t\(.module_name)\t\(.github_advisory_id // .id)\t\(.title)" | gsub("[[:cntrl:]]"; " ")' <<<"$audit"
+if [[ "$total" != 0 ]]; then
   found=1
   warn "npm development dependencies" "$counts"
 fi
