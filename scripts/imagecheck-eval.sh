@@ -4,6 +4,9 @@
 #   - FAIL: a High or Critical vulnerability with a fixed version available
 #     (the image can be updated), unless an ignore rule suppressed it,
 #   - FAIL: an ignore rule without a vulnerability ID or without a reason,
+#   - FAIL: an ignore rule whose reason has no `revisit by YYYY-MM-DD`, or
+#     whose revisit date is <today> or earlier (re-assess the rule, then
+#     remove it or give it a new reason and date),
 #   - FAIL: an ignore rule that suppressed nothing in any image (stale),
 #   - FAIL: a file that is not a complete grype report, two reports for one
 #     image, or a scan configuration that drops findings outside the ignore
@@ -15,11 +18,16 @@
 # Grype's four built-in ignore rules (kernel header packages, matched
 # indirectly) are not ours; they are recognised exactly and skipped in the
 # rule checks.
-# Usage: imagecheck-eval.sh <report.json>...
+# Usage: imagecheck-eval.sh <today YYYY-MM-DD> <report.json>...
 set -euo pipefail
-[[ $# -gt 0 ]] || { echo "usage: $0 <report.json>..." >&2; exit 64; }
+[[ $# -gt 1 ]] || { echo "usage: $0 <today YYYY-MM-DD> <report.json>..." >&2; exit 64; }
+today="$1"
+shift
 
-out=$(jq -nr --argjson files $# '
+out=$(jq -nr --arg today "$today" --argjson files $# '
+  # A plain, real calendar date (2026-02-30 is not one).
+  def isodate: type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
+    and (try (strptime("%Y-%m-%d") | mktime | strftime("%Y-%m-%d")) catch "") == .;
   def high: .vulnerability.severity == "High" or .vulnerability.severity == "Critical";
   def fixed: .vulnerability.fix.state == "fixed";
   def row: [.vulnerability.id, .vulnerability.severity, .artifact.name, .artifact.version,
@@ -46,8 +54,11 @@ out=$(jq -nr --argjson files $# '
       (if .match.stock["using-cpes"] != true then "match.stock.using-cpes" else empty end)
     ] | map("\($i): \(.)")[];
   def rulename: "\(.vulnerability)\(if (.package.location // "") != "" then " at " + .package.location else "" end)";
+  # The text after "revisit by" up to the next blank, without trailing punctuation.
+  def revisit: (.reason // "") | (capture("revisit by (?<d>\\S*)") | .d | sub("[.,;:)]+$"; "")) // null;
 
-  [inputs | {image: (input_filename | split("/") | last | rtrimstr(".json")), ok: complete} + (if type == "object" then . else {} end)] as $all
+  (if $today | isodate then . else error("today \($today | tojson) is not a YYYY-MM-DD date") end)
+  | [inputs | {image: (input_filename | split("/") | last | rtrimstr(".json")), ok: complete} + (if type == "object" then . else {} end)] as $all
   | ([$all[] | select(.ok | not) | .image]
      + (if ($all | length) != $files then ["\($files) files, \($all | length) reports (empty file?)"] else [] end)
      + [$all | group_by(.image)[] | select(length > 1) | "\(.[0].image) twice"]) as $broken
@@ -59,6 +70,12 @@ out=$(jq -nr --argjson files $# '
   | [$reports[] | .image as $i | (.ignoredMatches // [])[] | {image: $i, row: row, rules: .appliedIgnoreRules}] as $ignored
   | ($reports[0].descriptor.configuration.ignore // [] | map(select(builtin | not))) as $rules
   | [$rules[] | select(.vulnerability == "" or (.reason // "") == "")] as $invalid
+  | [$rules[] | revisit as $d
+     | if $d == null then "\(rulename): no revisit date"
+       elif ($d | isodate | not) then "\(rulename): revisit date \($d | tojson) is not YYYY-MM-DD"
+       else empty end] as $undated
+  | [$rules[] | revisit as $d | select($d | isodate) | select($d <= $today)
+     | "\(rulename): revisit by \($d), today is \($today)"] as $expired
   | [$ignored[].rules[] | key] as $applied
   | [$rules[] | select(key as $k | $applied | any(. == $k) | not)] as $stale
   | ($high | map(select(.fixed))) as $fail
@@ -71,11 +88,13 @@ out=$(jq -nr --argjson files $# '
       (if ($lowfix | length) > 0 then "reported (fix available, below High):", ($lowfix[] | "  \(.image)\t\(.row | join("\t"))") else empty end),
       (if ($ignored | length) > 0 then "ignored by rule:", ($ignored[] | "  \(.image)\t\(.row | join("\t"))\t\(.rules | map(.reason) | join("; "))") else empty end),
       (if ($invalid | length) > 0 then "FAIL ignore rules need a vulnerability ID and a reason:", ($invalid[] | "  \(key | tojson)") else empty end),
+      (if ($undated | length) > 0 then "FAIL ignore rules need \"revisit by YYYY-MM-DD\" in the reason:", ($undated[] | "  \(.)") else empty end),
+      (if ($expired | length) > 0 then "FAIL ignore rules reached their revisit date (re-assess: remove the rule, or give it a new reason and date):", ($expired[] | "  \(.)") else empty end),
       (if ($stale | length) > 0 then "FAIL stale ignore rules (match nothing any more, remove them):", ($stale[] | "  \(rulename): \(.reason)") else empty end),
       (if ($broken | length) > 0 then "FAIL not a complete grype report:", ($broken[] | "  \(.)") else empty end),
       (if ($drift | length) > 0 then "FAIL scan configuration drops findings outside the ignore rules:", ($drift[] | "  \(.)") else empty end),
       (if $rulesets > 1 then "FAIL reports were scanned with different ignore rules" else empty end),
-      (if ($fail + $invalid + $stale + $broken + $drift | length) > 0 or $rulesets > 1 or ($reports | length) == 0 then "imagecheck: FAIL" else "imagecheck: PASS" end)
+      (if ($fail + $invalid + $undated + $expired + $stale + $broken + $drift | length) > 0 or $rulesets > 1 or ($reports | length) == 0 then "imagecheck: FAIL" else "imagecheck: PASS" end)
     )
 ' "$@")
 echo "$out"

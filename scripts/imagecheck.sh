@@ -81,4 +81,4 @@ done
 
 # Optional copy of the raw grype reports for inspection.
 if [[ -n "${IMAGECHECK_REPORTS:-}" ]]; then mkdir -p "$IMAGECHECK_REPORTS" && cp "$work"/*.json "$IMAGECHECK_REPORTS"/; fi
-./scripts/imagecheck-eval.sh "$work"/*.json
+./scripts/imagecheck-eval.sh "$(date -u +%Y-%m-%d)" "$work"/*.json

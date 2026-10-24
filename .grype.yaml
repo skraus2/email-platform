@@ -1,7 +1,9 @@
 # Image scan configuration (make imagecheck). Ignore rules suppress a
 # finding only when it is not exploitable here or cannot be fixed by an
 # image update yet. Every rule needs `vulnerability` and a `reason` saying
-# why it is safe and when to revisit; a rule that no longer matches any
+# why it is safe, ending in "revisit by YYYY-MM-DD". The date is mandatory
+# and enforced: from that day on (UTC) the scan fails until the rule is
+# re-assessed and removed or re-dated. A rule that no longer matches any
 # finding fails the scan and must be removed.
 check-for-app-update: false
 ignore:
