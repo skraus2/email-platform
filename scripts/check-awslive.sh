@@ -41,7 +41,7 @@ done < <(search -l -E 'awslive|SES_LIVE_TEST' -- '*.go')
 # never spells "awslive" (a variable set outside the repo) is not detected;
 # SES_LIVE_TEST=1 and the complete SES configuration still guard a run.
 allowed=(
-	'Makefile:lint: lint-go lint-web lint-ci sqlc-check lint-awslive ## Run all linters'
+	'Makefile:lint: lint-go lint-web lint-ci sqlc-check lint-awslive lint-pins ## Run all linters'
 	'Makefile:.PHONY: lint-awslive'
 	'Makefile:lint-awslive: ## Prove the live AWS tests are excluded from every gate'
 	'Makefile:	./scripts/check-awslive.sh'

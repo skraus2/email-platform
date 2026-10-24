@@ -65,6 +65,8 @@ jobs:
         run: go tool -modfile=tools/actionlint/go.mod actionlint
       - name: live AWS tests excluded from every gate
         run: ./scripts/check-awslive.sh
+      - name: Pinned versions agree across files
+        run: ./scripts/check-pins.sh
       - name: Unit tests
         run: go test -race ./...
       - name: Migrations
@@ -91,6 +93,8 @@ jobs:
         run: make test-alerts
       - name: Secrets rendering from SSM (stubbed aws CLI)
         run: ./deploy/bin/render-env_test.sh
+      - name: Pin consistency check (fixtures)
+        run: ./scripts/check-pins_test.sh
 
   deploy-check:
     runs-on: ubuntu-24.04

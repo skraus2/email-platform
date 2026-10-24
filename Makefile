@@ -71,7 +71,7 @@ fmt-check: ## Fail if any file is not formatted
 	$(PNPM) run format:check
 
 .PHONY: lint
-lint: lint-go lint-web lint-ci sqlc-check lint-awslive ## Run all linters
+lint: lint-go lint-web lint-ci sqlc-check lint-awslive lint-pins ## Run all linters
 
 .PHONY: sqlc
 sqlc: ## Regenerate internal/store from db/queries + db/migrations
@@ -89,6 +89,10 @@ lint-ci: ## Lint GitHub Actions workflows (pinned actionlint)
 .PHONY: lint-awslive
 lint-awslive: ## Prove the live AWS tests are excluded from every gate
 	./scripts/check-awslive.sh
+
+.PHONY: lint-pins
+lint-pins: ## Versions pinned in several files (Go, Node, Prometheus, Alertmanager) agree
+	./scripts/check-pins.sh
 
 .PHONY: vet-awslive
 vet-awslive: ## Type-check the live AWS tests (never runs them, no AWS access)
@@ -109,6 +113,7 @@ test: ## Go, dashboard and deploy script unit tests (no external dependencies)
 	$(PNPM) --filter dashboard test
 	./deploy/bin/render-env_test.sh
 	./scripts/imagecheck-eval_test.sh
+	./scripts/check-pins_test.sh
 
 .PHONY: test-integration
 test-integration: ## Go integration tests against Compose PostgreSQL (needs `make up`)
