@@ -30,7 +30,7 @@ DST_URL="$base/$DST?sslmode=disable"
 ADDR="127.0.0.1:${RESTORE_PORT:-18280}"
 KEK_OLD="$(openssl rand -base64 32)"
 KEK_NEW="$(openssl rand -base64 32)"
-TMP="$(mktemp -d)"
+TMP="$(mktemp -d "${TMPDIR:-/tmp}/tmp.XXXXXX")"
 umask 077
 
 # PostgreSQL client tools run inside the server container, so they match

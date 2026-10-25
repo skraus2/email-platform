@@ -28,7 +28,7 @@ source "$(dirname "$0")/local-guard.sh"
 unset DATABASE_URL
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-CHECK_DIR="$(mktemp -d)"
+CHECK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/tmp.XXXXXX")"
 umask 077
 PROJECT="ep-deploy-check-$$"
 dc() { docker compose -p "$PROJECT" -f "$ROOT/deploy/compose.yaml" -f "$ROOT/deploy/check/compose.yaml" "$@"; }

@@ -18,7 +18,7 @@ source "$(dirname "$0")/local-guard.sh"
 export WEBHOOK_KEKS="${WEBHOOK_KEKS:-run:$(openssl rand -base64 32)}"
 ADDR="127.0.0.1:${RESILIENCE_PORT:-18081}"
 MAILPIT_URL="${TEST_MAILPIT_URL:-http://127.0.0.1:8025}"
-TMP="$(mktemp -d)"
+TMP="$(mktemp -d "${TMPDIR:-/tmp}/tmp.XXXXXX")"
 API_PID="" WORKER_PID=""
 
 cleanup() {

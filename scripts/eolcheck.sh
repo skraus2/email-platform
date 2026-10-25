@@ -14,7 +14,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 WARN_DAYS="${EOL_WARN_DAYS:-90}"
-work="$(mktemp -d)"
+work="$(mktemp -d "${TMPDIR:-/tmp}/tmp.XXXXXX")"
 trap 'rm -rf "$work"' EXIT
 cycles=()
 

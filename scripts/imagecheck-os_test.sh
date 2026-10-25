@@ -6,7 +6,7 @@
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
-work="$(mktemp -d)"
+work="$(mktemp -d "${TMPDIR:-/tmp}/tmp.XXXXXX")"
 trap 'rm -rf "$work"' EXIT
 failures=0
 fail() { echo "FAIL: $*" >&2; failures=$((failures + 1)); }

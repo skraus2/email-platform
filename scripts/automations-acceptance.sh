@@ -20,7 +20,7 @@ export WEBHOOK_KEKS="${WEBHOOK_KEKS:-run:$(openssl rand -base64 32)}"
 ADDR="127.0.0.1:${ACCEPT_PORT:-18180}"
 RECV_ADDR="127.0.0.1:${ACCEPT_RECV_PORT:-18190}"
 MAILPIT_URL="${TEST_MAILPIT_URL:-http://127.0.0.1:8025}"
-TMP="$(mktemp -d)"
+TMP="$(mktemp -d "${TMPDIR:-/tmp}/tmp.XXXXXX")"
 API_PID="" WORKER_PID="" RECV_PID=""
 
 cleanup() {

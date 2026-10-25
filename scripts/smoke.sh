@@ -29,7 +29,7 @@ RECV_ADDR="127.0.0.1:${SMOKE_RECV_PORT:-18090}"
 ADMIN_ADDR="127.0.0.1:${SMOKE_ADMIN_PORT:-18082}"
 # The worker's Prometheus listener.
 METRICS_ADDR="127.0.0.1:${SMOKE_METRICS_PORT:-18083}"
-TMP="$(mktemp -d)"
+TMP="$(mktemp -d "${TMPDIR:-/tmp}/tmp.XXXXXX")"
 cleanup() {
   [[ -n "${hookkey:-}" ]] && "$TMP/admin" key revoke -prefix "$(cut -d_ -f2 <<<"$hookkey")" >/dev/null 2>&1 || true
   [[ -n "${key:-}" ]] && "$TMP/admin" key revoke -prefix "$(cut -d_ -f2 <<<"$key")" >/dev/null 2>&1 || true

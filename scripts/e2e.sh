@@ -35,7 +35,7 @@ params=""
 [[ "$TEST_DATABASE_URL" == *\?* ]] && params="?${TEST_DATABASE_URL#*\?}"
 export DATABASE_URL="${base%/*}/$DB$params"
 
-TMP="$(mktemp -d)"
+TMP="$(mktemp -d "${TMPDIR:-/tmp}/tmp.XXXXXX")"
 chmod 700 "$TMP"
 umask 077
 cleanup() {

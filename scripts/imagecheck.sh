@@ -21,7 +21,7 @@ cd "$(dirname "$0")/.."
 GRYPE_IMAGE=anchore/grype:v0.121.0@sha256:621d56d1d68106b787022c81546f7e0a36202a25d1239f0c20195fab8c16f7ea
 DB_DIR="${GRYPE_DB_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/email-platform/grype-db}"
 mkdir -p "$DB_DIR"
-work="$(mktemp -d)"
+work="$(mktemp -d "${TMPDIR:-/tmp}/tmp.XXXXXX")"
 trap 'rm -rf "$work"' EXIT
 
 # The scanner parses untrusted image archives: it runs without network,

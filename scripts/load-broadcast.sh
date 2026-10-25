@@ -17,7 +17,7 @@ source "$(dirname "$0")/local-guard.sh"
 export WEBHOOK_KEKS="${WEBHOOK_KEKS:-run:$(openssl rand -base64 32)}"
 unset LOADTEST_API_KEY # never revoke a key from the caller's environment
 ADDR="127.0.0.1:${LOAD_PORT:-18082}"
-TMP="$(mktemp -d)"
+TMP="$(mktemp -d "${TMPDIR:-/tmp}/tmp.XXXXXX")"
 API_PID="" WORKER_PID=""
 cleanup() {
   # Revoke the run's key instead of leaving an active credential behind.

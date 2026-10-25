@@ -3,7 +3,7 @@
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
-work="$(mktemp -d)"
+work="$(mktemp -d "${TMPDIR:-/tmp}/tmp.XXXXXX")"
 trap 'rm -rf "$work"' EXIT
 mkdir -p "$work/bin"
 failures=0
