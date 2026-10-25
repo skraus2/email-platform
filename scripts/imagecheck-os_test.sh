@@ -16,7 +16,7 @@ report() { mkdir -p "$work/$1"; printf '{"descriptor":{"name":"grype"},"matches"
 distro() { printf '{"name":"%s","version":"%s","idLike":[]}' "$1" "$2"; }
 # The scanned stack as grype reports it today: the OSLESS images included.
 stack() {
-  report "$1" app "$(distro debian 12.15)"
+  report "$1" app "$(distro debian 13.7)"
   report "$1" caddy "$(distro alpine 3.23.7)"
   report "$1" dashboard "$(distro alpine 3.24.3)"
   report "$1" netns "$(distro alpine 3.24)"
@@ -37,7 +37,7 @@ expect PASS "stack" 1
 want='alpine-linux 3.23 caddy image (alpine 3.23.7)
 alpine-linux 3.24 dashboard image (alpine 3.24.3)
 alpine-linux 3.24 netns image (alpine 3.24)
-debian 12 app image (debian 12.15)'
+debian 13 app image (debian 13.7)'
 [[ "$(sort "$work/cycles")" == "$want" ]] || fail "stack: cycles wrong: $(cat "$work/cycles")"
 grep -q "^  caddy.alpine 3.23.7.-> alpine-linux 3.23$" "$work/out" || fail "stack: caddy row wrong: $(cat "$work/out")"
 grep -q "^  prometheus.busybox 1.38.0.no published lifecycle (OSLESS)$" "$work/out" || fail "stack: prometheus row wrong: $(cat "$work/out")"

@@ -89,7 +89,7 @@ for want in "go 1.27 go.mod" "nodejs 24 .nvmrc" "postgresql 18 compose.yaml" "pr
 done
 [[ $(wc -l <"$work/out") -eq 4 ]] || fail "list: unexpected entries: $(cat "$work/out")"
 # The image operating systems come from the image scan, not from Dockerfiles.
-printf 'FROM gcr.io/distroless/static-debian12:nonroot@sha256:bb\n' >"$repo/Dockerfile"
+printf 'FROM gcr.io/distroless/static-debian13:nonroot@sha256:bb\n' >"$repo/Dockerfile"
 list && grep -qE '^(debian|alpine-linux) ' "$work/out" && fail "list: operating system read from a Dockerfile: $(cat "$work/out")"
 fixture; printf 'module x\n\ngo 1.26.0\n' >"$repo/go.mod"
 list && fail "list: go.mod without toolchain accepted"
