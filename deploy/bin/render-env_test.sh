@@ -15,6 +15,8 @@ cat >"$work/bin/aws" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$@" >"$WORK/args"
 env >"$WORK/env"
+# Like the snap-packaged CLI: nothing reaches stdout unless it is a pipe.
+[[ ! -e "$WORK/pipe-only" || -p /dev/stdout ]] || exit 0
 cat "$WORK/params"
 exit "$(cat "$WORK/exit" 2>/dev/null || echo 0)"
 STUB
@@ -45,6 +47,9 @@ leaked && fail "a value reached stdout/stderr"
 grep -qx -- '--with-decryption' "$work/args" && grep -qx '/email-platform/prod/' "$work/args" && grep -qx 'eu-central-1' "$work/args" ||
   fail "aws called with $(tr '\n' ' ' <"$work/args")"
 [[ -z "$(find "$work/run" -name '.app.env.*')" ]] || fail "temporary files left behind"
+touch "$work/pipe-only"
+render || fail "CLI that writes only to a pipe: $(cat "$work/stderr")"
+rm "$work/pipe-only"
 render HTTPS_PROXY=http://proxy.example:3128 AWS_CA_BUNDLE=/x || fail "proxy settings refused: $(cat "$work/stderr")"
 grep -qE '^(HTTPS_PROXY|AWS_CA_BUNDLE)=' "$work/env" && fail "aws ran with a proxy or a custom CA bundle"
 for want in AWS_SHARED_CREDENTIALS_FILE=/dev/null AWS_CONFIG_FILE=/dev/null AWS_IGNORE_CONFIGURED_ENDPOINT_URLS=true AWS_EC2_METADATA_V1_DISABLED=true; do
