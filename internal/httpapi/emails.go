@@ -192,8 +192,7 @@ func decodeStrict(w http.ResponseWriter, r *http.Request, v any) (int, string, s
 // whole number of MiB or, below 1 MiB, of KiB).
 func decodeStrictLimit(w http.ResponseWriter, r *http.Request, v any, limit int64) (int, string, string) {
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, limit))
-	var tooBig *http.MaxBytesError
-	if errors.As(err, &tooBig) {
+	if _, ok := errors.AsType[*http.MaxBytesError](err); ok {
 		if limit < 1<<20 {
 			return http.StatusRequestEntityTooLarge, "payload_too_large", fmt.Sprintf("request body must be at most %d KiB", limit>>10)
 		}
@@ -241,8 +240,8 @@ func jsonProblem(err error) string {
 func exactKeys(body []byte, v any) error {
 	allowed := map[string]bool{}
 	t := reflect.TypeOf(v).Elem()
-	for i := range t.NumField() {
-		if name, _, _ := strings.Cut(t.Field(i).Tag.Get("json"), ","); name != "" && name != "-" {
+	for field := range t.Fields() {
+		if name, _, _ := strings.Cut(field.Tag.Get("json"), ","); name != "" && name != "-" {
 			allowed[name] = true
 		}
 	}

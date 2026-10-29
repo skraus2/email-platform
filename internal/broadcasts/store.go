@@ -407,7 +407,7 @@ func (s *Store) List(ctx context.Context, projectID uuid.UUID, status string, af
 		st = &status
 	}
 	rows, err := store.New(s.pool).ListBroadcasts(ctx, store.ListBroadcastsParams{
-		ProjectID: projectID, BeforeID: before, Status: st, RowLimit: int32(limit + 1), //nolint:gosec // limit ≤ MaxPage
+		ProjectID: projectID, BeforeID: before, Status: st, RowLimit: int32(limit + 1), // limit ≤ MaxPage
 	})
 	if err != nil {
 		return nil, false, fmt.Errorf("list broadcasts: %w", err)

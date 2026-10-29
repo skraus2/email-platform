@@ -230,7 +230,7 @@ func writeJSONWith(w http.ResponseWriter, status int, v any, escapeHTML bool) {
 	w.WriteHeader(status)
 	enc := json.NewEncoder(w)
 	enc.SetEscapeHTML(escapeHTML)
-	_ = enc.Encode(v) // client gone; nothing useful to do
+	_ = enc.Encode(v) //nolint:errchkjson // the values are API response types; a write error means the client is gone
 }
 
 // writeUnavailable answers "dependency down, retry later" with a short

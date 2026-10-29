@@ -120,8 +120,7 @@ func (e *snoozeError) Error() string { return "snoozed for " + e.d.String() }
 
 // SnoozeDelay reports whether err is a snooze and for how long.
 func SnoozeDelay(err error) (time.Duration, bool) {
-	var s *snoozeError
-	if errors.As(err, &s) {
+	if s, ok := errors.AsType[*snoozeError](err); ok {
 		return s.d, true
 	}
 	return 0, false
@@ -371,7 +370,10 @@ func NewWorker(cfg WorkerConfig) (*Worker, error) {
 // worker: River would cancel running jobs mid-send on context cancellation.
 // Shutdown always goes through Stop, which lets in-flight jobs finish.
 func (w *Worker) Start(ctx context.Context) error {
-	return w.client.Start(context.WithoutCancel(ctx))
+	if err := w.client.Start(context.WithoutCancel(ctx)); err != nil {
+		return fmt.Errorf("start job worker: %w", err)
+	}
+	return nil
 }
 
 // Stop waits for running jobs up to timeout, then cancels the rest. A job
@@ -385,7 +387,10 @@ func (w *Worker) Stop(timeout time.Duration) error {
 	}
 	hard, cancelHard := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancelHard()
-	return w.client.StopAndCancel(hard)
+	if err := w.client.StopAndCancel(hard); err != nil {
+		return fmt.Errorf("stop job worker: %w", err)
+	}
+	return nil
 }
 
 type sendEmailWorker struct {
@@ -403,8 +408,7 @@ func (w *sendEmailWorker) NextRetry(job *river.Job[SendEmailArgs]) time.Time {
 
 func (w *sendEmailWorker) Work(ctx context.Context, job *river.Job[SendEmailArgs]) error {
 	err := w.fn(ctx, job.Args, Attempt{JobID: job.ID, Number: job.Attempt, MaxAttempts: job.MaxAttempts})
-	var snooze *snoozeError
-	if errors.As(err, &snooze) {
+	if snooze, ok := errors.AsType[*snoozeError](err); ok {
 		return river.JobSnooze(snoozeFor(snooze.d))
 	}
 	return err
@@ -457,8 +461,7 @@ func (w *broadcastFanoutWorker) NextRetry(job *river.Job[BroadcastFanoutArgs]) t
 
 func (w *broadcastFanoutWorker) Work(ctx context.Context, job *river.Job[BroadcastFanoutArgs]) error {
 	err := w.fn(ctx, job.Args, Attempt{JobID: job.ID, Number: job.Attempt, MaxAttempts: job.MaxAttempts})
-	var snooze *snoozeError
-	if errors.As(err, &snooze) {
+	if snooze, ok := errors.AsType[*snoozeError](err); ok {
 		return river.JobSnooze(snoozeFor(snooze.d))
 	}
 	return err
@@ -484,8 +487,7 @@ func (w *automationWorker[T]) NextRetry(job *river.Job[T]) time.Time {
 
 func (w *automationWorker[T]) Work(ctx context.Context, job *river.Job[T]) error {
 	err := w.fn(ctx, job.Args, Attempt{JobID: job.ID, Number: job.Attempt, MaxAttempts: job.MaxAttempts})
-	var snooze *snoozeError
-	if errors.As(err, &snooze) {
+	if snooze, ok := errors.AsType[*snoozeError](err); ok {
 		return river.JobSnooze(snoozeFor(snooze.d))
 	}
 	return err
@@ -514,8 +516,7 @@ func (w *deliverWebhookWorker) Timeout(*river.Job[DeliverWebhookArgs]) time.Dura
 
 func (w *deliverWebhookWorker) Work(ctx context.Context, job *river.Job[DeliverWebhookArgs]) error {
 	err := w.fn(ctx, job.Args, Attempt{JobID: job.ID, Number: job.Attempt, MaxAttempts: job.MaxAttempts})
-	var snooze *snoozeError
-	if errors.As(err, &snooze) {
+	if snooze, ok := errors.AsType[*snoozeError](err); ok {
 		return river.JobSnooze(snoozeFor(snooze.d))
 	}
 	return err

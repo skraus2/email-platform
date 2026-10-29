@@ -239,8 +239,14 @@ func TestGetEmailIsolationBetweenProjects(t *testing.T) {
 	if foreignCode != http.StatusNotFound || unknownCode != http.StatusNotFound {
 		t.Fatalf("foreign = %d, unknown = %d, want 404 both", foreignCode, unknownCode)
 	}
-	fj, _ := json.Marshal(foreign)
-	uj, _ := json.Marshal(unknown)
+	fj, err := json.Marshal(foreign)
+	if err != nil {
+		t.Fatal(err)
+	}
+	uj, err := json.Marshal(unknown)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if string(fj) != string(uj) {
 		t.Fatalf("foreign 404 differs from unknown 404: %s vs %s", fj, uj)
 	}

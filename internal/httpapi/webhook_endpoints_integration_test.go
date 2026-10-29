@@ -222,7 +222,7 @@ func TestCreateEndpointCapConcurrent(t *testing.T) {
 
 // post sends a JSON POST with a bearer token and returns status and body.
 func post(url, token, body string) (int, map[string]any, error) {
-	req, err := http.NewRequestWithContext(context.Background(), "POST", url, strings.NewReader(body))
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, url, strings.NewReader(body))
 	if err != nil {
 		return 0, nil, err
 	}

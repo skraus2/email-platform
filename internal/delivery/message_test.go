@@ -124,7 +124,7 @@ func TestBuildMessageFoldsLongSubject(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, line := range strings.Split(string(raw), "\r\n") {
+	for line := range strings.SplitSeq(string(raw), "\r\n") {
 		if len(line) > 998 {
 			t.Fatalf("line longer than 998 octets: %d", len(line))
 		}

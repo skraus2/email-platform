@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -22,9 +23,7 @@ func newTestServer(t *testing.T, checks ...Check) (*Server, *bytes.Buffer) {
 func do(t *testing.T, s *Server, method, target string, hdr http.Header) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(method, target, nil)
-	for k, v := range hdr {
-		req.Header[k] = v
-	}
+	maps.Copy(req.Header, hdr)
 	rec := httptest.NewRecorder()
 	s.Handler().ServeHTTP(rec, req)
 	return rec

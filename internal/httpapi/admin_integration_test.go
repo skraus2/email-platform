@@ -108,7 +108,7 @@ type reply struct {
 func (a *adminStack) login(t *testing.T) string {
 	t.Helper()
 	resp, body, raw := call(t, a.admin.URL, "POST", "/admin/v1/sessions", "", `{"username":"ops","password":"`+adminPassword+`"}`)
-	if resp.StatusCode != 201 {
+	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("login: %d %s", resp.StatusCode, raw)
 	}
 	return "Session " + body["token"].(string)
@@ -136,10 +136,10 @@ func TestAdminAPIIsSeparateFromTheProjectAPI(t *testing.T) {
 	token := strings.TrimPrefix(session, "Session ")
 
 	// Neither listener routes the other's paths.
-	if resp, _, _ := call(t, a.srv.URL, "GET", "/admin/v1/me", session, ""); resp.StatusCode != 404 {
+	if resp, _, _ := call(t, a.srv.URL, "GET", "/admin/v1/me", session, ""); resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("admin route on the public listener: %d", resp.StatusCode)
 	}
-	if resp, _, _ := call(t, a.admin.URL, "GET", "/v1/emails", "Bearer "+key, ""); resp.StatusCode != 404 {
+	if resp, _, _ := call(t, a.admin.URL, "GET", "/v1/emails", "Bearer "+key, ""); resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("/v1 on the admin listener: %d", resp.StatusCode)
 	}
 	// A project key never opens an admin route; a session never opens /v1.
@@ -150,18 +150,18 @@ func TestAdminAPIIsSeparateFromTheProjectAPI(t *testing.T) {
 		}
 		for _, authz := range []string{"", "Bearer " + key, "Bearer " + token, "Session ", "Session nope", "Basic b3BzOng="} {
 			resp, m, _ := call(t, a.admin.URL, r.method, r.path, authz, body)
-			if resp.StatusCode != 401 || errorCode(m) != "unauthenticated" {
+			if resp.StatusCode != http.StatusUnauthorized || errorCode(m) != "unauthenticated" {
 				t.Errorf("%s %s with %q: %d %v", r.method, r.path, authz, resp.StatusCode, m)
 			}
 		}
 		// The session in a cookie is not accepted either.
 		resp, _, _ := call(t, a.admin.URL, r.method, r.path, "", body, "Cookie", "ep_session="+token)
-		if resp.StatusCode != 401 {
+		if resp.StatusCode != http.StatusUnauthorized {
 			t.Errorf("%s %s with a session cookie: %d", r.method, r.path, resp.StatusCode)
 		}
 	}
 	for _, authz := range []string{session, "Bearer " + token} {
-		if resp, _, _ := call(t, a.srv.URL, "GET", "/v1/emails", authz, ""); resp.StatusCode != 401 {
+		if resp, _, _ := call(t, a.srv.URL, "GET", "/v1/emails", authz, ""); resp.StatusCode != http.StatusUnauthorized {
 			t.Errorf("/v1 with %q: %d", authz[:7], resp.StatusCode)
 		}
 	}
@@ -172,25 +172,25 @@ func TestAdminLoginLifecycle(t *testing.T) {
 	a := newAdminStack(t)
 	for _, body := range []string{`{"username":"ops","password":"wrong password!!"}`, `{"username":"nobody","password":"` + adminPassword + `"}`} {
 		resp, m, raw := call(t, a.admin.URL, "POST", "/admin/v1/sessions", "", body)
-		if resp.StatusCode != 401 || errorCode(m) != "invalid_credentials" || strings.Contains(raw, "nobody") {
+		if resp.StatusCode != http.StatusUnauthorized || errorCode(m) != "invalid_credentials" || strings.Contains(raw, "nobody") {
 			t.Fatalf("failed login: %d %s", resp.StatusCode, raw)
 		}
 	}
-	if resp, m, _ := call(t, a.admin.URL, "POST", "/admin/v1/sessions", "", `{"username":"ops","password":"x","extra":1}`); resp.StatusCode != 400 || errorCode(m) != "invalid_json" {
+	if resp, m, _ := call(t, a.admin.URL, "POST", "/admin/v1/sessions", "", `{"username":"ops","password":"x","extra":1}`); resp.StatusCode != http.StatusBadRequest || errorCode(m) != "invalid_json" {
 		t.Fatalf("unknown field: %d %v", resp.StatusCode, m)
 	}
 	session := a.login(t)
 	resp, me, _ := call(t, a.admin.URL, "GET", "/admin/v1/me", session, "")
-	if resp.StatusCode != 200 || me["username"] != "ops" || me["session_expires_at"] == nil {
+	if resp.StatusCode != http.StatusOK || me["username"] != "ops" || me["session_expires_at"] == nil {
 		t.Fatalf("me: %d %v", resp.StatusCode, me)
 	}
 	if cc := resp.Header.Get("Cache-Control"); cc != "no-store" {
 		t.Fatalf("Cache-Control %q", cc)
 	}
-	if resp, _, _ := call(t, a.admin.URL, "DELETE", "/admin/v1/sessions/current", session, ""); resp.StatusCode != 204 {
+	if resp, _, _ := call(t, a.admin.URL, "DELETE", "/admin/v1/sessions/current", session, ""); resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("logout: %d", resp.StatusCode)
 	}
-	if resp, _, _ := call(t, a.admin.URL, "GET", "/admin/v1/me", session, ""); resp.StatusCode != 401 {
+	if resp, _, _ := call(t, a.admin.URL, "GET", "/admin/v1/me", session, ""); resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("me after logout: %d", resp.StatusCode)
 	}
 	// Lockout surfaces as 429 with Retry-After in whole seconds.
@@ -198,7 +198,7 @@ func TestAdminLoginLifecycle(t *testing.T) {
 		call(t, a.admin.URL, "POST", "/admin/v1/sessions", "", `{"username":"ops","password":"wrong password!!"}`)
 	}
 	resp, m, _ := call(t, a.admin.URL, "POST", "/admin/v1/sessions", "", `{"username":"ops","password":"`+adminPassword+`"}`)
-	if resp.StatusCode != 429 || errorCode(m) != "login_locked" || resp.Header.Get("Retry-After") == "" {
+	if resp.StatusCode != http.StatusTooManyRequests || errorCode(m) != "login_locked" || resp.Header.Get("Retry-After") == "" {
 		t.Fatalf("locked: %d %v %q", resp.StatusCode, m, resp.Header.Get("Retry-After"))
 	}
 }
@@ -213,7 +213,7 @@ func TestAdminReadEndpoints(t *testing.T) {
 	get := func(path string) map[string]any {
 		t.Helper()
 		resp, m, raw := call(t, a.admin.URL, "GET", path, session, "")
-		if resp.StatusCode != 200 {
+		if resp.StatusCode != http.StatusOK {
 			t.Fatalf("GET %s: %d %s", path, resp.StatusCode, raw)
 		}
 		return m
@@ -291,7 +291,7 @@ func TestAdminReadEndpoints(t *testing.T) {
 	if len(page1["data"].([]any)) != 1 || page1["next_cursor"] == nil {
 		t.Fatalf("page 1 %v", page1)
 	}
-	if resp, m, _ := call(t, a.admin.URL, "GET", "/admin/v1/emails?status=nope", session, ""); resp.StatusCode != 400 || errorCode(m) != "invalid_filter" {
+	if resp, m, _ := call(t, a.admin.URL, "GET", "/admin/v1/emails?status=nope", session, ""); resp.StatusCode != http.StatusBadRequest || errorCode(m) != "invalid_filter" {
 		t.Fatalf("bad status: %d %v", resp.StatusCode, m)
 	}
 
@@ -312,7 +312,7 @@ func TestAdminReadEndpoints(t *testing.T) {
 		t.Fatalf("deliveries %v", dl)
 	}
 	for _, p := range []string{"/admin/v1/emails/" + uuid.NewString(), "/admin/v1/emails/nope", "/admin/v1/emails/" + uuid.NewString() + "/events"} {
-		if resp, _, _ := call(t, a.admin.URL, "GET", p, session, ""); resp.StatusCode != 404 {
+		if resp, _, _ := call(t, a.admin.URL, "GET", p, session, ""); resp.StatusCode != http.StatusNotFound {
 			t.Errorf("%s: %d", p, resp.StatusCode)
 		}
 	}
@@ -329,10 +329,10 @@ func TestAdminReadEndpoints(t *testing.T) {
 		t.Fatalf("version 1 %v", v1)
 	}
 	resp, pv, raw := call(t, a.admin.URL, "POST", "/admin/v1/templates/"+tid+"/versions/2/preview", session, `{"variables":{"name":"<b>x</b>"}}`)
-	if resp.StatusCode != 200 || pv["html"] != `<p style="color: red">Hi &lt;b&gt;x&lt;/b&gt;</p>` || pv["subject"] != "New <b>x</b>" {
+	if resp.StatusCode != http.StatusOK || pv["html"] != `<p style="color: red">Hi &lt;b&gt;x&lt;/b&gt;</p>` || pv["subject"] != "New <b>x</b>" {
 		t.Fatalf("preview: %d %s", resp.StatusCode, raw)
 	}
-	if resp, m, _ := call(t, a.admin.URL, "POST", "/admin/v1/templates/"+tid+"/versions/2/preview", session, `{"variables":{}}`); resp.StatusCode != 422 || errorCode(m) != "variables_invalid" {
+	if resp, m, _ := call(t, a.admin.URL, "POST", "/admin/v1/templates/"+tid+"/versions/2/preview", session, `{"variables":{}}`); resp.StatusCode != http.StatusUnprocessableEntity || errorCode(m) != "variables_invalid" {
 		t.Fatalf("preview without variables: %d %v", resp.StatusCode, m)
 	}
 	var stored int
@@ -470,7 +470,7 @@ func TestAdminContractAndHardening(t *testing.T) {
 		{"/admin/v1/emails?q=" + strings.Repeat("a", 513), "invalid_filter"},
 	} {
 		resp, m, _ := call(t, a.admin.URL, "GET", q.path, session, "")
-		if resp.StatusCode != 400 || errorCode(m) != q.code {
+		if resp.StatusCode != http.StatusBadRequest || errorCode(m) != q.code {
 			t.Errorf("%s: %d %v, want 400 %s", q.path[:min(len(q.path), 60)], resp.StatusCode, m, q.code)
 		}
 	}
@@ -487,7 +487,7 @@ func TestAdminContractAndHardening(t *testing.T) {
 			body = `{"variables":{}}`
 		}
 		resp, _, _ := call(t, a.admin.URL, p.method, p.path, session, body)
-		if resp.StatusCode != 404 {
+		if resp.StatusCode != http.StatusNotFound {
 			t.Errorf("%s %s: %d, want 404", p.method, p.path, resp.StatusCode)
 		}
 		if resp.Header.Get("Cache-Control") != "no-store" {
@@ -500,16 +500,16 @@ func TestAdminContractAndHardening(t *testing.T) {
 		if strings.HasSuffix(p, "sessions") {
 			authz = ""
 		}
-		if resp, m, _ := call(t, a.admin.URL, "POST", p, authz, big); resp.StatusCode != 413 || errorCode(m) != "payload_too_large" {
+		if resp, m, _ := call(t, a.admin.URL, "POST", p, authz, big); resp.StatusCode != http.StatusRequestEntityTooLarge || errorCode(m) != "payload_too_large" {
 			t.Errorf("%s oversized: %d %v", p, resp.StatusCode, m)
 		}
 	}
 
 	// Foreign Host headers are refused (DNS rebinding); loopback names pass.
-	if resp, m, _ := call(t, a.admin.URL, "GET", "/admin/v1/me", session, "", "Host", "evil.example.test"); resp.StatusCode != 421 || errorCode(m) != "misdirected_request" {
+	if resp, m, _ := call(t, a.admin.URL, "GET", "/admin/v1/me", session, "", "Host", "evil.example.test"); resp.StatusCode != http.StatusMisdirectedRequest || errorCode(m) != "misdirected_request" {
 		t.Fatalf("foreign host: %d %v", resp.StatusCode, m)
 	}
-	if resp, _, _ := call(t, a.admin.URL, "GET", "/admin/v1/me", session, "", "Host", "localhost:8081"); resp.StatusCode != 200 {
+	if resp, _, _ := call(t, a.admin.URL, "GET", "/admin/v1/me", session, "", "Host", "localhost:8081"); resp.StatusCode != http.StatusOK {
 		t.Fatalf("localhost host: %d", resp.StatusCode)
 	}
 
@@ -517,7 +517,7 @@ func TestAdminContractAndHardening(t *testing.T) {
 	if resp, _, _ := call(t, a.admin.URL, "GET", "/admin/v1/me", "", ""); resp.Header.Get("Cache-Control") != "no-store" {
 		t.Error("401 without no-store")
 	}
-	if resp, _, _ := call(t, a.admin.URL, "DELETE", "/admin/v1/sessions/current", session, ""); resp.StatusCode != 204 || resp.Header.Get("Cache-Control") != "no-store" {
+	if resp, _, _ := call(t, a.admin.URL, "DELETE", "/admin/v1/sessions/current", session, ""); resp.StatusCode != http.StatusNoContent || resp.Header.Get("Cache-Control") != "no-store" {
 		t.Errorf("logout: %d %q", resp.StatusCode, resp.Header.Get("Cache-Control"))
 	}
 
@@ -584,21 +584,21 @@ func TestAdminBroadcasts(t *testing.T) {
 	resp, detail, raw := call(t, a.admin.URL, "GET", "/admin/v1/broadcasts/"+idA, session, "")
 	counts, _ := detail["counts"].(map[string]any)
 	byStatus, _ := counts["by_status"].(map[string]any)
-	if resp.StatusCode != 200 || byStatus["queued"] != 1.0 || len(byStatus) != 9 || counts["recipients"] != 0.0 {
+	if resp.StatusCode != http.StatusOK || byStatus["queued"] != 1.0 || len(byStatus) != 9 || counts["recipients"] != 0.0 {
 		t.Fatalf("detail: %d %s", resp.StatusCode, raw)
 	}
 	assertKeys(t, "BroadcastDetail", detail, "id", "project_id", "project_name", "name", "status", "audience_id", "from", "template_id",
 		"template_version", "unsubscribe_url", "scheduled_at", "started_at", "finished_at", "created_at", "counts")
 	assertKeys(t, "BroadcastDetail.counts", counts, "recipients", "skipped_unsubscribed", "skipped_suppressed", "skipped_invalid", "by_status")
 	for _, q := range []string{"/admin/v1/broadcasts?status=sent", "/admin/v1/broadcasts?project_id=x", "/admin/v1/emails?broadcast_id=x"} {
-		if resp, m, _ := call(t, a.admin.URL, "GET", q, session, ""); resp.StatusCode != 400 || errorCode(m) != "invalid_filter" {
+		if resp, m, _ := call(t, a.admin.URL, "GET", q, session, ""); resp.StatusCode != http.StatusBadRequest || errorCode(m) != "invalid_filter" {
 			t.Errorf("%s: %d %v", q, resp.StatusCode, m)
 		}
 	}
-	if resp, _, _ := call(t, a.admin.URL, "GET", "/admin/v1/broadcasts/"+uuid.NewString(), session, ""); resp.StatusCode != 404 {
+	if resp, _, _ := call(t, a.admin.URL, "GET", "/admin/v1/broadcasts/"+uuid.NewString(), session, ""); resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("unknown: %d", resp.StatusCode)
 	}
-	if resp, _, _ := call(t, a.admin.URL, "GET", "/admin/v1/broadcasts", "", ""); resp.StatusCode != 401 {
+	if resp, _, _ := call(t, a.admin.URL, "GET", "/admin/v1/broadcasts", "", ""); resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("no session: %d", resp.StatusCode)
 	}
 
@@ -612,10 +612,10 @@ func TestAdminBroadcasts(t *testing.T) {
 		t.Fatalf("canceled filter: %v", m)
 	}
 	all := "/admin/v1/emails?status=queued&status=sending&status=captured&status=submitted&status=delivered&status=bounced&status=complained&status=failed&status=canceled"
-	if resp, _, _ := call(t, a.admin.URL, "GET", all, session, ""); resp.StatusCode != 200 {
+	if resp, _, _ := call(t, a.admin.URL, "GET", all, session, ""); resp.StatusCode != http.StatusOK {
 		t.Fatalf("every status: %d", resp.StatusCode)
 	}
-	if resp, m, _ := call(t, a.admin.URL, "GET", all+"&status=queued", session, ""); resp.StatusCode != 400 || errorCode(m) != "invalid_filter" {
+	if resp, m, _ := call(t, a.admin.URL, "GET", all+"&status=queued", session, ""); resp.StatusCode != http.StatusBadRequest || errorCode(m) != "invalid_filter" {
 		t.Fatalf("10 statuses: %d %v", resp.StatusCode, m)
 	}
 }
@@ -675,7 +675,7 @@ func TestAdminAutomations(t *testing.T) {
 		t.Fatalf("project filter: %v", m)
 	}
 	resp, detail, raw := call(t, a.admin.URL, "GET", "/admin/v1/automations/"+idA, session, "")
-	if resp.StatusCode != 200 || detail["run_counts"].(map[string]any)["active"] != 1.0 || len(detail["steps"].([]any)) != 3 {
+	if resp.StatusCode != http.StatusOK || detail["run_counts"].(map[string]any)["active"] != 1.0 || len(detail["steps"].([]any)) != 3 {
 		t.Fatalf("detail: %d %s", resp.StatusCode, raw)
 	}
 	assertKeys(t, "AutomationDetail", detail, "id", "project_id", "project_name", "name", "status", "trigger_event", "allow_reentry",
@@ -722,7 +722,7 @@ func TestAdminAutomations(t *testing.T) {
 	}
 	resp, runDetail, raw := call(t, a.admin.URL, "GET", "/admin/v1/automation-runs/"+run, session, "")
 	emailsOfRun, _ := runDetail["emails"].([]any)
-	if resp.StatusCode != 200 || len(emailsOfRun) != 1 || runDetail["automation_name"] != "Welcome" || runDetail["step"] != 2.0 {
+	if resp.StatusCode != http.StatusOK || len(emailsOfRun) != 1 || runDetail["automation_name"] != "Welcome" || runDetail["step"] != 2.0 {
 		t.Fatalf("run detail: %d %s", resp.StatusCode, raw)
 	}
 	assertKeys(t, "AutomationRunDetail", runDetail, "id", "contact_id", "status", "reason", "step", "next_step_at", "created_at",
@@ -736,12 +736,12 @@ func TestAdminAutomations(t *testing.T) {
 		t.Fatalf("email links: %v", m)
 	}
 	for _, q := range []string{"/admin/v1/automations?status=done", "/admin/v1/automations?project_id=x", "/admin/v1/automations/" + idA + "/runs?status=x"} {
-		if resp, m, _ := call(t, a.admin.URL, "GET", q, session, ""); resp.StatusCode != 400 || errorCode(m) != "invalid_filter" {
+		if resp, m, _ := call(t, a.admin.URL, "GET", q, session, ""); resp.StatusCode != http.StatusBadRequest || errorCode(m) != "invalid_filter" {
 			t.Errorf("%s: %d %v", q, resp.StatusCode, m)
 		}
 	}
 	for _, p := range []string{"/admin/v1/automations/" + uuid.NewString(), "/admin/v1/automations/" + uuid.NewString() + "/runs", "/admin/v1/automation-runs/" + uuid.NewString()} {
-		if resp, _, _ := call(t, a.admin.URL, "GET", p, session, ""); resp.StatusCode != 404 {
+		if resp, _, _ := call(t, a.admin.URL, "GET", p, session, ""); resp.StatusCode != http.StatusNotFound {
 			t.Errorf("unknown %s: %d", p, resp.StatusCode)
 		}
 	}

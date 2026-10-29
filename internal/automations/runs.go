@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/google/uuid"
@@ -24,12 +25,7 @@ var (
 
 // IsRunStatus reports whether s is a run status.
 func IsRunStatus(s string) bool {
-	for _, r := range RunStatuses {
-		if s == r {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(RunStatuses, s)
 }
 
 // Run is the client-visible state of a run (never its trigger data).
@@ -119,7 +115,7 @@ func (s *Runs) List(ctx context.Context, projectID, automationID uuid.UUID, f Ru
 	if before == uuid.Nil {
 		before = uuid.Max
 	}
-	params := store.ListRunsParams{ProjectID: projectID, AutomationID: automationID, BeforeID: before, RowLimit: int32(limit + 1)} //nolint:gosec // limit ≤ MaxPage
+	params := store.ListRunsParams{ProjectID: projectID, AutomationID: automationID, BeforeID: before, RowLimit: int32(limit + 1)} // limit ≤ MaxPage
 	if f.Status != "" {
 		params.Status = &f.Status
 	}

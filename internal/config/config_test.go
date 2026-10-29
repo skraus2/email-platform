@@ -2,6 +2,7 @@ package config
 
 import (
 	"log/slog"
+	"maps"
 	"strings"
 	"testing"
 	"time"
@@ -280,9 +281,7 @@ func TestLoadRejectsUnsafeMailConfig(t *testing.T) {
 	for name, extra := range tests {
 		t.Run(name, func(t *testing.T) {
 			m := map[string]string{"DATABASE_URL": devURL}
-			for k, v := range extra {
-				m[k] = v
-			}
+			maps.Copy(m, extra)
 			if _, err := Load(env(m)); err == nil {
 				t.Fatalf("Load accepted %v", extra)
 			}

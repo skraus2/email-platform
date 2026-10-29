@@ -38,7 +38,7 @@ func series(t *testing.T, reg *prometheus.Registry, prefix string) []string {
 				labels = append(labels, l.GetName()+"="+l.GetValue())
 			}
 			var v float64
-			switch f.GetType() {
+			switch f.GetType() { //nolint:exhaustive // the registry under test has counters, gauges and histograms only
 			case dto.MetricType_HISTOGRAM:
 				v = float64(m.GetHistogram().GetSampleCount())
 			case dto.MetricType_GAUGE:
@@ -93,7 +93,7 @@ func TestHTTPNilIsPassThrough(t *testing.T) {
 	var m *metrics.HTTP
 	called := false
 	h := m.Wrap(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true }))
-	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/", nil))
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
 	if !called {
 		t.Error("nil HTTP did not call the handler")
 	}

@@ -93,7 +93,8 @@ func TestWebhookCommands(t *testing.T) {
 		t.Fatalf("create output = %q", out)
 	}
 	id := strings.Fields(lines[0])[0]
-	secret := lines[1][strings.Index(lines[1], "whsec_"):]
+	_, secretTail, _ := strings.Cut(lines[1], "whsec_")
+	secret := "whsec_" + secretTail
 
 	out, err = admin(t, "webhook", "list", "-project", project)
 	if err != nil || !strings.Contains(out, id) || !strings.Contains(out, "active") || strings.Contains(out, secret) ||

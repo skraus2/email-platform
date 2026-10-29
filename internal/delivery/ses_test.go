@@ -94,7 +94,7 @@ func TestSESNoClientInputReachesTagsOrConfigurationSet(t *testing.T) {
 	if got.ConfigurationSet != "platform-events" || got.TagCount != 2 || got.Tags["email_id"] != msg.ID.String() {
 		t.Fatalf("request = %+v", got)
 	}
-	for _, line := range strings.Split(headerBlock(got.Raw), "\r\n") {
+	for line := range strings.SplitSeq(headerBlock(got.Raw), "\r\n") {
 		if strings.HasPrefix(strings.ToLower(line), "x-ses-") {
 			t.Fatalf("client text became a header: %q", line)
 		}
@@ -234,7 +234,7 @@ func headerBlock(raw []byte) string {
 // names lists the header field names in order.
 func names(block string) string {
 	var out []string
-	for _, line := range strings.Split(block, "\r\n") {
+	for line := range strings.SplitSeq(block, "\r\n") {
 		if name, _, ok := strings.Cut(line, ":"); ok && !strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "\t") {
 			out = append(out, name)
 		}

@@ -4,7 +4,6 @@ package httpapi_test
 
 import (
 	"context"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -28,7 +27,7 @@ func TestReadyzAgainstRealDatabase(t *testing.T) {
 	t.Cleanup(func() { _ = m.Close() })
 
 	api := httpapi.New(httpapi.Deps{
-		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Logger: slog.New(slog.DiscardHandler),
 		Checks: []httpapi.Check{{
 			Name: "database",
 			Fn:   func(ctx context.Context) error { return database.Ready(ctx, pool, m) },

@@ -341,7 +341,7 @@ func Resolve(ctx context.Context, q *store.Queries, projectID, id uuid.UUID, ver
 		version = int(t.LatestVersion)
 	}
 	row, err := q.GetTemplateVersion(ctx, store.GetTemplateVersionParams{
-		TemplateID: id, ProjectID: projectID, Version: int32(version), //nolint:gosec // bounded above
+		TemplateID: id, ProjectID: projectID, Version: int32(version), // bounded above
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Version{}, ErrNotFound

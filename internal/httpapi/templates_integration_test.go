@@ -90,10 +90,11 @@ func TestTemplateLifecycleOverHTTP(t *testing.T) {
 		t.Fatalf("get v1: %d %s", code, raw)
 	}
 	var got struct {
-		Subject, Text string
-		HTML          *string
-		Variables     json.RawMessage
-		Version       int
+		Subject   string          `json:"subject"`
+		Text      string          `json:"text"`
+		HTML      *string         `json:"html"`
+		Variables json.RawMessage `json:"variables"`
+		Version   int             `json:"version"`
 	}
 	if err := json.Unmarshal([]byte(raw), &got); err != nil {
 		t.Fatal(err)

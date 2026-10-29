@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"maps"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -207,12 +209,10 @@ func eventCall(t *testing.T, svc ContactEventService, scopes []string, headers m
 		Emails:        &fakeEmails{},
 		ContactEvents: svc,
 	})
-	req := httptest.NewRequest("POST", "/v1/contact-events", strings.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/v1/contact-events", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer ep_test_x")
 	req.Header.Set("Content-Type", "application/json")
-	for k, v := range headers {
-		req.Header[k] = v
-	}
+	maps.Copy(req.Header, headers)
 	rec := httptest.NewRecorder()
 	s.Handler().ServeHTTP(rec, req)
 	return rec

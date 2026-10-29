@@ -39,7 +39,7 @@ func runBroadcast(args []string) error {
 	cancelSize := fs.Int("cancel", 10_000, "size of a second broadcast that is cancelled once fanned out (0: skip)")
 	pids := fs.String("pids", "", "processes to sample memory of, as name=PID,name=PID")
 	if err := fs.Parse(args); err != nil {
-		return err
+		return fmt.Errorf("parse flags: %w", err)
 	}
 	if *contacts < 1 || *txRate <= 0 || *cancelSize < 0 || *cancelSize > *contacts {
 		return errors.New("-contacts ≥ 1, -tx-rate > 0, 0 ≤ -cancel ≤ -contacts")
@@ -238,13 +238,13 @@ func (c *apiClient) do(ctx context.Context, method, path string, body, out any) 
 	if body != nil {
 		b, err := json.Marshal(body)
 		if err != nil {
-			return err
+			return fmt.Errorf("encode request: %w", err)
 		}
 		rd = bytes.NewReader(b)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, c.base+path, rd)
 	if err != nil {
-		return err
+		return fmt.Errorf("build request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+c.key)
 	if body != nil {
@@ -257,12 +257,18 @@ func (c *apiClient) do(ctx context.Context, method, path string, body, out any) 
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 300 {
-		var e struct{ Error struct{ Code string } }
+		var e struct {
+			Error struct {
+				Code string `json:"code"`
+			} `json:"error"`
+		}
 		_ = json.Unmarshal(raw, &e)
 		return fmt.Errorf("%s %s: %d %s", method, strings.SplitN(path, "/", 4)[2], resp.StatusCode, e.Error.Code)
 	}
 	if out != nil {
-		return json.Unmarshal(raw, out)
+		if err := json.Unmarshal(raw, out); err != nil {
+			return fmt.Errorf("decode response: %w", err)
+		}
 	}
 	return nil
 }
@@ -336,14 +342,14 @@ func broadcastReport(ctx context.Context, pool *pgxpool.Pool, id string) (broadc
 	}
 	rows, err := pool.Query(ctx, "SELECT status, count(*) FROM emails WHERE broadcast_id = $1 GROUP BY status ORDER BY status", id)
 	if err != nil {
-		return r, err
+		return r, fmt.Errorf("broadcast statuses: %w", err)
 	}
 	var parts []string
 	for rows.Next() {
 		var st string
 		var n int
 		if err := rows.Scan(&st, &n); err != nil {
-			return r, err
+			return r, fmt.Errorf("broadcast statuses: %w", err)
 		}
 		parts = append(parts, fmt.Sprintf("%s=%d", st, n))
 	}
@@ -371,7 +377,7 @@ func statusCounts(ctx context.Context, pool *pgxpool.Pool, ids []string) (string
 		var st string
 		var n int
 		if err := rows.Scan(&st, &n); err != nil {
-			return "", 0, err
+			return "", 0, fmt.Errorf("final states: %w", err)
 		}
 		parts = append(parts, fmt.Sprintf("%s=%d", st, n))
 		if st == "failed" {
@@ -387,19 +393,22 @@ func handoffLatencies(ctx context.Context, pool *pgxpool.Pool, ids []string) ([]
 	rows, err := pool.Query(ctx, `SELECT extract(epoch FROM finished_at - created_at) FROM emails
 		WHERE id = ANY($1::uuid[]) AND status IN ('captured', 'submitted', 'delivered')`, ids)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("hand-off latencies: %w", err)
 	}
 	defer rows.Close()
 	var out []time.Duration
 	for rows.Next() {
 		var secs float64
 		if err := rows.Scan(&secs); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("hand-off latencies: %w", err)
 		}
 		out = append(out, time.Duration(secs*float64(time.Second)))
 	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("hand-off latencies: %w", err)
+	}
 	slices.Sort(out)
-	return out, rows.Err()
+	return out, nil
 }
 
 // measureCancel sends a second broadcast of size recipients (own
@@ -424,7 +433,7 @@ func measureCancel(ctx context.Context, pool *pgxpool.Pool, api *apiClient, crea
 	for {
 		var status string
 		if err := pool.QueryRow(ctx, "SELECT status FROM broadcasts WHERE id = $1", id).Scan(&status); err != nil {
-			return "", err
+			return "", fmt.Errorf("cancel broadcast status: %w", err)
 		}
 		if status == "completed" {
 			break
@@ -444,7 +453,7 @@ func measureCancel(ctx context.Context, pool *pgxpool.Pool, api *apiClient, crea
 		if err := pool.QueryRow(ctx, `SELECT count(*) FILTER (WHERE status IN ('queued', 'sending')),
 			count(*) FILTER (WHERE status = 'canceled'), count(*) FILTER (WHERE status IN ('captured', 'submitted'))
 			FROM emails WHERE broadcast_id = $1`, id).Scan(&open, &canceled, &sent); err != nil {
-			return "", err
+			return "", fmt.Errorf("cancel broadcast emails: %w", err)
 		}
 		if open == 0 {
 			events := "unknown"

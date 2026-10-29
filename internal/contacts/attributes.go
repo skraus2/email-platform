@@ -161,12 +161,12 @@ func canonical(values map[string]any) ([]byte, error) {
 			b.WriteByte(',')
 		}
 		if err := enc.Encode(n); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("encode attribute name: %w", err)
 		}
 		b.Truncate(b.Len() - 1) // Encode appends a newline
 		b.WriteByte(':')
 		if err := enc.Encode(values[n]); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("encode attribute value: %w", err)
 		}
 		b.Truncate(b.Len() - 1)
 	}
@@ -181,7 +181,7 @@ func fromStored(stored []byte) ([]byte, error) {
 	dec.UseNumber()
 	var values map[string]any
 	if err := dec.Decode(&values); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("decode stored attributes: %w", err)
 	}
 	return canonical(values)
 }

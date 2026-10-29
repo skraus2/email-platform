@@ -27,7 +27,7 @@ func TestNextDelayDoublesAndCaps(t *testing.T) {
 }
 
 func TestWaitReadyRetriesUntilSuccess(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := slog.New(slog.DiscardHandler)
 	calls := 0
 	ok := waitReady(context.Background(), logger, func(context.Context) error {
 		calls++
@@ -42,7 +42,7 @@ func TestWaitReadyRetriesUntilSuccess(t *testing.T) {
 }
 
 func TestWaitReadyStopsOnCancel(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := slog.New(slog.DiscardHandler)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	ok := waitReady(ctx, logger, func(context.Context) error { return errors.New("db down") })

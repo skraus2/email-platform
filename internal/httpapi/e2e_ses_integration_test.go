@@ -51,6 +51,7 @@ type hookReceiver struct {
 }
 
 func newHookReceiver(t *testing.T) *hookReceiver {
+	t.Helper()
 	r := &hookReceiver{}
 	r.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		body, _ := io.ReadAll(req.Body)

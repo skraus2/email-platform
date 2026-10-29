@@ -5,7 +5,6 @@ package jobs_test
 import (
 	"context"
 	"errors"
-	"io"
 	"log/slog"
 	"slices"
 	"sync"
@@ -20,7 +19,7 @@ import (
 	"github.com/skraus2/email-platform/internal/testdb"
 )
 
-var quiet = slog.New(slog.NewTextHandler(io.Discard, nil))
+var quiet = slog.New(slog.DiscardHandler)
 
 const testMaxAttempts = 5
 

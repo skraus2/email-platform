@@ -95,8 +95,7 @@ func NewURL(t testing.TB) string {
 // redact keeps connection errors useful (refused, auth failed) but drops
 // config parse errors, which can contain the full connection string.
 func redact(err error) error {
-	var connErr *pgconn.ConnectError
-	if errors.As(err, &connErr) {
+	if _, ok := errors.AsType[*pgconn.ConnectError](err); ok {
 		return err
 	}
 	return errors.New("invalid TEST_DATABASE_URL or connection failure")

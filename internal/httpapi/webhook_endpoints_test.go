@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"net/http/httptest"
 	"slices"
 	"strings"
@@ -55,7 +56,7 @@ func webhookCall(t *testing.T, reg WebhookRegistrar, token, contentType, body st
 		Emails:   &fakeEmails{},
 		Webhooks: reg,
 	})
-	req := httptest.NewRequest("POST", "/v1/webhook-endpoints", strings.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/v1/webhook-endpoints", strings.NewReader(body))
 	switch token {
 	case "none":
 	case "noscope":

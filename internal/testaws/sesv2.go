@@ -72,13 +72,20 @@ func (s *SESv2) Sends() []SendEmail {
 }
 
 type sendEmailBody struct {
-	ConfigurationSetName string
-	FromEmailAddress     string
-	Destination          struct{ ToAddresses []string }
-	Content              struct {
-		Raw struct{ Data []byte } // base64 in JSON
-	}
-	EmailTags []struct{ Name, Value string }
+	ConfigurationSetName string `json:"ConfigurationSetName"`
+	FromEmailAddress     string `json:"FromEmailAddress"`
+	Destination          struct {
+		ToAddresses []string `json:"ToAddresses"`
+	} `json:"Destination"`
+	Content struct {
+		Raw struct {
+			Data []byte `json:"Data"` // base64 in JSON
+		} `json:"Raw"`
+	} `json:"Content"`
+	EmailTags []struct {
+		Name  string `json:"Name"`
+		Value string `json:"Value"`
+	} `json:"EmailTags"`
 }
 
 func (s *SESv2) serve(w http.ResponseWriter, r *http.Request) {
@@ -137,7 +144,7 @@ func (s *SESv2) serve(w http.ResponseWriter, r *http.Request) {
 			_, _ = io.WriteString(w, resp.Body)
 			return
 		}
-		_ = json.NewEncoder(w).Encode(map[string]string{"message": resp.Message})
+		writeJSON(w, map[string]string{"message": resp.Message})
 		return
 	}
 	if resp.Body != "" {
@@ -148,5 +155,11 @@ func (s *SESv2) serve(w http.ResponseWriter, r *http.Request) {
 	if id == "" {
 		id = "stub-message-" + strconv.Itoa(n)
 	}
-	_ = json.NewEncoder(w).Encode(map[string]string{"MessageId": id})
+	writeJSON(w, map[string]string{"MessageId": id})
+}
+
+// writeJSON answers with v. A failed write means the client is gone, which a
+// stub has no use for.
+func writeJSON(w http.ResponseWriter, v any) {
+	_ = json.NewEncoder(w).Encode(v) //nolint:errchkjson // stub answers are maps and slices of strings; write errors are ignored
 }

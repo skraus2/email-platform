@@ -108,7 +108,7 @@ func ListSenders(ctx context.Context, q *store.Queries, projectID uuid.UUID, lim
 	if limit < 1 || limit > MaxAdminListLimit {
 		return nil, fmt.Errorf("limit must be between 1 and %d", MaxAdminListLimit)
 	}
-	rows, err := q.ListSenderIdentities(ctx, store.ListSenderIdentitiesParams{ProjectID: projectID, Limit: int32(limit)}) //nolint:gosec // bounded above
+	rows, err := q.ListSenderIdentities(ctx, store.ListSenderIdentitiesParams{ProjectID: projectID, Limit: int32(limit)}) // bounded above
 	if err != nil {
 		return nil, fmt.Errorf("list sender identities: %w", err)
 	}

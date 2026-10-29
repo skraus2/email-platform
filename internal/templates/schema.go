@@ -130,8 +130,7 @@ func ParseSchema(raw []byte) (Schema, error) {
 			return nil
 		})
 		if err != nil {
-			var te *Error
-			if errors.As(err, &te) {
+			if _, ok := errors.AsType[*Error](err); ok {
 				return err
 			}
 			return bad(field, "%s", shape)
@@ -157,8 +156,7 @@ func ParseSchema(raw []byte) (Schema, error) {
 		return nil
 	})
 	if err != nil {
-		var te *Error
-		if errors.As(err, &te) {
+		if _, ok := errors.AsType[*Error](err); ok {
 			return nil, err
 		}
 		return nil, bad("variables", "must be a JSON object of variable declarations")
@@ -205,7 +203,7 @@ func decodeObject(raw []byte, each func(key string, dec *json.Decoder) error) er
 	for dec.More() {
 		tok, err := dec.Token()
 		if err != nil {
-			return err
+			return fmt.Errorf("read key: %w", err)
 		}
 		key, ok := tok.(string)
 		if !ok {
@@ -216,7 +214,7 @@ func decodeObject(raw []byte, each func(key string, dec *json.Decoder) error) er
 		}
 	}
 	if _, err := dec.Token(); err != nil {
-		return err
+		return fmt.Errorf("read end of object: %w", err)
 	}
 	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
 		return errors.New("trailing data")

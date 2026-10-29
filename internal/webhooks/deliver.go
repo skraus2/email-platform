@@ -304,7 +304,7 @@ func ListDeliveries(ctx context.Context, q *store.Queries, projectID uuid.UUID, 
 	default:
 		return nil, errors.New("status must be pending, delivered or failed")
 	}
-	rows, err := q.ListWebhookDeliveries(ctx, store.ListWebhookDeliveriesParams{ProjectID: projectID, Status: filter, Limit: int32(limit)}) //nolint:gosec // bounded above
+	rows, err := q.ListWebhookDeliveries(ctx, store.ListWebhookDeliveriesParams{ProjectID: projectID, Status: filter, Limit: int32(limit)}) // bounded above
 	if err != nil {
 		return nil, fmt.Errorf("list webhook deliveries: %w", err)
 	}

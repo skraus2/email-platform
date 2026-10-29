@@ -201,8 +201,7 @@ func (s *Server) handleScheduleBroadcast(w http.ResponseWriter, r *http.Request)
 	}
 	// The body is optional: without one the broadcast starts now.
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 4<<10))
-	var tooBig *http.MaxBytesError
-	if errors.As(err, &tooBig) {
+	if _, ok := errors.AsType[*http.MaxBytesError](err); ok {
 		writeError(w, http.StatusRequestEntityTooLarge, "payload_too_large", "request body must be at most 4 KiB")
 		return
 	}

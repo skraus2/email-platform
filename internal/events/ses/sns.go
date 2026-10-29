@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -99,15 +100,15 @@ func newVerifier(region, topicARN string, fetch Fetcher) (*Verifier, error) {
 }
 
 type envelope struct {
-	Type             string
-	MessageID        string `json:"MessageId"`
-	TopicArn         string
-	Subject          *string
-	Message          *string
-	Timestamp        string
-	SignatureVersion string
-	Signature        string
-	SigningCertURL   string `json:"SigningCertURL"`
+	Type             string  `json:"Type"`
+	MessageID        string  `json:"MessageId"`
+	TopicArn         string  `json:"TopicArn"`
+	Subject          *string `json:"Subject"`
+	Message          *string `json:"Message"`
+	Timestamp        string  `json:"Timestamp"`
+	SignatureVersion string  `json:"SignatureVersion"`
+	Signature        string  `json:"Signature"`
+	SigningCertURL   string  `json:"SigningCertURL"`
 }
 
 // Verify authenticates an SNS notification and returns its message.
@@ -127,10 +128,8 @@ func (v *Verifier) Verify(ctx context.Context, body []byte) (string, error) {
 	if _, err := time.Parse(time.RFC3339Nano, env.Timestamp); err != nil {
 		return "", ErrMalformed
 	}
-	for _, f := range []string{env.Type, env.TopicArn, env.SignatureVersion, env.SigningCertURL} {
-		if hasControl(f) {
-			return "", ErrMalformed
-		}
+	if slices.ContainsFunc([]string{env.Type, env.TopicArn, env.SignatureVersion, env.SigningCertURL}, hasControl) {
+		return "", ErrMalformed
 	}
 	if env.Subject != nil && hasControl(*env.Subject) {
 		return "", ErrMalformed
@@ -251,7 +250,7 @@ func (v *Verifier) fetchHTTPS(ctx context.Context, certURL string) ([]byte, erro
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, certURL, nil)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("build certificate request: %w", err)
 	}
 	client := &http.Client{
 		Timeout:       certTimeout,

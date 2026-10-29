@@ -51,6 +51,7 @@ func newPollerDB(t *testing.T) *pollerDB {
 }
 
 func testLogger(t *testing.T) *slog.Logger {
+	t.Helper()
 	return slog.New(slog.NewTextHandler(t.Output(), nil))
 }
 

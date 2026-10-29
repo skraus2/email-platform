@@ -242,8 +242,7 @@ func (d *Dispatcher) SendEmail(ctx context.Context, args jobs.SendEmailArgs, at 
 	}
 	if e.BroadcastID != nil {
 		r, url, err := d.renderBroadcast(ctx, e)
-		var te *templates.Error
-		if errors.As(err, &te) {
+		if _, ok := errors.AsType[*templates.Error](err); ok {
 			return d.fail(ctx, log, key, CodeRenderFailed, CodeRenderFailed)
 		}
 		if err != nil {
@@ -618,8 +617,7 @@ func detached(ctx context.Context) (context.Context, context.CancelFunc) {
 
 // sanitize turns an error into text safe to store and log.
 func sanitize(err error) string {
-	var de *delivery.Error
-	if errors.As(err, &de) {
+	if de, ok := errors.AsType[*delivery.Error](err); ok {
 		return de.Error()
 	}
 	return "delivery failed: internal"

@@ -40,13 +40,13 @@ func run(args []string) error {
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil) //nolint:gosec // loopback only, checked above
 	if err != nil {
-		return err
+		return fmt.Errorf("build request: %w", err)
 	}
 	// Redirects are not followed: the probe never leaves the loopback URL.
 	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	resp, err := client.Do(req) //nolint:gosec // loopback only, checked above
 	if err != nil {
-		return err
+		return fmt.Errorf("probe: %w", err)
 	}
 	_ = resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {

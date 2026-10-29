@@ -85,7 +85,7 @@ func (p TargetPolicy) ValidateURL(raw string) (*url.URL, error) {
 // that is not a canonical IP address.
 func numericHost(h string) bool {
 	h = strings.ToLower(h)
-	for _, label := range strings.Split(h, ".") {
+	for label := range strings.SplitSeq(h, ".") {
 		if label == "" {
 			continue
 		}

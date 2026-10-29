@@ -192,11 +192,11 @@ func TestFanoutResumesAfterFailedBatch(t *testing.T) {
 	f := newFixture(t, 20)
 	f.members(t)
 	b := f.scheduled(t)
-	real, err := jobs.NewEnqueuer(f.pool, slog.New(slog.DiscardHandler), 5)
+	enq, err := jobs.NewEnqueuer(f.pool, slog.New(slog.DiscardHandler), 5)
 	if err != nil {
 		t.Fatal(err)
 	}
-	failing := &failingSends{n: 1, next: real}
+	failing := &failingSends{n: 1, next: enq}
 	fo := f.fanout(t, failing, nil)
 	args := jobs.BroadcastFanoutArgs{BroadcastID: b.ID, ProjectID: f.project}
 	// The first batch fails: nothing of it stays.

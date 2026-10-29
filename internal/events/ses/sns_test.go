@@ -48,6 +48,7 @@ func newSigner(t *testing.T, name string, notBefore, notAfter time.Time) *signer
 }
 
 func validSigner(t *testing.T) *signer {
+	t.Helper()
 	return newSigner(t, "sns.amazonaws.com", time.Now().Add(-time.Hour), time.Now().Add(time.Hour))
 }
 
@@ -72,10 +73,7 @@ func (s *signer) envelope(t *testing.T, message string, mutate, tamper func(map[
 	if tamper != nil {
 		tamper(env)
 	}
-	b, err := json.Marshal(env)
-	if err != nil {
-		t.Fatal(err)
-	}
+	b, _ := json.Marshal(env)
 	return b
 }
 

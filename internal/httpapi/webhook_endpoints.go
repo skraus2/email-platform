@@ -123,9 +123,8 @@ func (s *Server) writeWebhookError(w http.ResponseWriter, r *http.Request, err e
 		writeUnavailable(w)
 	default:
 		// Only the SQLSTATE is logged: wrapped causes may carry the URL.
-		var pgErr *pgconn.PgError
 		sqlstate := ""
-		if errors.As(err, &pgErr) {
+		if pgErr, ok := errors.AsType[*pgconn.PgError](err); ok {
 			sqlstate = pgErr.Code
 		}
 		s.logger.ErrorContext(r.Context(), "create webhook endpoint failed",

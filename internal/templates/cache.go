@@ -48,7 +48,7 @@ func (c *Cache) get(k cacheKey) *Compiled {
 		return nil
 	}
 	c.order.MoveToFront(e)
-	return e.Value.(*cacheEntry).c
+	return e.Value.(*cacheEntry).c //nolint:forcetypeassert // the list holds only *cacheEntry
 }
 
 // put caches a compiled version whose source is size bytes.
@@ -66,7 +66,7 @@ func (c *Cache) put(k cacheKey, compiled *Compiled, size int) {
 	c.bytes += size
 	for c.bytes > c.maxBytes {
 		last := c.order.Back()
-		e := last.Value.(*cacheEntry)
+		e := last.Value.(*cacheEntry) //nolint:forcetypeassert // the list holds only *cacheEntry
 		c.order.Remove(last)
 		delete(c.items, e.key)
 		c.bytes -= e.size

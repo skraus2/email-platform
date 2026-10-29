@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -62,8 +63,8 @@ func renderInitial(versions []rivermigrate.Migration) string {
 		fmt.Fprintf(&b, "    ('main', %d)%s\n", v.Version, sep)
 	}
 	b.WriteString("-- +goose StatementEnd\n\n-- +goose Down\n-- +goose StatementBegin\n")
-	for i := len(versions) - 1; i >= 0; i-- {
-		v := versions[i]
+	for _, v := range slices.Backward(versions) {
+
 		fmt.Fprintf(&b, "-- river migration %03d: %s (down)\n%s\n", v.Version, v.Name, riverSQL(v.SQLDown))
 	}
 	b.WriteString("-- +goose StatementEnd\n")

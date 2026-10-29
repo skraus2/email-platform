@@ -93,7 +93,7 @@ func (m *Mailpit) converse(conn net.Conn, msg Message, raw []byte) error {
 
 	_, greeting, err := tp.ReadResponse(220)
 	if err != nil {
-		return err
+		return fmt.Errorf("read greeting: %w", err)
 	}
 	if !strings.Contains(greeting, mailpitBanner) {
 		return &Error{Class: ClassUnsafeTarget}
@@ -114,14 +114,14 @@ func (m *Mailpit) converse(conn net.Conn, msg Message, raw []byte) error {
 	}
 	w := tp.DotWriter()
 	if _, err := w.Write(raw); err != nil {
-		return err
+		return fmt.Errorf("write message: %w", err)
 	}
 	if err := w.Close(); err != nil {
-		return err
+		return fmt.Errorf("end message: %w", err)
 	}
 	// Any 2xx means the message was accepted.
 	if _, _, err := tp.ReadResponse(2); err != nil {
-		return err
+		return fmt.Errorf("message not accepted: %w", err)
 	}
 	// The server has accepted the message. A QUIT failure now must not be
 	// reported as a send failure, or the retry would send it twice.
@@ -134,25 +134,26 @@ func (m *Mailpit) converse(conn net.Conn, msg Message, raw []byte) error {
 const mailpitBanner = " Mailpit ESMTP"
 
 func command(tp *textproto.Conn, expect int, line string) error {
+	verb, _, _ := strings.Cut(line, " ")
 	id, err := tp.Cmd("%s", line)
 	if err != nil {
-		return err
+		return fmt.Errorf("send %s: %w", verb, err)
 	}
 	tp.StartResponse(id)
 	defer tp.EndResponse(id)
-	_, _, err = tp.ReadResponse(expect)
-	return err
+	if _, _, err := tp.ReadResponse(expect); err != nil {
+		return fmt.Errorf("%s: %w", verb, err)
+	}
+	return nil
 }
 
 // classify maps an SMTP conversation error to a sanitized Error, dropping
 // the server's text (it may contain addresses).
 func classify(ctx context.Context, err error) *Error {
-	var de *Error
-	if errors.As(err, &de) {
+	if de, ok := errors.AsType[*Error](err); ok {
 		return de
 	}
-	var tpErr *textproto.Error
-	if errors.As(err, &tpErr) {
+	if tpErr, ok := errors.AsType[*textproto.Error](err); ok {
 		return &Error{Class: ClassRejected, Code: tpErr.Code}
 	}
 	if ctx.Err() != nil || errors.Is(err, os.ErrDeadlineExceeded) {

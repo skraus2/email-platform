@@ -158,20 +158,25 @@ func TestDispatchRequiresVerifiedSenderAtClaim(t *testing.T) {
 	}{
 		{"no identity", func(*testing.T, *store.Queries, uuid.UUID, uuid.UUID) {}, false},
 		{"verified address", func(t *testing.T, q *store.Queries, p, _ uuid.UUID) {
+			t.Helper()
 			verifiedSender(t, q, p, emails.SenderAddress, strings.ToUpper(input.From))
 		}, true},
 		{"verified domain", func(t *testing.T, q *store.Queries, p, _ uuid.UUID) {
+			t.Helper()
 			verifiedSender(t, q, p, emails.SenderDomain, domain)
 		}, true},
 		{"subdomain only", func(t *testing.T, q *store.Queries, p, _ uuid.UUID) {
+			t.Helper()
 			verifiedSender(t, q, p, emails.SenderDomain, "mail."+domain)
 		}, false},
 		{"pending address", func(t *testing.T, q *store.Queries, p, _ uuid.UUID) {
+			t.Helper()
 			if _, err := emails.AddSender(ctx, q, p, emails.SenderAddress, input.From); err != nil {
 				t.Fatal(err)
 			}
 		}, false},
 		{"other project's identity", func(t *testing.T, q *store.Queries, _, other uuid.UUID) {
+			t.Helper()
 			verifiedSender(t, q, other, emails.SenderAddress, input.From)
 		}, false},
 	}

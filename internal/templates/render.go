@@ -170,8 +170,7 @@ func decodeVariables(schema Schema, raw []byte, requireAll bool) (map[string]any
 			return nil
 		})
 		if err != nil {
-			var te *Error
-			if errors.As(err, &te) {
+			if _, ok := errors.AsType[*Error](err); ok {
 				return nil, err
 			}
 			return nil, bad("variables", "must be a JSON object")
@@ -195,7 +194,7 @@ func (l *limitWriter) Write(p []byte) (int, error) {
 	if l.buf.Len()+len(p) > l.max {
 		return 0, errTooLarge
 	}
-	return l.buf.Write(p)
+	return l.buf.Write(p) //nolint:wrapcheck // an io.Writer wrapper passes the underlying error through
 }
 
 // MergeVariables builds the variables of one broadcast email: the shared

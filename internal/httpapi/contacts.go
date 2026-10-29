@@ -70,7 +70,7 @@ type updateContactRequest struct {
 // optionalString decodes a present string field; absent gives nil.
 func optionalString(field string, raw json.RawMessage) (*string, error) {
 	if raw == nil {
-		return nil, nil
+		return nil, nil //nolint:nilnil // an absent field is nil, as documented
 	}
 	var s *string
 	if err := json.Unmarshal(raw, &s); err != nil || s == nil {
@@ -231,7 +231,7 @@ func (s *Server) handleListContacts(w http.ResponseWriter, r *http.Request) {
 // parsePage checks the parameter names against allowed and reads limit
 // (def when absent, 1–maxLimit) and cursor. Messages name the parameter,
 // never its value.
-func parsePage(query url.Values, allowed map[string]bool, def, maxLimit int) (limit int, after uuid.UUID, status int, code, msg string) {
+func parsePage(query url.Values, allowed map[string]bool, def, maxLimit int) (limit int, after uuid.UUID, status int, code, msg string) { //nolint:unparam // each list names its own default; equal today
 	for k := range query {
 		if !allowed[k] {
 			return 0, uuid.Nil, http.StatusBadRequest, "invalid_filter", "unknown query parameter"

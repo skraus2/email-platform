@@ -87,24 +87,33 @@ type Step struct {
 	UnsubscribeURL string
 }
 
+// marshalStep encodes one step form.
+func marshalStep(v any) ([]byte, error) {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return nil, fmt.Errorf("encode step: %w", err)
+	}
+	return b, nil
+}
+
 // MarshalJSON writes the step in its stored and returned form: only the
 // fields of its type.
 func (s Step) MarshalJSON() ([]byte, error) {
 	switch s.Type {
 	case StepWait:
-		return json.Marshal(struct {
+		return marshalStep(struct {
 			Type    string `json:"type"`
 			Seconds int    `json:"seconds"`
 		}{s.Type, s.Seconds})
 	case StepCondition:
 		if s.Event != "" {
-			return json.Marshal(struct {
+			return marshalStep(struct {
 				Type  string `json:"type"`
 				Event string `json:"event"`
 				Op    string `json:"op"`
 			}{s.Type, s.Event, s.Op})
 		}
-		return json.Marshal(struct {
+		return marshalStep(struct {
 			Type      string          `json:"type"`
 			Attribute string          `json:"attribute"`
 			Op        string          `json:"op"`
@@ -115,7 +124,7 @@ func (s Step) MarshalJSON() ([]byte, error) {
 		if len(vars) == 0 {
 			vars = json.RawMessage(`{}`)
 		}
-		return json.Marshal(struct {
+		return marshalStep(struct {
 			Type            string          `json:"type"`
 			From            string          `json:"from"`
 			TemplateID      uuid.UUID       `json:"template_id"`
@@ -305,8 +314,7 @@ func conditionValue(raw json.RawMessage) (json.RawMessage, error) {
 	wrapped := append(append([]byte(`{"v":`), raw...), '}')
 	out, err := contacts.ValidateAttributes(wrapped)
 	if err != nil {
-		var ce *contacts.Error
-		if errors.As(err, &ce) {
+		if ce, ok := errors.AsType[*contacts.Error](err); ok {
 			return nil, errors.New(ce.Reason)
 		}
 		return nil, errors.New("must be a string, number or boolean")

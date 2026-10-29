@@ -34,10 +34,10 @@ func setup(t *testing.T) (*pgxpool.Pool, uuid.UUID, uuid.UUID) {
 	return pool, a.ID, b.ID
 }
 
-func ptr(s string) *string { return &s }
+//go:fix inline
 
 func subscribed(email string) contacts.CreateInput {
-	return contacts.CreateInput{Email: email, Status: contacts.StatusSubscribed, ConsentSource: ptr("signup-form")}
+	return contacts.CreateInput{Email: email, Status: contacts.StatusSubscribed, ConsentSource: new("signup-form")}
 }
 
 func TestCreateAndGetContact(t *testing.T) {
@@ -47,7 +47,7 @@ func TestCreateAndGetContact(t *testing.T) {
 	s := contacts.NewStore(pool, 1000)
 
 	c, err := s.Create(ctx, a, contacts.CreateInput{
-		Email: "Ada@Example.test", Status: contacts.StatusSubscribed, ConsentSource: ptr("signup-form"),
+		Email: "Ada@Example.test", Status: contacts.StatusSubscribed, ConsentSource: new("signup-form"),
 		Attributes: json.RawMessage(`{"name": "Ada", "vip": true}`),
 	})
 	if err != nil {
@@ -103,13 +103,13 @@ func TestCreateContactValidation(t *testing.T) {
 		in    contacts.CreateInput
 		field string
 	}{
-		{"no address", contacts.CreateInput{Status: "subscribed", ConsentSource: ptr("x")}, "email"},
+		{"no address", contacts.CreateInput{Status: "subscribed", ConsentSource: new("x")}, "email"},
 		{"display name", contacts.CreateInput{Email: "Ada <a@example.test>", Status: "unsubscribed"}, "email"},
 		{"unicode", contacts.CreateInput{Email: "ü@example.test", Status: "unsubscribed"}, "email"},
 		{"no status", contacts.CreateInput{Email: "a@example.test"}, "status"},
 		{"bad status", contacts.CreateInput{Email: "a@example.test", Status: "pending"}, "status"},
 		{"subscribed without source", contacts.CreateInput{Email: "a@example.test", Status: "subscribed"}, "consent_source"},
-		{"bad source", contacts.CreateInput{Email: "a@example.test", Status: "subscribed", ConsentSource: ptr("")}, "consent_source"},
+		{"bad source", contacts.CreateInput{Email: "a@example.test", Status: "subscribed", ConsentSource: new("")}, "consent_source"},
 		{"bad attributes", contacts.CreateInput{Email: "a@example.test", Status: "unsubscribed", Attributes: json.RawMessage(`{"A":1}`)}, "attributes"},
 	}
 	for _, c := range cases {
@@ -207,25 +207,25 @@ func TestUpdateContact(t *testing.T) {
 	}
 	// Subscribing needs a source in the same request.
 	var e *contacts.Error
-	if _, err := s.Update(ctx, a, c.ID, contacts.UpdateInput{Status: ptr("subscribed")}); !errors.As(err, &e) || e.Field != "consent_source" {
+	if _, err := s.Update(ctx, a, c.ID, contacts.UpdateInput{Status: new("subscribed")}); !errors.As(err, &e) || e.Field != "consent_source" {
 		t.Fatalf("subscribe without source: %v", err)
 	}
-	u, err = s.Update(ctx, a, c.ID, contacts.UpdateInput{Status: ptr("subscribed"), ConsentSource: ptr("double-opt-in")})
+	u, err = s.Update(ctx, a, c.ID, contacts.UpdateInput{Status: new("subscribed"), ConsentSource: new("double-opt-in")})
 	if err != nil || u.Status != "subscribed" || *u.ConsentSource != "double-opt-in" || !u.StatusChangedAt.After(c.StatusChangedAt) {
 		t.Fatalf("subscribe: %+v %v", u, err)
 	}
 	// Same status again: no status change time.
-	again, err := s.Update(ctx, a, c.ID, contacts.UpdateInput{Status: ptr("subscribed"), ConsentSource: ptr("double-opt-in")})
+	again, err := s.Update(ctx, a, c.ID, contacts.UpdateInput{Status: new("subscribed"), ConsentSource: new("double-opt-in")})
 	if err != nil || !again.StatusChangedAt.Equal(u.StatusChangedAt) {
 		t.Fatalf("repeat: %+v %v", again, err)
 	}
 	if _, err := s.Update(ctx, a, c.ID, contacts.UpdateInput{}); !errors.As(err, &e) {
 		t.Fatalf("empty update: %v", err)
 	}
-	if _, err := s.Update(ctx, a, c.ID, contacts.UpdateInput{Status: ptr("gone")}); !errors.As(err, &e) || e.Field != "status" {
+	if _, err := s.Update(ctx, a, c.ID, contacts.UpdateInput{Status: new("gone")}); !errors.As(err, &e) || e.Field != "status" {
 		t.Fatalf("bad status: %v", err)
 	}
-	if _, err := s.Update(ctx, b, c.ID, contacts.UpdateInput{Status: ptr("unsubscribed")}); !errors.Is(err, contacts.ErrNotFound) {
+	if _, err := s.Update(ctx, b, c.ID, contacts.UpdateInput{Status: new("unsubscribed")}); !errors.Is(err, contacts.ErrNotFound) {
 		t.Fatalf("foreign update: %v", err)
 	}
 	got, _ := s.Get(ctx, a, c.ID)

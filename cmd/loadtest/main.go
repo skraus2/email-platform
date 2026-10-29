@@ -133,7 +133,7 @@ func run() error {
 		var st string
 		var n int
 		if err := rows.Scan(&st, &n); err != nil {
-			return err
+			return fmt.Errorf("final states: %w", err)
 		}
 		statuses = append(statuses, fmt.Sprintf("%s=%d", st, n))
 	}
@@ -230,7 +230,7 @@ type sampler struct {
 // ignored, so only numbers ever reach ps.
 func parsePIDs(spec string) map[string]string {
 	out := map[string]string{}
-	for _, part := range strings.Split(spec, ",") {
+	for part := range strings.SplitSeq(spec, ",") {
 		name, pid, ok := strings.Cut(part, "=")
 		if n, err := strconv.ParseUint(pid, 10, 31); ok && err == nil && n > 0 {
 			out[name] = pid

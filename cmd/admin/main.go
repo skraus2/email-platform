@@ -82,12 +82,26 @@ const usage = `usage:
   admin user disable|enable|unlock -username <name>`
 
 func main() {
+	os.Exit(exitCode())
+}
+
+// exitCode runs the command; deferred cleanup finishes before main exits.
+func exitCode() int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if err := run(ctx, os.Args[1:], os.Stdin, os.Stdout, os.Stderr); err != nil {
 		fmt.Fprintln(os.Stderr, "admin:", err)
-		os.Exit(1)
+		return 1
 	}
+	return 0
+}
+
+// flush writes out a buffered table.
+func flush(w *tabwriter.Writer) error {
+	if err := w.Flush(); err != nil {
+		return fmt.Errorf("write output: %w", err)
+	}
+	return nil
 }
 
 func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
@@ -122,7 +136,7 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	username := fs.String("username", "", "admin user name")
 	reason := fs.String("reason", "manual", "suppression reason: "+strings.Join(emails.SuppressionReasons, ", "))
 	if err := fs.Parse(args[2:]); err != nil {
-		return err
+		return fmt.Errorf("parse flags: %w", err)
 	}
 
 	switch args[0] + " " + args[1] {
@@ -142,7 +156,7 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		for _, p := range ps {
 			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", p.ID, p.Name, p.Status, p.CreatedAt.Format(time.RFC3339))
 		}
-		return w.Flush()
+		return flush(w)
 	case "project disable", "project enable":
 		pid, err := uuid.Parse(*id)
 		if err != nil {
@@ -183,7 +197,7 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 			}
 			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", k.Prefix, strings.Join(k.Scopes, ","), k.CreatedAt.Format(time.RFC3339), revoked)
 		}
-		return w.Flush()
+		return flush(w)
 	case "key revoke":
 		return auth.RevokeKey(ctx, q, *prefix)
 	case "email list":
@@ -201,7 +215,7 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\n", e.ID, e.Status, orDash(e.ErrorCode), orDash(e.Detail),
 				e.Attempts, e.Recipient, e.CreatedAt.Format(time.RFC3339), e.UpdatedAt.Format(time.RFC3339))
 		}
-		return w.Flush()
+		return flush(w)
 	case "suppression add", "suppression list", "suppression remove":
 		pid, err := uuid.Parse(*project)
 		if err != nil {
@@ -313,7 +327,7 @@ func webhook(ctx context.Context, cfg config.Config, pool *pgxpool.Pool, q *stor
 		for _, e := range list {
 			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", e.ID, e.Status, strings.Join(e.EventTypes, ","), e.KeyID, emails.TerminalSafe(e.URL))
 		}
-		return w.Flush()
+		return flush(w)
 	}
 	eid, err := uuid.Parse(id)
 	if err != nil {
@@ -351,7 +365,7 @@ func listSenders(ctx context.Context, q *store.Queries, pid uuid.UUID, limit int
 		}
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", s.ID, s.Kind, emails.TerminalSafe(s.Value), s.Status, verified)
 	}
-	return w.Flush()
+	return flush(w)
 }
 
 func listDeliveries(ctx context.Context, q *store.Queries, pid uuid.UUID, status string, limit int, stdout io.Writer) error {
@@ -372,7 +386,7 @@ func listDeliveries(ctx context.Context, q *store.Queries, pid uuid.UUID, status
 		fmt.Fprintf(w, "%s\t%s\t%s\temail.%s\t%s\t%d\t%s\t%s\t%s\n",
 			d.ID, d.EndpointID, d.EmailID, d.EventType, d.Status, d.Attempts, httpStatus, orDash(d.LastErrorCode), next)
 	}
-	return w.Flush()
+	return flush(w)
 }
 
 func orDash(s *string) string {
@@ -412,7 +426,7 @@ func suppression(ctx context.Context, q *store.Queries, action string, pid uuid.
 		for _, s := range list {
 			fmt.Fprintf(w, "%s\t%s\t%s\n", emails.TerminalSafe(s.Recipient), s.Reason, s.CreatedAt.Format(time.RFC3339))
 		}
-		return w.Flush()
+		return flush(w)
 	}
 }
 

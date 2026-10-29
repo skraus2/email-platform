@@ -6,6 +6,7 @@ import (
 	htmltemplate "html/template"
 	"io"
 	"regexp"
+	"slices"
 	"strings"
 	texttemplate "text/template"
 	"text/template/parse"
@@ -95,7 +96,7 @@ func compile(src Source, schema Schema, policy bool) (*Compiled, error) {
 		"subject": c.subject.Execute, "text": c.text.Execute, "html": c.executeHTML,
 	} {
 		if err := exec(io.Discard, zero); err != nil {
-			return nil, invalidTemplate(part, "%s", cleanError(part, err))
+			return nil, invalidTemplate(part, "%s", cleanError(err))
 		}
 	}
 	return c, nil
@@ -178,10 +179,8 @@ func (c *Compiled) References(part, name string) bool {
 			if n == nil {
 				return false
 			}
-			for _, child := range n.Nodes {
-				if walk(child) {
-					return true
-				}
+			if slices.ContainsFunc(n.Nodes, walk) {
+				return true
 			}
 		case *parse.ActionNode:
 			return walk(n.Pipe)
@@ -192,10 +191,8 @@ func (c *Compiled) References(part, name string) bool {
 				return false
 			}
 			for _, cmd := range n.Cmds {
-				for _, arg := range cmd.Args {
-					if walk(arg) {
-						return true
-					}
+				if slices.ContainsFunc(cmd.Args, walk) {
+					return true
 				}
 			}
 		case *parse.FieldNode:
@@ -252,7 +249,7 @@ func (c *Compiled) executeHTML(w io.Writer, data any) error {
 	if c.html == nil {
 		return nil
 	}
-	return c.html.Execute(w, data)
+	return c.html.Execute(w, data) //nolint:wrapcheck // same contract as the text/template Execute it stands beside
 }
 
 func parseText(part, src string, schema Schema, policy bool) (*texttemplate.Template, error) {
@@ -274,18 +271,18 @@ func invalidTemplate(part, format string, args ...any) error {
 }
 
 func parseError(part string, err error) error {
-	return invalidTemplate(part, "%s", cleanError(part, err))
+	return invalidTemplate(part, "%s", cleanError(err))
 }
 
 var errLocation = regexp.MustCompile(`^(?:html/)?template: ?(?:[a-z]+:)?([a-z]+):(\d+):(?:\d+:)?\s*`)
 
 // cleanError turns "template: text:2: …" into "line 2: …". Escaping errors
 // get their description without html/template's internal context dump.
-func cleanError(part string, err error) string {
+func cleanError(err error) string {
 	var he *htmltemplate.Error
 	if errors.As(err, &he) && he.ErrorCode != htmltemplate.OK {
 		desc := he.Description
-		switch he.ErrorCode {
+		switch he.ErrorCode { //nolint:exhaustive // only these two descriptions are reworded; the rest keep html/template's text
 		case htmltemplate.ErrBranchEnd:
 			desc = "{{if}} branches end in different HTML contexts"
 		case htmltemplate.ErrEndContext:
@@ -318,16 +315,16 @@ type walker struct {
 	schema Schema
 }
 
-func (w walker) fail(n parse.Node, format string, args ...any) error {
+func (w walker) fail(n parse.Node, msg string) error {
 	loc, _ := w.tree.ErrorContext(n)
 	line := "?"
-	if i := strings.Index(loc, ":"); i >= 0 {
-		rest := loc[i+1:]
-		if j := strings.Index(rest, ":"); j >= 0 {
-			line = rest[:j]
+	if _, after, ok := strings.Cut(loc, ":"); ok {
+		rest := after
+		if before, _, ok := strings.Cut(rest, ":"); ok {
+			line = before
 		}
 	}
-	return invalidTemplate(w.part, "line %s: %s", line, fmt.Sprintf(format, args...))
+	return invalidTemplate(w.part, "line %s: %s", line, msg)
 }
 
 func (w walker) list(l *parse.ListNode) error {
@@ -369,20 +366,20 @@ func simplePipe(p *parse.PipeNode) bool {
 }
 
 // field returns the declared variable a node names ({{.name}}), if any.
-func (w walker) field(n parse.Node) (string, Var, bool) {
+func (w walker) field(n parse.Node) (Var, bool) {
 	f, ok := n.(*parse.FieldNode)
 	if !ok || len(f.Ident) != 1 {
-		return "", Var{}, false
+		return Var{}, false
 	}
 	v, ok := w.schema[f.Ident[0]]
-	return f.Ident[0], v, ok
+	return v, ok
 }
 
 func (w walker) action(n *parse.ActionNode) error {
 	if !simplePipe(n.Pipe) || len(n.Pipe.Cmds[0].Args) != 1 {
 		return w.fail(n, "an action may only print one declared variable, like {{.name}}")
 	}
-	if _, _, ok := w.field(n.Pipe.Cmds[0].Args[0]); !ok {
+	if _, ok := w.field(n.Pipe.Cmds[0].Args[0]); !ok {
 		return w.fail(n, "an action may only print one declared variable, like {{.name}}")
 	}
 	return nil
@@ -397,7 +394,7 @@ func (w walker) condition(n parse.Node, p *parse.PipeNode) error {
 	}
 	args := p.Cmds[0].Args
 	if len(args) == 1 {
-		if _, v, ok := w.field(args[0]); ok && (v.Type == TypeString || v.Type == TypeBoolean) {
+		if v, ok := w.field(args[0]); ok && (v.Type == TypeString || v.Type == TypeBoolean) {
 			return nil
 		}
 		return w.fail(n, allowed)
@@ -407,10 +404,10 @@ func (w walker) condition(n parse.Node, p *parse.PipeNode) error {
 		return w.fail(n, allowed)
 	}
 	a, b := args[1], args[2]
-	if _, _, isField := w.field(a); !isField {
+	if _, isField := w.field(a); !isField {
 		a, b = b, a
 	}
-	_, v, ok := w.field(a)
+	v, ok := w.field(a)
 	if !ok {
 		return w.fail(n, allowed)
 	}

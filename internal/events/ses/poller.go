@@ -270,9 +270,8 @@ func (p *Poller) process(ctx context.Context, body string) result {
 	case err != nil:
 		// Only the code: the server's message and detail can quote row
 		// values, and connection errors name hosts and users.
-		var pgErr *pgconn.PgError
 		state := ""
-		if errors.As(err, &pgErr) {
+		if pgErr, ok := errors.AsType[*pgconn.PgError](err); ok {
 			state = pgErr.Code
 		}
 		return result{outcome: "ingest_failed", reason: "event store unavailable", event: &ev, sqlstate: state}

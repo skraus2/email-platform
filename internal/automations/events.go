@@ -109,8 +109,7 @@ func (in EventInput) validate() ([]byte, error) {
 	}
 	data, err := contacts.ValidateAttributes(in.Data)
 	if err != nil {
-		var ce *contacts.Error
-		if errors.As(err, &ce) {
+		if ce, ok := errors.AsType[*contacts.Error](err); ok {
 			return nil, invalid("data"+strings.TrimPrefix(ce.Field, "attributes"), "%s", ce.Reason)
 		}
 		return nil, err

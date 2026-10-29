@@ -56,11 +56,11 @@ func (t *throttle) claim(name string, now time.Time) time.Duration {
 		for t.order.Len() > t.max {
 			last := t.order.Back()
 			t.order.Remove(last)
-			delete(t.items, last.Value.(*throttled).name)
+			delete(t.items, last.Value.(*throttled).name) //nolint:forcetypeassert // the list holds only *throttled
 		}
 	}
 	t.order.MoveToFront(e)
-	v := e.Value.(*throttled)
+	v := e.Value.(*throttled) //nolint:forcetypeassert // the list holds only *throttled
 	wasLocked := v.lockedUntil.After(now)
 	v.failures++
 	if d := lockDuration(v.failures); d > 0 {

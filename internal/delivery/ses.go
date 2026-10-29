@@ -105,8 +105,7 @@ func classifySES(ctx context.Context, err error, sender string) *Error {
 	}
 	// A failed send is also wrapped in a response error (status 0), so the
 	// send error is checked first.
-	var se *smithyhttp.RequestSendError
-	if errors.As(err, &se) {
+	if _, ok := errors.AsType[*smithyhttp.RequestSendError](err); ok {
 		var op *net.OpError
 		if errors.As(err, &op) && op.Op == "dial" {
 			return &Error{Class: ClassConnect} // never reached the provider
@@ -121,14 +120,12 @@ func classifySES(ctx context.Context, err error, sender string) *Error {
 	if errors.As(err, &re) && re.HTTPStatusCode() != 0 {
 		status := re.HTTPStatusCode()
 		var code, text string
-		var ae smithy.APIError
-		if errors.As(err, &ae) {
+		if ae, ok := errors.AsType[smithy.APIError](err); ok {
 			code, text = ae.ErrorCode(), ae.ErrorMessage()
 		}
 		return &Error{Class: sesClass(status, code, text, sender), HTTPStatus: status}
 	}
-	var ipe smithy.InvalidParamsError
-	if errors.As(err, &ipe) {
+	if _, ok := errors.AsType[smithy.InvalidParamsError](err); ok {
 		return &Error{Class: ClassInvalid} // refused by the client before sending
 	}
 	// Failed before anything was sent (credentials, signing, serialization).
@@ -164,7 +161,7 @@ func namesIdentity(text, address string) bool {
 	if i < 0 {
 		return false
 	}
-	for _, id := range strings.Split(text[i+1:], ",") {
+	for id := range strings.SplitSeq(text[i+1:], ",") {
 		if strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(id), ".")) == address {
 			return true
 		}

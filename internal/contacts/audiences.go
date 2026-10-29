@@ -153,7 +153,7 @@ func (s *Audiences) List(ctx context.Context, projectID, after uuid.UUID, limit 
 		before = uuid.Max
 	}
 	rows, err := store.New(s.pool).ListAudiences(ctx, store.ListAudiencesParams{
-		ProjectID: projectID, BeforeID: before, RowLimit: int32(limit + 1), //nolint:gosec // limit ≤ MaxPage
+		ProjectID: projectID, BeforeID: before, RowLimit: int32(limit + 1), // limit ≤ MaxPage
 	})
 	if err != nil {
 		return nil, false, fmt.Errorf("list audiences: %w", err)
@@ -278,7 +278,7 @@ func (s *Audiences) Members(ctx context.Context, projectID, audienceID, after uu
 		return nil, false, fmt.Errorf("get audience: %w", err)
 	}
 	rows, err := q.ListAudienceContacts(ctx, store.ListAudienceContactsParams{
-		AudienceID: audienceID, ProjectID: projectID, AfterID: after, RowLimit: int32(limit + 1), //nolint:gosec // limit ≤ MaxPage
+		AudienceID: audienceID, ProjectID: projectID, AfterID: after, RowLimit: int32(limit + 1), // limit ≤ MaxPage
 	})
 	if err != nil {
 		return nil, false, fmt.Errorf("list members: %w", err)

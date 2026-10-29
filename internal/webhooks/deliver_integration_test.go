@@ -564,7 +564,9 @@ func TestCanceledEventReachesSubscribedEndpoints(t *testing.T) {
 		t.Fatalf("requests = %d", len(r.bodies))
 	}
 	for _, body := range r.bodies {
-		var ev struct{ Type string }
+		var ev struct {
+			Type string `json:"type"`
+		}
 		if err := json.Unmarshal(body, &ev); err != nil || ev.Type != "email.canceled" {
 			t.Fatalf("payload type %q (%v)", ev.Type, err)
 		}

@@ -11,7 +11,7 @@ func TestRun(t *testing.T) {
 	defer ok.Close()
 	redirect := httptest.NewServer(http.RedirectHandler("http://example.com/", http.StatusFound))
 	defer redirect.Close()
-	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(503) }))
+	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusServiceUnavailable) }))
 	defer bad.Close()
 	if err := run([]string{ok.URL + "/readyz"}); err != nil {
 		t.Errorf("healthy: %v", err)

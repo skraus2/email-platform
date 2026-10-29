@@ -98,10 +98,7 @@ func (r *Recorder) Transition(ctx context.Context, tx pgx.Tx, projectID, emailID
 	if errorCode != "" {
 		details["error_code"] = errorCode
 	}
-	raw, err := json.Marshal(details)
-	if err != nil {
-		return fmt.Errorf("encode event details: %w", err)
-	}
+	raw, _ := json.Marshal(details)
 	var prov *string
 	if provider != "" {
 		prov = &provider

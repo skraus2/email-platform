@@ -24,8 +24,7 @@ func Unavailable(err error) bool {
 	if errors.As(err, &connectErr) || errors.Is(err, puddle.ErrClosedPool) {
 		return true
 	}
-	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) {
+	if pgErr, ok := errors.AsType[*pgconn.PgError](err); ok {
 		// Class 08: connection exception; 53300: too many connections;
 		// 57P01-57P03: admin shutdown, crash shutdown, cannot connect now
 		// (starting up or recovering).

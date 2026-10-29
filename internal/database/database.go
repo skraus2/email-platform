@@ -75,23 +75,39 @@ func NewMigrator(pool *pgxpool.Pool) (*Migrator, error) {
 
 // Up applies all pending migrations.
 func (m *Migrator) Up(ctx context.Context) ([]*goose.MigrationResult, error) {
-	return m.provider.Up(ctx)
+	res, err := m.provider.Up(ctx)
+	if err != nil {
+		return res, fmt.Errorf("migrate up: %w", err)
+	}
+	return res, nil
 }
 
 // DownTo rolls back to the given version (0 = everything). Used by tests that
 // prove migrations are reversible; not exposed as a CLI command.
 func (m *Migrator) DownTo(ctx context.Context, version int64) ([]*goose.MigrationResult, error) {
-	return m.provider.DownTo(ctx, version)
+	res, err := m.provider.DownTo(ctx, version)
+	if err != nil {
+		return res, fmt.Errorf("migrate down to %d: %w", version, err)
+	}
+	return res, nil
 }
 
 // Status lists every embedded migration and whether it is applied.
 func (m *Migrator) Status(ctx context.Context) ([]*goose.MigrationStatus, error) {
-	return m.provider.Status(ctx)
+	st, err := m.provider.Status(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("migration status: %w", err)
+	}
+	return st, nil
 }
 
 // Versions returns the applied database version and the newest embedded one.
 func (m *Migrator) Versions(ctx context.Context) (current, target int64, err error) {
-	return m.provider.GetVersions(ctx)
+	current, target, err = m.provider.GetVersions(ctx)
+	if err != nil {
+		return 0, 0, fmt.Errorf("migration versions: %w", err)
+	}
+	return current, target, nil
 }
 
 // CheckSchema returns ErrSchemaBehind if migrations are pending. A database
@@ -118,7 +134,10 @@ func (m *Migrator) CheckSchema(ctx context.Context) error {
 
 // Close releases the database/sql adapter. It does not close the pool.
 func (m *Migrator) Close() error {
-	return m.sqlDB.Close()
+	if err := m.sqlDB.Close(); err != nil {
+		return fmt.Errorf("close migration connection: %w", err)
+	}
+	return nil
 }
 
 // Ready reports whether the database is reachable and fully migrated.

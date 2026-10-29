@@ -614,7 +614,7 @@ func (s *Service) List(ctx context.Context, projectID uuid.UUID, f ListFilter, l
 	if statuses == nil {
 		statuses = []string{}
 	}
-	rowLimit := int32(limit + 1) //nolint:gosec // bounded above
+	rowLimit := int32(limit + 1) // bounded above
 	var rows []store.Email
 	// Unnamed statements (the plan must fit this request's filters and
 	// cursor, not a cached generic plan) under a server-side statement
@@ -660,7 +660,7 @@ func uuidV7Floor(t time.Time) uuid.UUID {
 		return uuid.Nil
 	}
 	var b [8]byte
-	binary.BigEndian.PutUint64(b[:], uint64(ms)) //nolint:gosec // ms >= 0 checked above
+	binary.BigEndian.PutUint64(b[:], uint64(ms)) // ms >= 0 checked above
 	var u uuid.UUID
 	copy(u[:6], b[2:]) // 48-bit millisecond timestamp
 	u[6] = 0x70

@@ -69,14 +69,14 @@ func buildMessage(msg Message, now time.Time) ([]byte, error) {
 				"Content-Transfer-Encoding": {"quoted-printable"},
 			})
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("create MIME part: %w", err)
 			}
 			if err := writeQP(pw, p.body); err != nil {
 				return nil, err
 			}
 		}
 		if err := mw.Close(); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("close MIME parts: %w", err)
 		}
 	default:
 		ct, body := "text/plain; charset=utf-8", msg.Text
@@ -131,7 +131,10 @@ func writeQP(w byteWriter, body string) error {
 	qp := quotedprintable.NewWriter(w)
 	// Normalize to LF; the text-mode writer emits CRLF line breaks.
 	if _, err := qp.Write([]byte(strings.ReplaceAll(body, "\r\n", "\n"))); err != nil {
-		return err
+		return fmt.Errorf("encode body: %w", err)
 	}
-	return qp.Close()
+	if err := qp.Close(); err != nil {
+		return fmt.Errorf("encode body: %w", err)
+	}
+	return nil
 }

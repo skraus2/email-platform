@@ -116,12 +116,12 @@ func (s *SQS) Requests() []SQSRequest {
 }
 
 type sqsBody struct {
-	QueueURL                    string `json:"QueueUrl"`
-	WaitTimeSeconds             int
-	MaxNumberOfMessages         int
-	VisibilityTimeout           int
-	MessageSystemAttributeNames []string
-	ReceiptHandle               string
+	QueueURL                    string   `json:"QueueUrl"`
+	WaitTimeSeconds             int      `json:"WaitTimeSeconds"`
+	MaxNumberOfMessages         int      `json:"MaxNumberOfMessages"`
+	VisibilityTimeout           int      `json:"VisibilityTimeout"`
+	MessageSystemAttributeNames []string `json:"MessageSystemAttributeNames"`
+	ReceiptHandle               string   `json:"ReceiptHandle"`
 }
 
 type sqsOut struct {
@@ -172,7 +172,7 @@ func (s *SQS) serve(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			w.WriteHeader(resp.Status)
-			_ = json.NewEncoder(w).Encode(map[string]string{"__type": resp.ErrorType, "message": resp.Message})
+			writeJSON(w, map[string]string{"__type": resp.ErrorType, "message": resp.Message})
 			return
 		}
 	}
@@ -183,7 +183,7 @@ func (s *SQS) serve(w http.ResponseWriter, r *http.Request) {
 		s.delete(w, req)
 	default:
 		w.WriteHeader(http.StatusBadRequest)
-		_ = json.NewEncoder(w).Encode(map[string]string{"__type": "UnsupportedOperation", "message": "stub"})
+		writeJSON(w, map[string]string{"__type": "UnsupportedOperation", "message": "stub"})
 	}
 }
 
@@ -197,13 +197,13 @@ func (s *SQS) receive(w http.ResponseWriter, r *http.Request, req SQSRequest) {
 		arrived := s.arrived
 		s.mu.Unlock()
 		if len(out) > 0 || req.WaitTimeSeconds == 0 {
-			_ = json.NewEncoder(w).Encode(map[string][]sqsOut{"Messages": out})
+			writeJSON(w, map[string][]sqsOut{"Messages": out})
 			return
 		}
 		select {
 		case <-arrived:
 		case <-deadline:
-			_ = json.NewEncoder(w).Encode(map[string][]sqsOut{})
+			writeJSON(w, map[string][]sqsOut{})
 			return
 		case <-r.Context().Done():
 			return

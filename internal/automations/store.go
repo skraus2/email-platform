@@ -278,12 +278,10 @@ func (s *Store) checkSend(ctx context.Context, q *store.Queries, projectID uuid.
 // prefixed puts a step's field path in front of the field of a broadcast or
 // template validation error; other errors pass unchanged.
 func prefixed(field string, err error) error {
-	var be *broadcasts.Error
-	if errors.As(err, &be) {
+	if be, ok := errors.AsType[*broadcasts.Error](err); ok {
 		return &Error{Field: field + "." + be.Field, Reason: be.Reason}
 	}
-	var te *templates.Error
-	if errors.As(err, &te) {
+	if te, ok := errors.AsType[*templates.Error](err); ok {
 		// Template errors name "variables" or "variables.<name>" already.
 		return &templates.Error{Code: te.Code, Field: field + "." + te.Field, Reason: te.Reason}
 	}
@@ -324,7 +322,7 @@ func (s *Store) List(ctx context.Context, projectID uuid.UUID, status string, af
 		st = &status
 	}
 	rows, err := store.New(s.pool).ListAutomations(ctx, store.ListAutomationsParams{
-		ProjectID: projectID, BeforeID: before, Status: st, RowLimit: int32(limit + 1), //nolint:gosec // limit ≤ MaxPage
+		ProjectID: projectID, BeforeID: before, Status: st, RowLimit: int32(limit + 1), // limit ≤ MaxPage
 	})
 	if err != nil {
 		return nil, false, fmt.Errorf("list automations: %w", err)

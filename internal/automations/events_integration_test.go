@@ -341,8 +341,7 @@ func TestReportUnknownContactCounts(t *testing.T) {
 		}
 	}
 	_, err := ev.Report(f.ctx, f.project, automations.EventInput{Name: "e", Email: "nobody@example.test"})
-	var rl *automations.RateLimitError
-	if !errors.As(err, &rl) {
+	if _, ok := errors.AsType[*automations.RateLimitError](err); !ok {
 		t.Fatalf("third probe: %v", err)
 	}
 }

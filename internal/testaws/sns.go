@@ -83,9 +83,6 @@ func (s *SNSSigner) Envelope(t testing.TB, message string) string {
 		t.Fatal(err)
 	}
 	env["Signature"] = base64.StdEncoding.EncodeToString(sig)
-	out, err := json.Marshal(env)
-	if err != nil {
-		t.Fatal(err)
-	}
+	out, _ := json.Marshal(env)
 	return string(out)
 }

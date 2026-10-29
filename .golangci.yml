@@ -7,28 +7,126 @@ run:
     - load # and the load test program
     - smoke # and the smoke test webhook receiver
 
+# Every linter that finds bugs is on. Pure style and naming linters
+# (varnamelen, exhaustruct, gochecknoglobals, wsl, nlreturn, lll, mnd, ...)
+# and size metrics stay off: they fight idiomatic Go instead of finding
+# defects. canonicalheader stays off too: it asks for "X-Request-ID", which
+# net/http stores as "X-Request-Id", so a raw http.Header literal with the
+# suggested key is never found by Header.Get.
 linters:
   default: standard # errcheck, govet, ineffassign, staticcheck, unused
   enable:
+    - asasalint
+    - bidichk
     - bodyclose
+    - containedctx
+    - contextcheck
+    - copyloopvar
+    - durationcheck
+    - errchkjson
     - errorlint # correct errors.Is/As and %w wrapping
+    - exhaustive # switches over enums cover every value
+    - fatcontext
+    - forcetypeassert
+    - gocheckcompilerdirectives
+    - gochecksumtype
+    - gocritic
     - gosec # security smells
+    - loggercheck
+    - makezero
+    - mirror
     - misspell
+    - modernize
+    - musttag
+    - nilerr
+    - nilnesserr
+    - nilnil
     - noctx # HTTP/DB calls must carry a context
+    - nolintlint # every nolint names a linter and a reason, and is needed
+    - nosprintfhostport
+    - predeclared
+    - reassign
+    - recvcheck
     - revive
+    - rowserrcheck
+    - sloglint
     - sqlclosecheck
+    - thelper
     - unconvert
+    - unparam
+    - usestdlibvars
+    - usetesting
+    - wastedassign
+    - wrapcheck # errors crossing a module boundary get context
   settings:
+    errchkjson:
+      # Unchecked encoding of types that cannot fail is fine; checking it is
+      # noise. Types that can fail (any, maps with interface values, ...)
+      # must be checked.
+      check-error-free-encoding: true
+    nolintlint:
+      require-explanation: true
+      require-specific: true
     revive:
       rules:
         - name: exported
           disabled: true # internal packages; doc comments by judgement
+    thelper:
+      # t.Helper() first is checked; parameter names are style.
+      test:
+        name: false
+      benchmark:
+        name: false
+      tb:
+        name: false
+      fuzz:
+        name: false
+    wrapcheck:
+      # Package boundaries inside this module are not "external".
+      ignore-package-globs:
+        - github.com/skraus2/email-platform/*
+      ignore-sigs:
+        # The defaults:
+        - .Errorf(
+        - errors.New(
+        - errors.Unwrap(
+        - errors.Join(
+        - .Wrap(
+        - .Wrapf(
+        - .WithMessage(
+        - .WithMessagef(
+        - .WithStack(
+        # Transaction helpers return the callback's error, which carries
+        # its own context already.
+        - pgx/v5.BeginFunc(
+        - pgx/v5.BeginTxFunc(
+        # A canceled context is reported as such.
+        - (context.Context).Err(
+        # Control-flow signals for the job queue, not failures.
+        - river.JobSnooze(
+        - river.JobCancel(
   exclusions:
+    generated: strict # sqlc output
     presets:
       - std-error-handling
     rules:
       - path: _test\.go
-        linters: [gosec, noctx]
+        # A failed type assertion panics and fails the test, which is the
+        # wanted outcome there; test helpers report errors via t.Fatal, so
+        # returned errors need no wrapping; fixtures carry the test's
+        # context, and cleanups run on a fresh one because t.Context() is
+        # already canceled there; test helpers keep general signatures even
+        # when today's callers pass one value.
+        linters:
+          [
+            gosec,
+            noctx,
+            forcetypeassert,
+            wrapcheck,
+            containedctx,
+            contextcheck,
+            unparam,
+          ]
 
 formatters:
   enable:

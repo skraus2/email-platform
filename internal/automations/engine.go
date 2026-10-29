@@ -169,8 +169,7 @@ func (e *Engine) execute(ctx context.Context, tx pgx.Tx, args jobs.AutomationSte
 				return end(RunExited, ReasonSuppressed, i, emails)
 			}
 			id, err := e.send(ctx, tx, q, r, c, s, i)
-			var te *templates.Error
-			if errors.As(err, &te) {
+			if _, ok := errors.AsType[*templates.Error](err); ok {
 				// The contact's attributes or the event data do not fit
 				// the version (never logged: personal data).
 				return end(RunFailed, ReasonRenderFailed, i, emails)

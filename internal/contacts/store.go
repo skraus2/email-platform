@@ -136,8 +136,7 @@ func validateConsent(status string, source *string) error {
 // Create adds a contact. Validation errors are *Error.
 func (s *Store) Create(ctx context.Context, projectID uuid.UUID, in CreateInput) (Contact, error) {
 	if err := emails.ValidateAddress(in.Email); err != nil {
-		var ve *emails.ValidationError
-		if errors.As(err, &ve) {
+		if ve, ok := errors.AsType[*emails.ValidationError](err); ok {
 			return Contact{}, invalid("email", "%s", ve.Reason)
 		}
 		return Contact{}, err
@@ -267,7 +266,7 @@ func (s *Store) List(ctx context.Context, projectID uuid.UUID, f ListFilter, lim
 	var rows []contactRow
 	if f.Email != "" {
 		r, err := q.ListContactsByEmail(ctx, store.ListContactsByEmailParams{
-			ProjectID: projectID, Email: f.Email, BeforeID: before, Status: status, RowLimit: int32(limit + 1), //nolint:gosec // limit ≤ MaxPage
+			ProjectID: projectID, Email: f.Email, BeforeID: before, Status: status, RowLimit: int32(limit + 1), // limit ≤ MaxPage
 		})
 		if err != nil {
 			return nil, false, fmt.Errorf("list contacts: %w", err)
@@ -277,7 +276,7 @@ func (s *Store) List(ctx context.Context, projectID uuid.UUID, f ListFilter, lim
 		}
 	} else {
 		r, err := q.ListContacts(ctx, store.ListContactsParams{
-			ProjectID: projectID, BeforeID: before, Status: status, RowLimit: int32(limit + 1), //nolint:gosec // limit ≤ MaxPage
+			ProjectID: projectID, BeforeID: before, Status: status, RowLimit: int32(limit + 1), // limit ≤ MaxPage
 		})
 		if err != nil {
 			return nil, false, fmt.Errorf("list contacts: %w", err)

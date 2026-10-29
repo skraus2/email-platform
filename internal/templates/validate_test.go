@@ -131,8 +131,7 @@ func FuzzCompile(f *testing.F) {
 	f.Fuzz(func(t *testing.T, src string) {
 		c, err := Compile(Source{Subject: "s", Text: src, HTML: src}, testSchema)
 		if err != nil {
-			var te *Error
-			if !errors.As(err, &te) {
+			if _, ok := errors.AsType[*Error](err); !ok {
 				t.Fatalf("non-template error %T: %v", err, err)
 			}
 			return

@@ -52,7 +52,7 @@ func TestUnsubscribeByToken(t *testing.T) {
 		t.Fatalf("repeat: %v %v %+v", id, err, again)
 	}
 	// The token survives re-subscription.
-	if _, err := s.Update(ctx, a, c.ID, contacts.UpdateInput{Status: ptr("subscribed"), ConsentSource: ptr("re-opt-in")}); err != nil {
+	if _, err := s.Update(ctx, a, c.ID, contacts.UpdateInput{Status: new("subscribed"), ConsentSource: new("re-opt-in")}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.Unsubscribe(ctx, a, tok); err != nil {

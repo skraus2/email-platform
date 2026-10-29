@@ -52,7 +52,7 @@ func ListEmails(ctx context.Context, q *store.Queries, projectID uuid.UUID, stat
 	if status != "" {
 		filter = &status
 	}
-	rows, err := q.ListEmails(ctx, store.ListEmailsParams{ProjectID: projectID, Status: filter, Limit: int32(limit)}) //nolint:gosec // bounded above
+	rows, err := q.ListEmails(ctx, store.ListEmailsParams{ProjectID: projectID, Status: filter, Limit: int32(limit)}) // bounded above
 	if err != nil {
 		return nil, fmt.Errorf("list emails: %w", err)
 	}

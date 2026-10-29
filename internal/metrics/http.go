@@ -68,7 +68,7 @@ func (w *statusWriter) WriteHeader(code int) {
 
 func (w *statusWriter) Write(b []byte) (int, error) {
 	w.wroteHeader = true
-	return w.ResponseWriter.Write(b)
+	return w.ResponseWriter.Write(b) //nolint:wrapcheck // an io.Writer wrapper passes the underlying error through
 }
 
 // Unwrap lets http.ResponseController reach the underlying writer.

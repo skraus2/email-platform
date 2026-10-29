@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -100,14 +101,14 @@ func TestQueriesScopeByProject(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		names := queryName.FindAllStringSubmatchIndex(string(raw), -1)
+		names := queryName.FindAllSubmatchIndex(raw, -1)
 		for i, m := range names {
 			name := string(raw[m[2]:m[3]])
 			end := len(raw)
 			if i+1 < len(names) {
 				end = names[i+1][0]
 			}
-			start := m[1] + strings.IndexByte(string(raw[m[1]:end]), '\n') + 1
+			start := m[1] + bytes.IndexByte(raw[m[1]:end], '\n') + 1
 			body := comment.ReplaceAllString(string(raw[start:end]), "")
 			seen[name] = true
 			if !touchesProjectTables(body) {

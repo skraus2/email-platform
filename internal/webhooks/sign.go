@@ -39,11 +39,12 @@ type payload struct {
 // Payload builds the request body for an event. The same inputs always give
 // the same bytes, so a retry repeats the identical body.
 func Payload(eventID uuid.UUID, eventType string, receivedAt time.Time, emailID, projectID uuid.UUID) ([]byte, error) {
-	return json.Marshal(payload{
+	b, _ := json.Marshal(payload{
 		ID: eventID.String(), Type: "email." + eventType,
 		CreatedAt: receivedAt.UTC().Format(time.RFC3339Nano),
 		Data:      payloadData{EmailID: emailID.String(), ProjectID: projectID.String()},
 	})
+	return b, nil
 }
 
 func mac(secret string, timestamp string, body []byte) []byte {
@@ -75,7 +76,7 @@ func Verify(secret, timestamp, signature string, body []byte, tolerance time.Dur
 		return ErrInvalidSignature
 	}
 	want := mac(secret, timestamp, body)
-	for _, part := range strings.Fields(signature) {
+	for part := range strings.FieldsSeq(signature) {
 		v, ok := strings.CutPrefix(part, "v1=")
 		if !ok {
 			continue

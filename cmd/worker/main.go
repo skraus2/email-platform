@@ -228,7 +228,9 @@ func serveMetrics(ctx context.Context, addr string, reg *prometheus.Registry, lo
 	go func() { done <- srv.Serve(ln) }()
 	logger.Info("metrics listener started", slog.String("metrics_addr", ln.Addr().String()))
 	var once sync.Once
-	return func(timeout time.Duration) {
+	// The stop function runs at shutdown, when the caller's context is
+	// already done, so it starts from a fresh one.
+	return func(timeout time.Duration) { //nolint:contextcheck // see above
 		once.Do(func() {
 			shutdownCtx, cancel := context.WithTimeout(context.Background(), timeout)
 			defer cancel()
@@ -269,7 +271,7 @@ func newProvider(ctx context.Context, cfg config.Config) (delivery.Provider, err
 // opt-in. Ingested events go through rec, which carries the webhook outbox.
 func newEventPoller(ctx context.Context, cfg config.Config, rec *events.Recorder, logger *slog.Logger) (*ses.Poller, error) {
 	if cfg.MailProvider != "ses" {
-		return nil, nil
+		return nil, nil //nolint:nilnil // no poller without SES, as documented
 	}
 	return ses.NewPoller(ctx, ses.PollerConfig{
 		Region: cfg.SES.Region, QueueURL: cfg.SES.EventsQueueURL, TopicARN: cfg.SES.EventsTopicARN,

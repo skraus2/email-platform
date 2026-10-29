@@ -61,7 +61,7 @@ func ListSuppressions(ctx context.Context, q *store.Queries, projectID uuid.UUID
 	if limit < 1 || limit > MaxAdminListLimit {
 		return nil, fmt.Errorf("limit must be between 1 and %d", MaxAdminListLimit)
 	}
-	rows, err := q.ListSuppressions(ctx, store.ListSuppressionsParams{ProjectID: projectID, Limit: int32(limit)}) //nolint:gosec // bounded above
+	rows, err := q.ListSuppressions(ctx, store.ListSuppressionsParams{ProjectID: projectID, Limit: int32(limit)}) // bounded above
 	if err != nil {
 		return nil, fmt.Errorf("list suppressions: %w", err)
 	}
