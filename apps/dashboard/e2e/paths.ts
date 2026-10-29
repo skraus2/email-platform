@@ -5,4 +5,4 @@ import path from "node:path";
  * it in its temporary run directory, which it removes afterwards.
  */
 export const AUTH_STATE =
-  process.env.E2E_AUTH_STATE ?? path.join(__dirname, ".auth", "admin.json");
+  process.env["E2E_AUTH_STATE"] ?? path.join(__dirname, ".auth", "admin.json");

@@ -57,7 +57,7 @@ export type Account = { username: string; password: string };
 let cached: Seed | undefined;
 
 export function seed(): Seed {
-  const path = process.env.E2E_SEED;
+  const path = process.env["E2E_SEED"];
   if (!path) {
     throw new Error("E2E_SEED is not set; run the suite with `make test-e2e`");
   }

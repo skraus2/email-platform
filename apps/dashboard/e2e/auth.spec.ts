@@ -62,7 +62,7 @@ test("a session revoked elsewhere ends at the login page", async ({
 }) => {
   await login(page);
   const other = await browser.newContext({
-    baseURL,
+    ...(baseURL === undefined ? {} : { baseURL }),
     storageState: { cookies: await page.context().cookies(), origins: [] },
   });
   try {

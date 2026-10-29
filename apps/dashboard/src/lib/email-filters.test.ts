@@ -201,5 +201,5 @@ test("broadcast filter and the canceled status", () => {
     bad.errors.map((e) => e.field),
     ["broadcast_id"],
   );
-  assert.equal(bad.errors[0].message.includes("nope"), false);
+  assert.equal(bad.errors[0]?.message.includes("nope"), false);
 });

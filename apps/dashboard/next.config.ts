@@ -7,7 +7,9 @@ const nextConfig: NextConfig = {
   poweredByHeader: false,
   // The container image runs the self-contained server; local runs and the
   // E2E tests keep `next start`.
-  output: process.env.NEXT_OUTPUT === "standalone" ? "standalone" : undefined,
+  ...(process.env["NEXT_OUTPUT"] === "standalone"
+    ? { output: "standalone" as const }
+    : {}),
 };
 
 export default nextConfig;

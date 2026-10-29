@@ -11,7 +11,7 @@ const TIMEOUT_MS = 10_000;
 /** Builds an admin API URL on the configured base (ADMIN_API_URL). */
 export function adminURL(path: string, query?: URLSearchParams): URL {
   return buildAdminURL(
-    process.env.ADMIN_API_URL ?? "http://127.0.0.1:8081",
+    process.env["ADMIN_API_URL"] ?? "http://127.0.0.1:8081",
     path,
     query,
   );
@@ -53,7 +53,7 @@ export async function adminFetch<T>(path: string, init: Init = {}): Promise<T> {
     if (!token) {
       redirect("/login");
     }
-    headers.Authorization = `Session ${token}`;
+    headers["Authorization"] = `Session ${token}`;
   }
   if (init.body !== undefined) {
     headers["Content-Type"] = "application/json";
@@ -61,7 +61,7 @@ export async function adminFetch<T>(path: string, init: Init = {}): Promise<T> {
   const res = await fetch(adminURL(path, init.query), {
     method: init.method ?? "GET",
     headers,
-    body: init.body === undefined ? undefined : JSON.stringify(init.body),
+    body: init.body === undefined ? null : JSON.stringify(init.body),
     cache: "no-store",
     redirect: "error",
     signal: AbortSignal.timeout(TIMEOUT_MS),

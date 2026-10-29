@@ -12,7 +12,7 @@ import {
 import { loadTemplate, loadTemplateVersion } from "@/lib/admin-data";
 import { isUUID } from "@/lib/email-filters";
 import { shorten } from "@/lib/format";
-import { isVersion, variableNames } from "@/lib/preview-vars";
+import { isVersion, variableEntries } from "@/lib/preview-vars";
 import { previewTemplate } from "./actions";
 import { PreviewForm } from "./preview-form";
 
@@ -67,7 +67,7 @@ export default async function VersionPage({ params }: Props) {
     throw err;
   }
   const base = `/templates/${encodeURIComponent(t.id)}`;
-  const names = variableNames(v.variables);
+  const entries = variableEntries(v.variables);
   const newer =
     t.latest_version !== null && t.latest_version > v.version
       ? t.latest_version
@@ -104,7 +104,7 @@ export default async function VersionPage({ params }: Props) {
 
       <section aria-labelledby="variables-h">
         <h2 id="variables-h">Variables</h2>
-        {names.length === 0 ? (
+        {entries.length === 0 ? (
           <p className="empty">This version declares no variables.</p>
         ) : (
           <div
@@ -124,8 +124,7 @@ export default async function VersionPage({ params }: Props) {
                 </tr>
               </thead>
               <tbody>
-                {names.map((n) => {
-                  const spec = v.variables[n];
+                {entries.map(([n, spec]) => {
                   return (
                     <tr key={n}>
                       <th scope="row">

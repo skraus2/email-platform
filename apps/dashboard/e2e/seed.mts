@@ -26,7 +26,7 @@ const env = (name: string): string => {
 
 const SEED = env("E2E_SEED");
 const API = env("E2E_API_URL");
-const MAILPIT = process.env.TEST_MAILPIT_URL ?? "http://127.0.0.1:8025";
+const MAILPIT = process.env["TEST_MAILPIT_URL"] ?? "http://127.0.0.1:8025";
 // Only a local Mailpit can vouch for what the worker sent.
 if (
   !["127.0.0.1", "localhost", "[::1]", "mailpit"].includes(
@@ -44,6 +44,15 @@ function admin(args: string[], input?: string): string {
   }).trim();
 }
 
+/** The first tab-separated field of an admin CLI output line. */
+function firstField(line: string): string {
+  const [field] = line.split("\t");
+  if (!field) {
+    throw new Error("admin CLI printed no fields");
+  }
+  return field;
+}
+
 async function v1<T>(key: string, path: string, body?: unknown): Promise<T> {
   const res = await fetch(`${API}${path}`, {
     method: body === undefined ? "GET" : "POST",
@@ -51,7 +60,7 @@ async function v1<T>(key: string, path: string, body?: unknown): Promise<T> {
       Authorization: `Bearer ${key}`,
       "Content-Type": "application/json",
     },
-    body: body === undefined ? undefined : JSON.stringify(body),
+    body: body === undefined ? null : JSON.stringify(body),
   });
   if (!res.ok) {
     throw new Error(`${path}: ${res.status} ${await res.text()}`);
@@ -148,9 +157,9 @@ async function seedAll() {
     V1_NAME,
   );
   const projectName = "E2E shop";
-  const projectId = admin(["project", "create", "-name", projectName]).split(
-    "\t",
-  )[0];
+  const projectId = firstField(
+    admin(["project", "create", "-name", projectName]),
+  );
   const apiKey = admin([
     "key",
     "create",
@@ -160,22 +169,19 @@ async function seedAll() {
     "emails:send,emails:read,templates:read,templates:write,contacts:write,broadcasts:read,broadcasts:write,automations:read,automations:write,events:write",
   ]);
   needles(apiKey);
-  const accounts: Account[] = ["e2e-admin", "e2e-locked"].map((username) => ({
-    username,
+  const adminAccount: Account = { username: "e2e-admin", password: password() };
+  const lockedAccount: Account = {
+    username: "e2e-locked",
     password: password(),
-  }));
+  };
+  const accounts = [adminAccount, lockedAccount];
   needles(...accounts.map((a) => a.password));
   for (const a of accounts) {
     admin(["user", "create", "-username", a.username], `${a.password}\n`);
   }
-  const senderId = admin([
-    "sender",
-    "add",
-    "-project",
-    projectId,
-    "-address",
-    FROM,
-  ]).split("\t")[0];
+  const senderId = firstField(
+    admin(["sender", "add", "-project", projectId, "-address", FROM]),
+  );
   admin(["sender", "verify", "-project", projectId, "-id", senderId]);
 
   const order = await v1<{ id: string }>(apiKey, "/v1/templates", {
@@ -311,6 +317,10 @@ async function seedAll() {
       data: { campaign: eventData },
     },
   );
+  const [firstRun] = started.runs;
+  if (firstRun === undefined) {
+    throw new Error("the contact event started no automation run");
+  }
 
   // A planned email the worker sends once it is due (during "wait").
   const plannedSent = await send({
@@ -335,8 +345,8 @@ async function seedAll() {
     projectId,
     projectName,
     apiKey,
-    admin: accounts[0],
-    locked: accounts[1],
+    admin: adminAccount,
+    locked: lockedAccount,
     sender: { id: senderId, address: FROM },
     order: { id: order.id, v1: ORDER_V1 },
     large: { id: large.id },
@@ -363,7 +373,7 @@ async function seedAll() {
     automation: {
       id: automation.id,
       name: automationName,
-      runId: started.runs[0].id,
+      runId: firstRun.id,
       contact: welcomeContact,
     },
   };
@@ -462,9 +472,9 @@ async function checkTemplateSends() {
   const s = JSON.parse(readFileSync(SEED, "utf8")) as Seed;
   const published = s.emails.templateEmailId;
   const old = s.emails.templateV1.id;
-  const fail = (msg: string): never => {
+  function fail(msg: string): never {
     throw new Error(`template send check: ${msg}`);
-  };
+  }
 
   for (const [id, version] of [
     [published, 2],
@@ -487,10 +497,10 @@ async function checkTemplateSends() {
   }
 
   const latest = await mailpitMessages(published);
-  if (latest.length !== 1) {
+  const [l] = latest;
+  if (latest.length !== 1 || l === undefined) {
     fail(`published send: ${latest.length} Mailpit messages, want 1`);
   }
-  const [l] = latest;
   if (l.Subject !== "Your order") {
     fail(`published send subject ${JSON.stringify(l.Subject)}`);
   }
@@ -502,10 +512,10 @@ async function checkTemplateSends() {
   }
 
   const older = await mailpitMessages(old);
-  if (older.length !== 1) {
+  const [o] = older;
+  if (older.length !== 1 || o === undefined) {
     fail(`version 1 send: ${older.length} Mailpit messages, want 1`);
   }
-  const [o] = older;
   if (o.Subject !== s.emails.templateV1.subject) {
     fail(`version 1 subject ${JSON.stringify(o.Subject)}`);
   }
@@ -561,9 +571,9 @@ async function mailpitHeaders(id: string): Promise<Record<string, string[]>> {
  */
 async function checkBroadcasts() {
   const s = JSON.parse(readFileSync(SEED, "utf8")) as Seed;
-  const fail = (msg: string): never => {
+  function fail(msg: string): never {
     throw new Error(`broadcast check: ${msg}`);
-  };
+  }
   const listed = await v1<{
     data: { id: string; to: string; status: string }[];
   }>(s.apiKey, `/v1/emails?broadcast_id=${s.broadcast.id}`);
@@ -573,25 +583,28 @@ async function checkBroadcasts() {
   const tokens = new Map<string, string>();
   for (const e of listed.data) {
     const msgs = await mailpitMessages(e.id);
-    if (e.status !== "captured" || msgs.length !== 1) {
+    const [msg] = msgs;
+    if (e.status !== "captured" || msgs.length !== 1 || msg === undefined) {
       fail(`${e.to}: status ${e.status}, ${msgs.length} messages`);
     }
-    const headers = await mailpitHeaders(msgs[0].ID);
+    const headers = await mailpitHeaders(msg.ID);
     const link =
       /^<(https:\/\/app\.e2e-shop\.test\/unsubscribe\?t=([A-Za-z0-9_-]{43}))>$/.exec(
         headers["List-Unsubscribe"]?.[0] ?? "",
       );
+    const [, url, token] = link ?? [];
     if (
-      !link ||
+      url === undefined ||
+      token === undefined ||
       headers["List-Unsubscribe-Post"]?.[0] !== "List-Unsubscribe=One-Click"
     ) {
       fail(`${e.to}: unsubscribe headers missing or malformed`);
     }
-    if (!msgs[0].Text.includes(link![1]) || !msgs[0].HTML.includes(link![1])) {
+    if (!msg.Text.includes(url) || !msg.HTML.includes(url)) {
       fail(`${e.to}: the body does not carry the personal unsubscribe link`);
     }
-    needles(link![2]);
-    tokens.set(e.to, link![2]);
+    needles(token);
+    tokens.set(e.to, token);
   }
   if (new Set(tokens.values()).size !== tokens.size) {
     fail("unsubscribe tokens are not personal");
@@ -602,6 +615,9 @@ async function checkBroadcasts() {
 
   // The app's unsubscribe page reports the first reader's token.
   const [first, second] = s.broadcast.recipients;
+  if (first === undefined || second === undefined) {
+    fail("the seed has fewer than two broadcast recipients");
+  }
   const un = await v1<{ status: string }>(s.apiKey, "/v1/unsubscribes", {
     token: tokens.get(first),
   });
@@ -639,7 +655,7 @@ async function checkBroadcasts() {
   }
   if (
     done.data.length !== 1 ||
-    done.data[0].to !== second ||
+    done.data[0]?.to !== second ||
     done.data[0].status !== "captured"
   ) {
     fail(

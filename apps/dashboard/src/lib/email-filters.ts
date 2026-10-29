@@ -46,19 +46,20 @@ export const FAILURE_CODES = [
 
 export const PAGE_SIZE = 50;
 
+/** An unset filter is absent or undefined; both mean "no filter". */
 export type EmailFilters = {
-  project_id?: string;
+  project_id?: string | undefined;
   status: EmailStatus[];
-  recipient?: string;
+  recipient?: string | undefined;
   /** UTC calendar date (YYYY-MM-DD), inclusive. */
-  from?: string;
+  from?: string | undefined;
   /** UTC calendar date (YYYY-MM-DD), inclusive. */
-  to?: string;
-  error_code?: string;
-  q?: string;
-  template_id?: string;
-  broadcast_id?: string;
-  cursor?: string;
+  to?: string | undefined;
+  error_code?: string | undefined;
+  q?: string | undefined;
+  template_id?: string | undefined;
+  broadcast_id?: string | undefined;
+  cursor?: string | undefined;
 };
 
 export type FilterField = Exclude<keyof EmailFilters, "status"> | "status";
@@ -114,7 +115,7 @@ export function parseEmailFilters(sp: SearchParams): {
     }
   }
 
-  const statuses = [sp.status ?? []].flat().filter((s) => s !== "");
+  const statuses = [sp["status"] ?? []].flat().filter((s) => s !== "");
   for (const s of statuses) {
     if (!(EMAIL_STATUSES as readonly string[]).includes(s)) {
       fail("status", "must be one of the listed statuses.");

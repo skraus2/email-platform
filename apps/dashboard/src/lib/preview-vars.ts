@@ -32,6 +32,15 @@ export function variableNames(schema: VariableSchema): string[] {
   return Object.keys(schema).sort();
 }
 
+/** Declared variables with their specs, in the order of variableNames. */
+export function variableEntries(
+  schema: VariableSchema,
+): [string, VariableSpec][] {
+  return Object.entries(schema).sort(([a], [b]) =>
+    a < b ? -1 : a > b ? 1 : 0,
+  );
+}
+
 /** The form field of a variable; prefixed so it cannot clash with framework fields. */
 export function fieldName(name: string): string {
   return `v.${name}`;
@@ -50,8 +59,7 @@ export function buildPreviewVariables(
 ): { variables: Record<string, VariableValue>; errors: VariableError[] } {
   const variables: Record<string, VariableValue> = {};
   const errors: VariableError[] = [];
-  for (const name of variableNames(schema)) {
-    const spec = schema[name];
+  for (const [name, spec] of variableEntries(schema)) {
     const raw = get(fieldName(name)) ?? "";
     const fail = (message: string) => errors.push({ name, message });
     switch (spec.type) {
@@ -104,13 +112,17 @@ export function apiFieldError(
   schema: VariableSchema,
   message: string,
 ): VariableError | undefined {
-  const m = API_FIELD.exec(message);
-  if (!m || !Object.hasOwn(schema, m[1])) {
+  const [, name, rawReason] = API_FIELD.exec(message) ?? [];
+  if (
+    name === undefined ||
+    rawReason === undefined ||
+    !Object.hasOwn(schema, name)
+  ) {
     return undefined;
   }
-  const reason = m[2].trim();
+  const reason = rawReason.trim();
   return {
-    name: m[1],
+    name,
     message: `${reason.charAt(0).toUpperCase()}${reason.slice(1)}${reason.endsWith(".") ? "" : "."}`,
   };
 }

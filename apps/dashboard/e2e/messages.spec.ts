@@ -73,6 +73,9 @@ test("filtering by status and recipient narrows the list and keeps the filters i
     new RegExp(`[?&]recipient=${encodeURIComponent(carol)}(&|$)`),
   );
   const count = s.emails.recipients[carol];
+  if (count === undefined) {
+    throw new Error("seed has no emails for the recipient");
+  }
   await expectCaption(page, `${count} emails, newest first`);
   await expect(rows(page)).toHaveCount(count);
   for (const cell of await rows(page).locator("td:nth-child(3)").all()) {

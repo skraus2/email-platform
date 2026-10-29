@@ -6,18 +6,19 @@ import {
   previewFailure,
   fieldName,
   isVersion,
+  variableEntries,
   variableNames,
   type VariableSchema,
 } from "./preview-vars.ts";
 
-const SCHEMA: VariableSchema = {
+const SCHEMA = {
   name: { type: "string", required: true, max_length: 5 },
   note: { type: "string", required: false, max_length: 1000 },
   amount: { type: "number", required: true },
   discount: { type: "number", required: false },
   vip: { type: "boolean", required: true },
   beta: { type: "boolean", required: false },
-};
+} satisfies VariableSchema;
 
 function form(values: Record<string, string>) {
   return (field: string) => values[field] ?? null;
@@ -85,7 +86,7 @@ test("numbers must be finite decimal literals", () => {
       form({ "v.amount": bad }),
     );
     assert.equal(out.errors.length, 1, bad);
-    assert.equal(out.errors[0].name, "amount");
+    assert.equal(out.errors[0]?.name, "amount");
     assert.deepEqual(out.variables, {}, bad);
   }
   for (const [good, want] of [
@@ -101,7 +102,7 @@ test("numbers must be finite decimal literals", () => {
       form({ "v.amount": good }),
     );
     assert.deepEqual(out.errors, [], good);
-    assert.equal(out.variables.amount, want, good);
+    assert.equal(out.variables["amount"], want, good);
   }
 });
 
@@ -111,7 +112,7 @@ test("booleans accept only true and false", () => {
     form({ "v.beta": "yes" }),
   );
   assert.deepEqual(out.variables, {});
-  assert.equal(out.errors[0].name, "beta");
+  assert.equal(out.errors[0]?.name, "beta");
 });
 
 test("strings longer than max_length (in characters) are refused", () => {
@@ -124,7 +125,7 @@ test("strings longer than max_length (in characters) are refused", () => {
     { name: SCHEMA.name },
     form({ "v.name": "abcdef" }),
   );
-  assert.equal(long.errors[0].name, "name");
+  assert.equal(long.errors[0]?.name, "name");
   assert.deepEqual(long.variables, {});
 });
 
@@ -156,6 +157,17 @@ test("variable names are sorted; field names are prefixed", () => {
     "note",
     "vip",
   ]);
+  assert.deepEqual(
+    variableEntries(SCHEMA).map(([name, spec]) => [name, spec.type]),
+    [
+      ["amount", "number"],
+      ["beta", "boolean"],
+      ["discount", "number"],
+      ["name", "string"],
+      ["note", "string"],
+      ["vip", "boolean"],
+    ],
+  );
   assert.equal(fieldName("name"), "v.name");
 });
 

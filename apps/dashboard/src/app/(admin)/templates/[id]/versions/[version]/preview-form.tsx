@@ -6,7 +6,7 @@ import { displaySubject } from "@/lib/format";
 import {
   fieldName,
   previewFailure,
-  variableNames,
+  variableEntries,
   type VariableSchema,
   type VariableSpec,
 } from "@/lib/preview-vars";
@@ -53,7 +53,7 @@ export function PreviewForm({
     },
     undefined,
   );
-  const names = variableNames(schema);
+  const entries = variableEntries(schema);
   const errorOf = (name: string) =>
     state?.fieldErrors.find((e) => e.name === name)?.message;
   const result = state?.result;
@@ -72,13 +72,8 @@ export function PreviewForm({
           startTransition(() => dispatch(form));
         }}
       >
-        {names.map((name) => (
-          <Field
-            key={name}
-            name={name}
-            spec={schema[name]}
-            error={errorOf(name)}
-          />
+        {entries.map(([name, spec]) => (
+          <Field key={name} name={name} spec={spec} error={errorOf(name)} />
         ))}
         {state?.error ? (
           <div key={state.attempt} className="error" role="alert">

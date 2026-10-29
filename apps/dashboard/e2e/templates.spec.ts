@@ -235,7 +235,7 @@ test.describe("with its own session", () => {
     ).toBeVisible();
     // Sign out the same session in another browser.
     const other = await browser.newContext({
-      baseURL,
+      ...(baseURL === undefined ? {} : { baseURL }),
       storageState: { cookies: await page.context().cookies(), origins: [] },
     });
     try {

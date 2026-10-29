@@ -7,12 +7,12 @@ import { AUTH_STATE } from "./e2e/paths";
  * worker on a throwaway database, seeds it and sets ADMIN_API_URL and
  * E2E_SEED; Playwright then serves the build with `next start`.
  */
-const port = Number(process.env.E2E_DASHBOARD_PORT ?? 3100);
+const port = Number(process.env["E2E_DASHBOARD_PORT"] ?? 3100);
 const baseURL = `http://127.0.0.1:${port}`;
-const ci = Boolean(process.env.CI);
+const ci = Boolean(process.env["CI"]);
 // The run script collects the server log in its run directory and checks it
 // for leaked secrets.
-const serverLog = process.env.E2E_DASHBOARD_LOG;
+const serverLog = process.env["E2E_DASHBOARD_LOG"];
 
 export default defineConfig({
   testDir: "e2e",

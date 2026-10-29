@@ -39,9 +39,9 @@ export function FilterForm({
   };
   const fieldHints: Partial<Record<FilterField, string>> = {
     ...hints,
-    project_id: moreProjects
-      ? `Only the first ${projectCap} projects are listed.`
-      : undefined,
+    ...(moreProjects
+      ? { project_id: `Only the first ${projectCap} projects are listed.` }
+      : {}),
   };
   const errorOf = (field: FilterField) => errors.find((e) => e.field === field);
   const fieldProps = (field: FilterField) => {
@@ -73,7 +73,7 @@ export function FilterForm({
   const project = raw("project_id").toLowerCase();
   const knownProject = !project || projects.some((p) => p.id === project);
   const statuses = new Set(
-    [params.status ?? []].flat().filter((s) => s !== ""),
+    [params["status"] ?? []].flat().filter((s) => s !== ""),
   );
 
   return (

@@ -9,7 +9,7 @@ test("builds URLs on the configured origin", () => {
     ["http://h:1/pre/", "http://h:1/pre/admin/v1/me"],
     ["https://h:1/pre", "https://h:1/pre/admin/v1/me"],
     ["http://[::1]:8081", "http://[::1]:8081/admin/v1/me"],
-  ]) {
+  ] as const) {
     assert.equal(buildAdminURL(base, "/admin/v1/me").href, want);
   }
   const q = new URLSearchParams({ q: "a&b=c", status: "failed" });

@@ -25,7 +25,7 @@ test("relative hints round down to the largest unit", () => {
     ["2026-09-16T12:00:00Z", "30 days ago"],
     ["2026-10-16T12:30:00Z", "in 30 minutes"],
     ["2026-10-18T12:00:00Z", "in 2 days"],
-  ]) {
+  ] as const) {
     assert.equal(relativeTime(iso, now), want, iso);
   }
   assert.equal(relativeTime("garbage", now), "");
