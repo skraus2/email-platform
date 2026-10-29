@@ -252,7 +252,7 @@ test("preview failures map to fixed messages; only render errors show the API te
     assert.deepEqual(
       previewFailure(SCHEMA, status, code, "raw API text"),
       { error: want, fieldErrors: [] },
-      `${status} ${code}`,
+      `${String(status)} ${String(code)}`,
     );
   }
 });

@@ -218,7 +218,7 @@ async function EmailResults({
                 </td>
                 <td>{e.error_code ?? <None />}</td>
                 <td>
-                  {e.template_id ? (
+                  {e.template_id && e.template_version !== null ? (
                     <Link
                       href={`/templates/${encodeURIComponent(e.template_id)}/versions/${e.template_version}`}
                       prefetch={false}

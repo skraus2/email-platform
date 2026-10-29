@@ -50,7 +50,7 @@ export function describeStep(step: AutomationStep): string {
       }
       const value =
         step.value === undefined ? "" : ` ${JSON.stringify(step.value)}`;
-      return `Continue only if attribute "${step.attribute}" ${op}${value}`;
+      return `Continue only if attribute "${step.attribute ?? ""}" ${op}${value}`;
     }
     case "send":
       return `Send an email from ${step.from}`;

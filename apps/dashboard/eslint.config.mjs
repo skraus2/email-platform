@@ -20,11 +20,19 @@ const eslintConfig = defineConfig([
     rules: {
       // The codebase declares object shapes with `type`; keep one style.
       "@typescript-eslint/consistent-type-definitions": ["error", "type"],
-      // Numbers render the same everywhere; null, undefined and objects
-      // in template literals stay errors.
+      // Numbers render the same everywhere; null, undefined, booleans, any
+      // and objects in template literals stay errors. Every option is
+      // listed: options left out fall back to the rule's lax defaults.
       "@typescript-eslint/restrict-template-expressions": [
         "error",
-        { allowNumber: true },
+        {
+          allowAny: false,
+          allowBoolean: false,
+          allowNever: false,
+          allowNullish: false,
+          allowNumber: true,
+          allowRegExp: false,
+        },
       ],
       // node:test registers tests synchronously; the returned promise
       // carries nothing the file must await.

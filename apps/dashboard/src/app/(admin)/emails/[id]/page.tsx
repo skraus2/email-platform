@@ -109,7 +109,7 @@ export default async function EmailPage({ params }: PageProps<"/emails/[id]">) {
           <dd>{email.attempts}</dd>
           <dt>Template</dt>
           <dd>
-            {email.template_id ? (
+            {email.template_id && email.template_version !== null ? (
               <>
                 <Link
                   href={`/templates/${encodeURIComponent(email.template_id)}/versions/${email.template_version}`}
