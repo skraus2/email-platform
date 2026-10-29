@@ -1,0 +1,31 @@
+# Parameters of the AWS setup for deploy/aws/up, teardown and leftovers.
+# Copy to deploy/aws/testrun.local (gitignored) and fill in. Contains no
+# secrets; credentials come from the SSO profile.
+
+AWS_PROFILE=email-platform-admin
+AWS_REGION=eu-central-1
+
+# Budget alerts and Let's Encrypt account.
+OPERATOR_EMAIL=ops@example.com
+BUDGET_USD=10
+
+# Sending domain (SES identity); optional MAIL FROM subdomain of it; one
+# mailbox to verify as sandbox recipient.
+SES_DOMAIN=mail.example.com
+SES_MAIL_FROM_DOMAIN=bounce.mail.example.com
+SES_TEST_RECIPIENT=me@example.com
+
+# Principals of this account allowed to assume the live test role, as an
+# ARN pattern (empty: any principal of the account that may assume roles).
+OPERATOR_PRINCIPAL_ARN=arn:aws:iam::123456789012:role/aws-reserved/sso.amazonaws.com/*/AWSReservedSSO_AdministratorAccess_*
+
+# Source range for port 443 (the internal apps; for the test the operator's
+# public address as /32).
+API_ALLOWED_CIDR=203.0.113.10/32
+
+# aws rds describe-db-engine-versions --engine postgres --query "DBEngineVersions[?starts_with(EngineVersion,'18.')].EngineVersion"
+DB_ENGINE_VERSION=18.1
+
+# Set after the first `up platform` (it prints the resolved image); a
+# changed image would replace the VM.
+PLATFORM_IMAGE_ID=

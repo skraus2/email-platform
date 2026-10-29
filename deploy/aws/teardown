@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+# Removes the AWS setup created with deploy/aws/up: the runtime parameters
+# under the SSM prefix (metadata only, values are never fetched), then the
+# stacks in reverse creation order, each waited for. The database goes
+# without a final snapshot. The budget stays so lingering costs still
+# alert; delete it after the final leftovers check with --with-budget. Ends
+# with deploy/aws/leftovers.
+#
+#   deploy/aws/teardown [--with-budget]
+set -euo pipefail
+
+here="$(cd "$(dirname "$0")" && pwd)"
+conf="${TESTRUN_CONF:-$here/testrun.local}"
+
+die() {
+  echo "teardown: $*" >&2
+  exit 1
+}
+
+[[ -f "$conf" ]] || die "$conf missing (copy deploy/aws/testrun.example)"
+# shellcheck source=/dev/null
+. "$conf"
+[[ -n "${AWS_REGION:-}" && -n "${AWS_PROFILE:-}" ]] || die "AWS_REGION and AWS_PROFILE must be set in $conf"
+export AWS_REGION AWS_PROFILE
+# Static keys in the environment would win over the SSO profile.
+for v in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN; do
+  [[ -z "${!v:-}" ]] || die "$v is set; use the SSO profile only"
+done
+# A broader prefix would delete parameters of other applications.
+prefix="${SSM_PREFIX:-/email-platform/prod/}"
+[[ "$prefix" =~ ^/email-platform/[a-z0-9-]+/$ ]] || die "SSM_PREFIX must look like /email-platform/<env>/"
+
+stacks=(email-platform-platform email-platform-ses-identity email-platform-ses-test email-platform-ses-prod)
+case "${1:-}" in
+"") ;;
+--with-budget) stacks+=(email-platform-budget) ;;
+*) die "usage: teardown [--with-budget]" ;;
+esac
+
+caller="$(aws sts get-caller-identity --query '[Account,Arn]' --output text)"
+account="${caller%%[[:space:]]*}"
+names="$(aws ssm describe-parameters --parameter-filters "Key=Path,Option=Recursive,Values=$prefix" \
+  --query 'Parameters[].Name' --output text)"
+[[ "$names" != None ]] || names=""
+
+echo "caller $caller, region $AWS_REGION"
+echo "deletes SSM parameters: ${names:-(none)}"
+echo "deletes stacks (if present): ${stacks[*]}"
+echo "The database is deleted without a final snapshot. This cannot be undone."
+read -r -p "Type the account id to confirm: " answer
+[[ "$answer" == "$account" ]] || die "aborted, nothing deleted"
+
+for name in $names; do
+  aws ssm delete-parameter --name "$name"
+  echo "deleted parameter $name"
+done
+
+for stack in "${stacks[@]}"; do
+  if ! err="$(aws cloudformation describe-stacks --stack-name "$stack" 2>&1 >/dev/null)"; then
+    [[ "$err" == *"does not exist"* ]] || die "$stack: cannot tell whether it exists: $err"
+    echo "$stack: not present"
+    continue
+  fi
+  echo "$stack: deleting"
+  aws cloudformation delete-stack --stack-name "$stack"
+  aws cloudformation wait stack-delete-complete --stack-name "$stack" ||
+    die "$stack did not delete; read its events: aws cloudformation describe-stack-events --stack-name $stack"
+  echo "$stack: deleted"
+done
+
+bash "$here/leftovers"

@@ -1,0 +1,370 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  One VM (Docker Compose stack, Caddy TLS) and one RDS PostgreSQL instance
+  in their own VPC. No NAT gateway, no load balancer, no SSH: operators use
+  SSM Session Manager. The instance role reads the runtime secrets from SSM
+  Parameter Store and sends through SES with the prod event set. This
+  template deletes the database without a final snapshot.
+
+Parameters:
+  SesDomain:
+    Type: String
+    AllowedPattern: "^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$"
+  ApiAllowedCidr:
+    Type: String
+    AllowedPattern: "^([0-9]{1,3}\\.){3}[0-9]{1,3}/([0-9]|[12][0-9]|3[0-2])$"
+    Description: Source range allowed on 443 (the internal apps' egress addresses).
+  DbEngineVersion:
+    Type: String
+    AllowedPattern: "^18\\.[0-9]+$"
+    Description: RDS PostgreSQL 18 minor version available in the region.
+  InstanceType:
+    Type: String
+    Default: t4g.medium
+  DbInstanceClass:
+    Type: String
+    Default: db.t4g.small
+  ImageId:
+    Type: AWS::EC2::Image::Id
+    Description: >-
+      Ubuntu 24.04 arm64 image, pinned (a new image replaces the VM). deploy/aws/up
+      resolves it once from Canonical's public SSM parameter.
+  SsmPrefix:
+    Type: String
+    Default: /email-platform/prod
+    AllowedPattern: "^/[A-Za-z0-9_./-]*[A-Za-z0-9_-]$"
+    Description: Parameter path read by deploy/bin/render-env (without the trailing slash).
+  RecipientEmail:
+    Type: String
+    Default: ""
+    AllowedPattern: "^([^@\\s*]+@[^@\\s*]+)?$"
+    Description: Verified sandbox recipient the instance may send to (empty after the sandbox exit).
+
+Conditions:
+  HasRecipient: !Not [!Equals [!Ref RecipientEmail, ""]]
+
+Resources:
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.42.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: email-platform
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+
+  GatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref Vpc
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: 10.42.0.0/24
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      MapPublicIpOnLaunch: false
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+
+  DefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: GatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnetRoutes:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet
+      RouteTableId: !Ref PublicRouteTable
+
+  # Database subnets: VPC-local routes only. RDS needs two zones in the
+  # subnet group even for a Single-AZ instance.
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+
+  DbSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: 10.42.10.0/24
+      AvailabilityZone: !Select [0, !GetAZs ""]
+
+  DbSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: 10.42.11.0/24
+      AvailabilityZone: !Select [1, !GetAZs ""]
+
+  DbSubnetARoutes:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref DbSubnetA
+      RouteTableId: !Ref PrivateRouteTable
+
+  DbSubnetBRoutes:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref DbSubnetB
+      RouteTableId: !Ref PrivateRouteTable
+
+  # 443 only from the apps; 80 open for the ACME HTTP-01 challenge (Caddy
+  # redirects everything else). Egress: HTTPS (SES, SQS, SSM, ACME,
+  # registries, webhooks), HTTP (Ubuntu package mirrors), PostgreSQL to RDS.
+  VmSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: email-platform VM
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: !Ref ApiAllowedCidr
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+
+  DbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: email-platform RDS
+      VpcId: !Ref Vpc
+      # Replaces the default allow-all egress; the database opens no connections.
+      SecurityGroupEgress:
+        - IpProtocol: "-1"
+          CidrIp: 127.0.0.1/32
+
+  VmToDb:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref VmSecurityGroup
+      IpProtocol: tcp
+      FromPort: 5432
+      ToPort: 5432
+      DestinationSecurityGroupId: !Ref DbSecurityGroup
+
+  DbFromVm:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref DbSecurityGroup
+      IpProtocol: tcp
+      FromPort: 5432
+      ToPort: 5432
+      SourceSecurityGroupId: !Ref VmSecurityGroup
+
+  InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: email-platform
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: Send
+                Effect: Allow
+                Action:
+                  - ses:SendEmail
+                  - ses:SendRawEmail
+                Resource:
+                  - !Sub arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:identity/${SesDomain}
+                  - !Sub
+                    - arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:configuration-set/${Set}
+                    - Set: !ImportValue email-platform-prod-ses-ConfigurationSetName
+                  # In the SES sandbox the recipient identity is authorized too.
+                  - !If
+                    - HasRecipient
+                    - !Sub arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:identity/${RecipientEmail}
+                    - !Ref AWS::NoValue
+                Condition:
+                  StringEquals:
+                    ses:ApiVersion: "2"
+              - Sid: Events
+                Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                Resource: !ImportValue email-platform-prod-ses-QueueArn
+              # The path and the parameters below it: IAM evaluates the path
+              # form for GetParametersByPath. SecureStrings use the
+              # AWS-managed aws/ssm key, whose key policy already admits
+              # callers of this account through SSM.
+              - Sid: RuntimeSecrets
+                Effect: Allow
+                Action: ssm:GetParametersByPath
+                Resource:
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${SsmPrefix}
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${SsmPrefix}/*
+              # Session Manager only. Not the managed
+              # AmazonSSMManagedInstanceCore policy: it also allows
+              # ssm:GetParameter(s) on every parameter of the account.
+              - Sid: SessionManager
+                Effect: Allow
+                Action:
+                  - ssm:UpdateInstanceInformation
+                  - ssmmessages:CreateControlChannel
+                  - ssmmessages:CreateDataChannel
+                  - ssmmessages:OpenControlChannel
+                  - ssmmessages:OpenDataChannel
+                  - ec2messages:*
+                Resource: "*"
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles: [!Ref InstanceRole]
+
+  # IMDSv2 only; hop limit 2 so containers reach the instance role (the
+  # netns container restricts that to the app user).
+  LaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateData:
+        MetadataOptions:
+          HttpEndpoint: enabled
+          HttpTokens: required
+          HttpPutResponseHopLimit: 2
+        BlockDeviceMappings:
+          - DeviceName: /dev/sda1
+            Ebs:
+              VolumeType: gp3
+              VolumeSize: 30
+              Encrypted: true
+              DeleteOnTermination: true
+        UserData:
+          Fn::Base64: |
+            #!/bin/bash
+            # Docker Engine with the Compose and Buildx plugins from Docker's
+            # repository, AWS CLI v2, git, and the RDS CA bundle. The SSM
+            # agent ships with the Ubuntu image.
+            set -euxo pipefail
+            export DEBIAN_FRONTEND=noninteractive
+            # The Elastic IP is attached after the instance starts; until
+            # then there is no route out.
+            for _ in $(seq 60); do
+              curl -fsS -o /dev/null https://download.docker.com && break
+              sleep 5
+            done
+            apt-get update
+            apt-get install -y ca-certificates curl git gnupg
+            install -m 0755 -d /etc/apt/keyrings
+            curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+            gpg --show-keys --with-colons /etc/apt/keyrings/docker.asc | grep -q '^fpr:.*:9DC858229FC7DD38854AE2D88D81803C0EBFCD88:'
+            chmod a+r /etc/apt/keyrings/docker.asc
+            echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" >/etc/apt/sources.list.d/docker.list
+            apt-get update
+            apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+            snap install aws-cli --classic
+            snap refresh --hold aws-cli
+            install -d -m 0755 /etc/email-platform
+            curl -fsSL https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem -o /etc/email-platform/rds-ca.pem
+            chmod 0644 /etc/email-platform/rds-ca.pem
+
+  Instance:
+    Type: AWS::EC2::Instance
+    DependsOn: DefaultRoute
+    Properties:
+      ImageId: !Ref ImageId
+      InstanceType: !Ref InstanceType
+      SubnetId: !Ref PublicSubnet
+      SecurityGroupIds: [!Ref VmSecurityGroup]
+      IamInstanceProfile: !Ref InstanceProfile
+      LaunchTemplate:
+        LaunchTemplateId: !Ref LaunchTemplate
+        Version: !GetAtt LaunchTemplate.LatestVersionNumber
+      Tags:
+        - Key: Name
+          Value: email-platform
+
+  ElasticIp:
+    Type: AWS::EC2::EIP
+    DependsOn: GatewayAttachment
+    Properties:
+      Domain: vpc
+      InstanceId: !Ref Instance
+
+  DbSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: email-platform
+      SubnetIds: [!Ref DbSubnetA, !Ref DbSubnetB]
+
+  DbParameterGroup:
+    Type: AWS::RDS::DBParameterGroup
+    Properties:
+      Description: email-platform, TLS only
+      Family: postgres18
+      Parameters:
+        rds.force_ssl: "1"
+
+  # The master password is generated and kept by RDS in Secrets Manager;
+  # it is used once to create the application role and database.
+  Database:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      Engine: postgres
+      EngineVersion: !Ref DbEngineVersion
+      DBInstanceClass: !Ref DbInstanceClass
+      AllocatedStorage: "20"
+      StorageType: gp3
+      StorageEncrypted: true
+      MasterUsername: epadmin
+      ManageMasterUserPassword: true
+      DBSubnetGroupName: !Ref DbSubnetGroup
+      DBParameterGroupName: !Ref DbParameterGroup
+      VPCSecurityGroups: [!Ref DbSecurityGroup]
+      PubliclyAccessible: false
+      MultiAZ: false
+      BackupRetentionPeriod: 14
+      DeleteAutomatedBackups: true
+      DeletionProtection: false
+      CopyTagsToSnapshot: true
+      # Off: an automatic minor upgrade would make the next stack update
+      # (pinned EngineVersion) attempt a downgrade.
+      AutoMinorVersionUpgrade: false
+      EnablePerformanceInsights: false
+
+Outputs:
+  InstanceId:
+    Value: !Ref Instance
+  PublicIp:
+    Description: A record for the API host name
+    Value: !Ref ElasticIp
+  DbEndpoint:
+    Value: !GetAtt Database.Endpoint.Address
+  DbMasterSecretArn:
+    Value: !GetAtt Database.MasterUserSecret.SecretArn

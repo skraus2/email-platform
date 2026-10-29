@@ -112,6 +112,7 @@ test: ## Go, dashboard and deploy script unit tests (no external dependencies)
 	go test -race ./...
 	$(PNPM) --filter dashboard test
 	./deploy/bin/render-env_test.sh
+	bash deploy/aws/scripts_test.sh
 	./scripts/imagecheck-eval_test.sh
 	./scripts/imagecheck-os_test.sh
 	./scripts/eolcheck-eval_test.sh

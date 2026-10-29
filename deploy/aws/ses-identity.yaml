@@ -1,0 +1,68 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  SES sending identity (domain, Easy DKIM) with the prod configuration set as
+  its default, so sends without a configuration set still publish events.
+  Optionally a custom MAIL FROM domain and one verified recipient mailbox
+  (needed while the account is in the SES sandbox). The DNS records to
+  publish are in the outputs.
+
+Parameters:
+  SesDomain:
+    Type: String
+    AllowedPattern: "^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$"
+  MailFromDomain:
+    Type: String
+    Default: ""
+    Description: Optional subdomain of SesDomain for the envelope sender (SPF alignment).
+  RecipientEmail:
+    Type: String
+    Default: ""
+    Description: Optional mailbox to verify as a sandbox recipient (SES sends a confirmation link).
+
+Conditions:
+  HasMailFrom: !Not [!Equals [!Ref MailFromDomain, ""]]
+  HasRecipient: !Not [!Equals [!Ref RecipientEmail, ""]]
+
+Resources:
+  DomainIdentity:
+    Type: AWS::SES::EmailIdentity
+    Properties:
+      EmailIdentity: !Ref SesDomain
+      DkimSigningAttributes:
+        NextSigningKeyLength: RSA_2048_BIT
+      # Never the test set: its queue is drained by the live test.
+      ConfigurationSetAttributes:
+        ConfigurationSetName: !ImportValue email-platform-prod-ses-ConfigurationSetName
+      MailFromAttributes: !If
+        - HasMailFrom
+        - MailFromDomain: !Ref MailFromDomain
+          BehaviorOnMxFailure: USE_DEFAULT_VALUE
+        - !Ref AWS::NoValue
+
+  RecipientIdentity:
+    Type: AWS::SES::EmailIdentity
+    Condition: HasRecipient
+    Properties:
+      EmailIdentity: !Ref RecipientEmail
+
+Outputs:
+  DkimRecord1:
+    Description: CNAME
+    Value: !Sub "${DomainIdentity.DkimDNSTokenName1} -> ${DomainIdentity.DkimDNSTokenValue1}"
+  DkimRecord2:
+    Description: CNAME
+    Value: !Sub "${DomainIdentity.DkimDNSTokenName2} -> ${DomainIdentity.DkimDNSTokenValue2}"
+  DkimRecord3:
+    Description: CNAME
+    Value: !Sub "${DomainIdentity.DkimDNSTokenName3} -> ${DomainIdentity.DkimDNSTokenValue3}"
+  MailFromMxRecord:
+    Condition: HasMailFrom
+    Description: MX, priority 10
+    Value: !Sub "${MailFromDomain} -> feedback-smtp.${AWS::Region}.amazonses.com"
+  MailFromSpfRecord:
+    Condition: HasMailFrom
+    Description: TXT
+    Value: !Sub '${MailFromDomain} -> "v=spf1 include:amazonses.com ~all"'
+  DmarcRecord:
+    Description: TXT (policy is the operator's choice; p=none only reports)
+    Value: !Sub '_dmarc.${SesDomain} -> "v=DMARC1; p=none"'

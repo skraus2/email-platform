@@ -1,0 +1,285 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  SES event path of one resource set (prod or test): configuration set,
+  encrypted SNS topic (signature version 2), SQS queue with dead-letter
+  queue. The test set also carries the role the live SES test assumes; its
+  resource names start with email-platform-test, which that test enforces.
+
+Parameters:
+  SetName:
+    Type: String
+    AllowedValues: [prod, test]
+  SesDomain:
+    Type: String
+    AllowedPattern: "^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$"
+    Description: Sending domain (the SES identity); scopes the live test role.
+  OperatorPrincipalArn:
+    Type: String
+    Default: ""
+    AllowedPattern: "^(arn:aws:(iam|sts)::[0-9]{12}:[A-Za-z0-9+=,.@_/*-]+)?$"
+    Description: >-
+      Test set only: ARN pattern (aws:PrincipalArn, wildcards allowed) of the
+      principals of this account that may assume the live test role, for
+      example the operator's SSO role
+      arn:aws:iam::<account>:role/aws-reserved/sso.amazonaws.com/*/AWSReservedSSO_<set>_*.
+      Empty = any principal of this account that may call sts:AssumeRole on it.
+  RecipientEmail:
+    Type: String
+    Default: ""
+    AllowedPattern: "^([^@\\s*]+@[^@\\s*]+)?$"
+    Description: "Test set only: verified sandbox recipient the live test may send to."
+
+Conditions:
+  IsTest: !Equals [!Ref SetName, test]
+  HasOperatorPrincipal: !Not [!Equals [!Ref OperatorPrincipalArn, ""]]
+  HasRecipient: !Not [!Equals [!Ref RecipientEmail, ""]]
+
+Resources:
+  # SES encrypts what it publishes with this key, so it needs a key policy
+  # grant that the AWS-managed SNS key cannot carry. Scoped to this
+  # account and this configuration set (confused-deputy protection).
+  EventsKey:
+    Type: AWS::KMS::Key
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      Description: !Sub email-platform-${SetName} SES events topic
+      EnableKeyRotation: true
+      PendingWindowInDays: 7
+      KeyPolicy:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AccountAdministration
+            Effect: Allow
+            Principal:
+              AWS: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:root
+            Action: kms:*
+            Resource: "*"
+          - Sid: SesPublishesEncrypted
+            Effect: Allow
+            Principal:
+              Service: ses.amazonaws.com
+            Action:
+              - kms:GenerateDataKey
+              - kms:Decrypt
+            Resource: "*"
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+                aws:SourceArn: !Sub arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:configuration-set/email-platform-${SetName}
+
+  EventsKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Sub alias/email-platform-${SetName}-ses-events
+      TargetKeyId: !Ref EventsKey
+
+  Topic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub email-platform-${SetName}-ses-events
+      KmsMasterKeyId: !GetAtt EventsKey.Arn
+      # The worker refuses SHA1 (version 1) signatures.
+      SignatureVersion: "2"
+
+  # Only SES of this account, only for this configuration set. The Deny
+  # also stops IAM identities of the account that hold sns:Publish: a
+  # forged complaint or bounce would otherwise suppress addresses.
+  TopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics: [!Ref Topic]
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ses.amazonaws.com
+            Action: sns:Publish
+            Resource: !Ref Topic
+            Condition:
+              StringEquals:
+                AWS:SourceAccount: !Ref AWS::AccountId
+                AWS:SourceArn: !Sub arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:configuration-set/email-platform-${SetName}
+          - Effect: Deny
+            Principal: "*"
+            Action: sns:Publish
+            Resource: !Ref Topic
+            Condition:
+              StringNotEquals:
+                AWS:SourceArn: !Sub arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:configuration-set/email-platform-${SetName}
+
+  DeadLetterQueue:
+    Type: AWS::SQS::Queue
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      QueueName: !Sub email-platform-${SetName}-ses-events-dlq
+      MessageRetentionPeriod: 1209600
+      SqsManagedSseEnabled: true
+      # The queue ARN is spelled out: referencing the queue would be a cycle.
+      RedriveAllowPolicy:
+        redrivePermission: byQueue
+        sourceQueueArns:
+          - !Sub arn:${AWS::Partition}:sqs:${AWS::Region}:${AWS::AccountId}:email-platform-${SetName}-ses-events
+
+  Queue:
+    Type: AWS::SQS::Queue
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      QueueName: !Sub email-platform-${SetName}-ses-events
+      SqsManagedSseEnabled: true
+      VisibilityTimeout: 240
+      ReceiveMessageWaitTimeSeconds: 20
+      MessageRetentionPeriod: 345600
+      # 50 receives at the worker's 200 s visibility ≈ 2.8 h of transient
+      # failure before a message is moved aside.
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt DeadLetterQueue.Arn
+        maxReceiveCount: 50
+
+  QueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues: [!Ref Queue]
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: sns.amazonaws.com
+            Action: sqs:SendMessage
+            Resource: !GetAtt Queue.Arn
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !Ref Topic
+          - Effect: Deny
+            Principal: "*"
+            Action: sqs:*
+            Resource: !GetAtt Queue.Arn
+            Condition:
+              Bool:
+                aws:SecureTransport: "false"
+
+  DeadLetterQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues: [!Ref DeadLetterQueue]
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Deny
+            Principal: "*"
+            Action: sqs:*
+            Resource: !GetAtt DeadLetterQueue.Arn
+            Condition:
+              Bool:
+                aws:SecureTransport: "false"
+
+  # Raw delivery stays off: the worker verifies the SNS envelope signature.
+  Subscription:
+    Type: AWS::SNS::Subscription
+    DependsOn: QueuePolicy
+    Properties:
+      TopicArn: !Ref Topic
+      Protocol: sqs
+      Endpoint: !GetAtt Queue.Arn
+      RawMessageDelivery: false
+
+  ConfigurationSet:
+    Type: AWS::SES::ConfigurationSet
+    Properties:
+      Name: !Sub email-platform-${SetName}
+
+  # No open/click events: engagement tracking is not collected.
+  EventDestination:
+    Type: AWS::SES::ConfigurationSetEventDestination
+    DependsOn: TopicPolicy
+    Properties:
+      ConfigurationSetName: !Ref ConfigurationSet
+      EventDestination:
+        Name: sns
+        Enabled: true
+        MatchingEventTypes:
+          - send
+          - reject
+          - delivery
+          - bounce
+          - complaint
+          - deliveryDelay
+        SnsDestination:
+          TopicARN: !Ref Topic
+
+  # Short-lived credentials for the live SES test, test set only: send from
+  # the identity through the test configuration set, drain the test queue.
+  LiveTestRole:
+    Type: AWS::IAM::Role
+    Condition: IsTest
+    Properties:
+      RoleName: email-platform-test-ses-live
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          # Principal is always this account; the optional ARN pattern narrows
+          # it (a role ARN as Principal would break when SSO re-creates it).
+          - Effect: Allow
+            Principal:
+              AWS: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:root
+            Action: sts:AssumeRole
+            Condition: !If
+              - HasOperatorPrincipal
+              - ArnLike:
+                  aws:PrincipalArn: !Ref OperatorPrincipalArn
+              - !Ref AWS::NoValue
+      Policies:
+        - PolicyName: ses-live-test
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: Send
+                Effect: Allow
+                Action:
+                  - ses:SendEmail
+                  - ses:SendRawEmail
+                Resource:
+                  - !Sub arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:identity/${SesDomain}
+                  - !Sub arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:configuration-set/email-platform-test
+                  # In the SES sandbox the recipient identity is authorized too.
+                  - !If
+                    - HasRecipient
+                    - !Sub arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:identity/${RecipientEmail}
+                    - !Ref AWS::NoValue
+                Condition:
+                  StringEquals:
+                    ses:ApiVersion: "2"
+              - Sid: Events
+                Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                Resource: !GetAtt Queue.Arn
+
+Outputs:
+  ConfigurationSetName:
+    Value: !Ref ConfigurationSet
+    Export:
+      Name: !Sub email-platform-${SetName}-ses-ConfigurationSetName
+  TopicArn:
+    Value: !Ref Topic
+    Export:
+      Name: !Sub email-platform-${SetName}-ses-TopicArn
+  QueueUrl:
+    Value: !Ref Queue
+    Export:
+      Name: !Sub email-platform-${SetName}-ses-QueueUrl
+  QueueArn:
+    Value: !GetAtt Queue.Arn
+    Export:
+      Name: !Sub email-platform-${SetName}-ses-QueueArn
+  DeadLetterQueueUrl:
+    Value: !Ref DeadLetterQueue
+  LiveTestRoleArn:
+    Condition: IsTest
+    Value: !GetAtt LiveTestRole.Arn

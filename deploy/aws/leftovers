@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+# Lists what is left of the AWS setup in the region (read-only). Exit 1 if
+# anything that costs money or holds data remains; free items that are
+# expected for a while (the budget, KMS keys pending deletion) are listed as
+# info. Some checks cover the whole region, not only this project's
+# resources: an Elastic IP, a detached volume or a database snapshot costs
+# money whoever created it.
+#
+#   deploy/aws/leftovers
+set -euo pipefail
+
+here="$(cd "$(dirname "$0")" && pwd)"
+conf="${TESTRUN_CONF:-$here/testrun.local}"
+
+if [[ -f "$conf" ]]; then
+  # shellcheck source=/dev/null
+  . "$conf"
+fi
+prefix="${SSM_PREFIX:-/email-platform/prod/}"
+[[ -n "${AWS_REGION:-}" ]] || {
+  echo "leftovers: AWS_REGION is not set" >&2
+  exit 1
+}
+export AWS_REGION
+[[ -z "${AWS_PROFILE:-}" ]] || export AWS_PROFILE
+
+left=0
+# check LABEL KIND OUTPUT: KIND is "left" (fails the run) or "info".
+check() {
+  local out="$3"
+  out="$(printf '%s\n' "$out" | grep -v -e '^None$' -e '^[[:space:]]*$' || true)"
+  if [[ -z "$out" ]]; then
+    echo "ok    $1"
+    return
+  fi
+  if [[ "$2" == left ]]; then
+    echo "LEFT  $1"
+    left=1
+  else
+    echo "info  $1"
+  fi
+  printf '%s\n' "$out" | sed 's/^/        /'
+}
+# A failing call counts as a leftover: an unanswered check proves nothing.
+q() {
+  aws "$@" --output text 2>&1 || {
+    echo "check failed: aws $1 $2"
+  }
+}
+
+stacks="$(q cloudformation list-stacks \
+  --query "StackSummaries[?StackStatus!='DELETE_COMPLETE' && starts_with(StackName,'email-platform-')].[StackName,StackStatus]")"
+check "CloudFormation stacks" left "$(printf '%s\n' "$stacks" | grep -v '^email-platform-budget[[:space:]]' || true)"
+check "budget stack (free; delete with teardown --with-budget)" info "$(printf '%s\n' "$stacks" | grep '^email-platform-budget[[:space:]]' || true)"
+
+check "SSM parameters under $prefix" left \
+  "$(q ssm describe-parameters --parameter-filters "Key=Path,Option=Recursive,Values=$prefix" --query 'Parameters[].Name')"
+check "EC2 instances (whole region)" left \
+  "$(q ec2 describe-instances --filters Name=instance-state-name,Values=pending,running,stopping,stopped \
+    --query 'Reservations[].Instances[].[InstanceId,State.Name]')"
+check "Elastic IPs (whole region)" left "$(q ec2 describe-addresses --query 'Addresses[].[PublicIp,AllocationId]')"
+check "detached EBS volumes (whole region)" left \
+  "$(q ec2 describe-volumes --filters Name=status,Values=available --query 'Volumes[].[VolumeId,Size]')"
+check "own EBS snapshots (whole region)" left "$(q ec2 describe-snapshots --owner-ids self --query 'Snapshots[].SnapshotId')"
+check "own AMIs (whole region)" left "$(q ec2 describe-images --owners self --query 'Images[].ImageId')"
+check "CloudWatch log groups (whole region)" left "$(q logs describe-log-groups --query 'logGroups[].logGroupName')"
+check "VPCs tagged project=email-platform" left \
+  "$(q ec2 describe-vpcs --filters Name=tag:project,Values=email-platform --query 'Vpcs[].VpcId')"
+check "RDS instances (whole region)" left "$(q rds describe-db-instances --query 'DBInstances[].[DBInstanceIdentifier,DBInstanceStatus]')"
+check "RDS manual snapshots (whole region)" left \
+  "$(q rds describe-db-snapshots --snapshot-type manual --query 'DBSnapshots[].DBSnapshotIdentifier')"
+check "RDS retained automated backups (whole region)" left \
+  "$(q rds describe-db-instance-automated-backups --query 'DBInstanceAutomatedBackups[].[DBInstanceIdentifier,Status]')"
+check "RDS-managed secrets" left \
+  "$(q secretsmanager list-secrets --filters Key=name,Values='rds!' --query 'SecretList[].Name')"
+check "SES configuration sets email-platform-*" left \
+  "$(q sesv2 list-configuration-sets --query "ConfigurationSets[?starts_with(@,'email-platform-')]")"
+check "SES identities (whole region)" left "$(q sesv2 list-email-identities --query 'EmailIdentities[].IdentityName')"
+check "SNS topics email-platform-*" left \
+  "$(q sns list-topics --query "Topics[?contains(TopicArn,':email-platform-')].TopicArn")"
+check "SQS queues email-platform-*" left "$(q sqs list-queues --queue-name-prefix email-platform- --query 'QueueUrls')"
+check "IAM roles email-platform-*" left \
+  "$(q iam list-roles --query "Roles[?starts_with(RoleName,'email-platform-')].RoleName")"
+check "IAM instance profiles email-platform-*" left \
+  "$(q iam list-instance-profiles --query "InstanceProfiles[?starts_with(InstanceProfileName,'email-platform-')].InstanceProfileName")"
+
+keys_left="" keys_pending=""
+keys="$(q resourcegroupstaggingapi get-resources --resource-type-filters kms:key \
+  --tag-filters Key=project,Values=email-platform --query 'ResourceTagMappingList[].ResourceARN')"
+[[ "$keys" != *"check failed: "* ]] || {
+  keys_left="$keys"
+  keys=""
+}
+for arn in $keys; do
+  [[ "$arn" != None ]] || continue
+  state="$(q kms describe-key --key-id "$arn" --query 'KeyMetadata.[KeyState,DeletionDate]')"
+  case "$state" in
+  PendingDeletion*) keys_pending+="$arn $state"$'\n' ;;
+  *) keys_left+="$arn $state"$'\n' ;;
+  esac
+done
+check "KMS keys not scheduled for deletion" left "$keys_left"
+check "KMS keys pending deletion (deleted automatically)" info "$keys_pending"
+
+if [[ "$left" == 0 ]]; then
+  echo "leftovers: nothing billable left in $AWS_REGION (DNS records and the GitHub deploy key are outside AWS)"
+else
+  echo "leftovers: resources remain in $AWS_REGION" >&2
+fi
+exit "$left"

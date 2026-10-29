@@ -10,6 +10,9 @@
 *.pem
 *.key
 
+# Account-specific parameters of the AWS setup
+/deploy/aws/testrun.local
+
 # Go
 /bin/
 /tmp/

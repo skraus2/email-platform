@@ -1,0 +1,99 @@
+#!/usr/bin/env bash
+# Creates or updates one CloudFormation stack of the AWS setup with the
+# parameters from deploy/aws/testrun.local (a copy of testrun.example). Runs
+# on the operator's workstation with an SSO profile. Every stack is tagged
+# project=email-platform so deploy/aws/leftovers finds what remains.
+#
+#   deploy/aws/up budget|ses-prod|ses-test|ses-identity|platform
+#
+# Create in that order; deploy/aws/teardown deletes in reverse.
+set -euo pipefail
+
+here="$(cd "$(dirname "$0")" && pwd)"
+conf="${TESTRUN_CONF:-$here/testrun.local}"
+ubuntu_ami_parameter=/aws/service/canonical/ubuntu/server/24.04/stable/current/arm64/hvm/ebs-gp3/ami-id
+
+die() {
+  echo "up: $*" >&2
+  exit 1
+}
+
+[[ $# -eq 1 ]] || die "usage: up budget|ses-prod|ses-test|ses-identity|platform"
+[[ -f "$conf" ]] || die "$conf missing (copy deploy/aws/testrun.example)"
+# shellcheck source=/dev/null
+. "$conf"
+[[ -n "${AWS_REGION:-}" && -n "${AWS_PROFILE:-}" ]] || die "AWS_REGION and AWS_PROFILE must be set in $conf"
+export AWS_REGION AWS_PROFILE
+# Static keys in the environment would win over the SSO profile.
+for v in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN; do
+  [[ -z "${!v:-}" ]] || die "$v is set; use the SSO profile only"
+done
+
+need() {
+  local v
+  for v in "$@"; do
+    [[ -n "${!v:-}" ]] || die "$v must be set in $conf"
+  done
+}
+params=()
+add() {
+  [[ -z "$2" ]] || params+=("$1=$2")
+}
+
+case "$1" in
+budget)
+  need OPERATOR_EMAIL
+  stack=email-platform-budget template=budget.yaml
+  add LimitUsd "${BUDGET_USD:-10}"
+  add AlertEmail "$OPERATOR_EMAIL"
+  ;;
+ses-prod)
+  need SES_DOMAIN
+  stack=email-platform-ses-prod template=ses-events.yaml
+  add SetName prod
+  add SesDomain "$SES_DOMAIN"
+  ;;
+ses-test)
+  need SES_DOMAIN
+  stack=email-platform-ses-test template=ses-events.yaml
+  add SetName test
+  add SesDomain "$SES_DOMAIN"
+  add OperatorPrincipalArn "${OPERATOR_PRINCIPAL_ARN:-}"
+  add RecipientEmail "${SES_TEST_RECIPIENT:-}"
+  ;;
+ses-identity)
+  need SES_DOMAIN
+  stack=email-platform-ses-identity template=ses-identity.yaml
+  add SesDomain "$SES_DOMAIN"
+  add MailFromDomain "${SES_MAIL_FROM_DOMAIN:-}"
+  add RecipientEmail "${SES_TEST_RECIPIENT:-}"
+  ;;
+platform)
+  need SES_DOMAIN API_ALLOWED_CIDR DB_ENGINE_VERSION
+  stack=email-platform-platform template=platform.yaml
+  add SesDomain "$SES_DOMAIN"
+  add ApiAllowedCidr "$API_ALLOWED_CIDR"
+  add DbEngineVersion "$DB_ENGINE_VERSION"
+  add RecipientEmail "${SES_TEST_RECIPIENT:-}"
+  # A changed image replaces the VM, so the image is pinned: resolved once
+  # from Canonical's public parameter, then kept in the settings file.
+  if [[ -z "${PLATFORM_IMAGE_ID:-}" ]]; then
+    PLATFORM_IMAGE_ID="$(aws ssm get-parameter --name "$ubuntu_ami_parameter" --query Parameter.Value --output text)"
+    echo "image $PLATFORM_IMAGE_ID (current Ubuntu 24.04 arm64); add PLATFORM_IMAGE_ID=$PLATFORM_IMAGE_ID to $conf"
+  fi
+  add ImageId "$PLATFORM_IMAGE_ID"
+  ;;
+*) die "unknown stack '$1'" ;;
+esac
+
+caller="$(aws sts get-caller-identity --query '[Account,Arn]' --output text)"
+echo "caller $caller, region $AWS_REGION: stack $stack from $template"
+echo "parameters: ${params[*]}"
+read -r -p "Create or update it (may start billable resources)? Type yes: " answer
+[[ "$answer" == yes ]] || die "aborted, nothing changed"
+
+aws cloudformation deploy --stack-name "$stack" --template-file "$here/$template" \
+  --parameter-overrides "${params[@]}" --capabilities CAPABILITY_NAMED_IAM \
+  --tags project=email-platform --no-fail-on-empty-changeset
+aws cloudformation describe-stacks --stack-name "$stack" \
+  --query 'Stacks[0].Outputs[].[OutputKey,OutputValue]' --output text
