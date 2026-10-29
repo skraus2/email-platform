@@ -75,6 +75,7 @@ platform)
   add ApiAllowedCidr "$API_ALLOWED_CIDR"
   add DbEngineVersion "$DB_ENGINE_VERSION"
   add RecipientEmail "${SES_TEST_RECIPIENT:-}"
+  add DbBackupRetentionDays "${DB_BACKUP_RETENTION_DAYS:-}"
   # A changed image replaces the VM, so the image is pinned: resolved once
   # from Canonical's public parameter, then kept in the settings file.
   if [[ -z "${PLATFORM_IMAGE_ID:-}" ]]; then

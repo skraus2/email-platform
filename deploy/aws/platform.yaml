@@ -26,6 +26,14 @@ Parameters:
   DbInstanceClass:
     Type: String
     Default: db.t4g.micro
+  DbBackupRetentionDays:
+    Type: Number
+    Default: 1
+    MinValue: 1
+    MaxValue: 35
+    Description: >-
+      Automated backup retention (point-in-time restore window). The default fits
+      the AWS free plan, which refuses 14; production uses 14.
   ImageId:
     Type: AWS::EC2::Image::Id
     Description: >-
@@ -352,7 +360,7 @@ Resources:
       VPCSecurityGroups: [!Ref DbSecurityGroup]
       PubliclyAccessible: false
       MultiAZ: false
-      BackupRetentionPeriod: 14
+      BackupRetentionPeriod: !Ref DbBackupRetentionDays
       DeleteAutomatedBackups: true
       DeletionProtection: false
       CopyTagsToSnapshot: true

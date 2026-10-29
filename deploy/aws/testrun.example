@@ -26,6 +26,10 @@ API_ALLOWED_CIDR=203.0.113.10/32
 # aws rds describe-db-engine-versions --engine postgres --query "DBEngineVersions[?starts_with(EngineVersion,'18.')].EngineVersion"
 DB_ENGINE_VERSION=18.1
 
+# Days of automated RDS backups (point-in-time restore window); empty = 1,
+# which fits the AWS free plan (it refuses 14). Production: 14.
+DB_BACKUP_RETENTION_DAYS=
+
 # Set after the first `up platform` (it prints the resolved image); a
 # changed image would replace the VM.
 PLATFORM_IMAGE_ID=
