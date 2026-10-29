@@ -14,6 +14,6 @@ route:
 
 receivers:
   - name: team
-    webhook_configs:
-      - url_file: /etc/alertmanager/secrets/webhook-url
+    discord_configs:
+      - webhook_url_file: /etc/alertmanager/secrets/webhook-url
         send_resolved: true
