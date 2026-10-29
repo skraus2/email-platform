@@ -75,7 +75,7 @@ export async function adminFetch<T>(path: string, init: Init = {}): Promise<T> {
   if (res.ok) {
     return (await res.json()) as T;
   }
-  const data = await res.json().catch(() => ({}));
+  const data: unknown = await res.json().catch(() => ({}));
   const err = (data as { error?: { code?: string; message?: string } }).error;
   const retry = Number(res.headers.get("Retry-After"));
   throw new AdminAPIError(
@@ -91,6 +91,7 @@ export type Me = { id: string; username: string; session_expires_at: string };
 export type { Page };
 
 /** Loads every page of a list, up to maxRows rows (see collectPages). */
+// eslint-disable-next-line @typescript-eslint/no-unnecessary-type-parameters -- the caller names the row type of the JSON answer, as with adminFetch
 export function adminFetchAll<T>(
   path: string,
   maxRows = 500,
@@ -276,7 +277,7 @@ export type RunStatus =
 
 export type AutomationDetail = Automation & {
   steps: AutomationStep[];
-  run_counts: Record<RunStatus, number>;
+  run_counts: Partial<Record<RunStatus, number>>;
 };
 
 export type AutomationRun = {

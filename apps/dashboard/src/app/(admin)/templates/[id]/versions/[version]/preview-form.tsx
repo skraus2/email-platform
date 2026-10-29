@@ -69,7 +69,9 @@ export function PreviewForm({
             return;
           }
           const form = new FormData(e.currentTarget);
-          startTransition(() => dispatch(form));
+          startTransition(() => {
+            dispatch(form);
+          });
         }}
       >
         {entries.map(([name, spec]) => (

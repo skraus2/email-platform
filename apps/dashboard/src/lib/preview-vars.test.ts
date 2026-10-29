@@ -140,7 +140,7 @@ test("fields of undeclared names are ignored", () => {
 test("error messages never contain the value", () => {
   const secret = "Zq9secret";
   const out = buildPreviewVariables(SCHEMA, (field) =>
-    field === "v.name" ? `${secret}${secret}` : `${secret}`,
+    field === "v.name" ? `${secret}${secret}` : secret,
   );
   assert.ok(out.errors.length > 0);
   for (const e of out.errors) {

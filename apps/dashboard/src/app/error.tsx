@@ -21,7 +21,12 @@ export default function ErrorPage({
         moment.
       </p>
       <div className="actions">
-        <button type="button" onClick={() => retry()}>
+        <button
+          type="button"
+          onClick={() => {
+            retry();
+          }}
+        >
           Try again
         </button>
         <Link href="/login">Go to sign-in</Link>

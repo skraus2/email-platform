@@ -5,7 +5,7 @@ import { collectPages } from "./paging.ts";
 /** A fake list API over `total` rows with pages of `size`. */
 function pages(total: number, size = 100) {
   const calls: (string | null)[] = [];
-  const fetchPage = async (cursor: string | null) => {
+  const fetchPage = (cursor: string | null) => {
     calls.push(cursor);
     const start = cursor ? Number(cursor) : 0;
     const data = Array.from(
@@ -13,7 +13,10 @@ function pages(total: number, size = 100) {
       (_, i) => start + i,
     );
     const end = start + data.length;
-    return { data, next_cursor: end < total ? String(end) : null };
+    return Promise.resolve({
+      data,
+      next_cursor: end < total ? String(end) : null,
+    });
   };
   return { fetchPage, calls };
 }
@@ -54,17 +57,17 @@ test("a page overshooting the cap is cut and reports more rows", async () => {
 
 test("an empty page or a repeated cursor ends the loop", async () => {
   let calls = 0;
-  const empty = await collectPages(async () => {
+  const empty = await collectPages(() => {
     calls++;
-    return { data: [], next_cursor: "again" };
+    return Promise.resolve({ data: [], next_cursor: "again" });
   }, 500);
   assert.deepEqual(empty, { rows: [], more: true });
   assert.equal(calls, 1);
 
   calls = 0;
-  const stuck = await collectPages(async () => {
+  const stuck = await collectPages(() => {
     calls++;
-    return { data: [calls], next_cursor: "same" };
+    return Promise.resolve({ data: [calls], next_cursor: "same" });
   }, 500);
   assert.deepEqual(stuck, { rows: [1, 2], more: true });
   assert.equal(calls, 2);
@@ -72,10 +75,11 @@ test("an empty page or a repeated cursor ends the loop", async () => {
 
 test("a single page larger than the cap reports more rows", async () => {
   const got = await collectPages(
-    async () => ({
-      data: Array.from({ length: 100 }, (_, i) => i),
-      next_cursor: null,
-    }),
+    () =>
+      Promise.resolve({
+        data: Array.from({ length: 100 }, (_, i) => i),
+        next_cursor: null,
+      }),
     50,
   );
   assert.equal(got.rows.length, 50);

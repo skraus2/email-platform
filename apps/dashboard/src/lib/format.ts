@@ -40,6 +40,6 @@ export function displaySubject(subject: string): string {
 
 /** At most max characters (code points, never half a pair), "…" when cut. */
 export function shorten(s: string, max: number): string {
-  const chars = [...s];
+  const chars = Array.from(s);
   return chars.length > max ? `${chars.slice(0, max).join("")}…` : s;
 }

@@ -36,7 +36,7 @@ test("a tampered cookie ends at the login page through the session check", async
     {
       name: COOKIE,
       value: `tampered${"x".repeat(40)}`,
-      domain: new URL(baseURL!).hostname,
+      domain: new URL(baseURL ?? "").hostname,
       path: "/",
       secure: true,
       httpOnly: true,
@@ -131,7 +131,9 @@ test("sign-in sets a strict session cookie and every page carries a nonce CSP", 
   ).toBeVisible();
 
   const cookie = (await context.cookies()).find((c) => c.name === COOKIE);
-  expect(cookie, "session cookie").toBeDefined();
+  if (cookie === undefined) {
+    throw new Error("no session cookie");
+  }
   expect(cookie).toMatchObject({
     httpOnly: true,
     sameSite: "Lax",
@@ -140,7 +142,7 @@ test("sign-in sets a strict session cookie and every page carries a nonce CSP", 
     domain: "127.0.0.1",
   });
   // Never longer than the session (ADMIN_SESSION_MAX=2h for the run).
-  const expires = cookie!.expires * 1000;
+  const expires = cookie.expires * 1000;
   expect(expires).toBeGreaterThan(before);
   expect(expires).toBeLessThanOrEqual(Date.now() + 2 * 3600_000 + 60_000);
   expect(await page.evaluate(() => document.cookie)).not.toContain(

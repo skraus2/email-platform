@@ -19,7 +19,12 @@ export default function AdminError({
         The data for this page is not available right now. Try again in a
         moment.
       </p>
-      <button type="button" onClick={() => retry()}>
+      <button
+        type="button"
+        onClick={() => {
+          retry();
+        }}
+      >
         Try again
       </button>
     </>

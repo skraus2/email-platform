@@ -65,7 +65,10 @@ test("filtering by status and recipient narrows the list and keeps the filters i
 
   const carol = Object.keys(s.emails.recipients).find((r) =>
     r.startsWith("carol@"),
-  )!;
+  );
+  if (carol === undefined) {
+    throw new Error("seed has no carol recipient");
+  }
   await page.goto("/emails");
   await page.getByLabel("Recipient").fill(carol);
   await page.getByRole("button", { name: "Apply filters" }).click();

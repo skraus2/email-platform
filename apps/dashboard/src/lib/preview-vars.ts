@@ -65,7 +65,7 @@ export function buildPreviewVariables(
     switch (spec.type) {
       case "string": {
         const max = spec.max_length ?? 1000;
-        if ([...raw].length > max) {
+        if (Array.from(raw).length > max) {
           fail(`Too long: at most ${max} characters.`);
         } else {
           variables[name] = raw;

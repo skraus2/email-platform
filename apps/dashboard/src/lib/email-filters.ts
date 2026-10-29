@@ -103,7 +103,10 @@ export function parseEmailFilters(sp: SearchParams): {
       return undefined;
     }
     const v = raw?.trim();
-    return v ? v : undefined;
+    if (!v) {
+      return undefined;
+    }
+    return v;
   };
 
   const project = single("project_id");
@@ -168,7 +171,7 @@ export function parseEmailFilters(sp: SearchParams): {
 
   const q = single("q");
   if (q !== undefined) {
-    if ([...q].length > 512) {
+    if (Array.from(q).length > 512) {
       fail("q", "must be at most 512 characters.");
     } else {
       filters.q = q;
@@ -241,8 +244,10 @@ export function apiQuery(f: EmailFilters): URLSearchParams {
   if (f.project_id) q.set("project_id", f.project_id);
   for (const s of f.status) q.append("status", s);
   if (f.recipient) q.set("recipient", f.recipient);
-  if (f.from) q.set("created_after", rfc3339(dayStart(f.from)!));
-  if (f.to) q.set("created_before", rfc3339(dayStart(f.to)! + DAY_MS));
+  const after = f.from === undefined ? undefined : dayStart(f.from);
+  if (after !== undefined) q.set("created_after", rfc3339(after));
+  const before = f.to === undefined ? undefined : dayStart(f.to);
+  if (before !== undefined) q.set("created_before", rfc3339(before + DAY_MS));
   if (f.error_code) q.set("error_code", f.error_code);
   if (f.q) q.set("q", f.q);
   if (f.template_id) q.set("template_id", f.template_id);

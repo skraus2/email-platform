@@ -21,8 +21,12 @@ export async function login(
   form: FormData,
 ): Promise<LoginState> {
   const attempt = (prev?.attempt ?? 0) + 1;
-  const username = String(form.get("username") ?? "").trim();
-  const password = String(form.get("password") ?? "");
+  const text = (name: string) => {
+    const v = form.get(name);
+    return typeof v === "string" ? v : "";
+  };
+  const username = text("username").trim();
+  const password = text("password");
   const fail = (
     error: string,
     kind: "credentials" | "other" = "other",
@@ -36,7 +40,7 @@ export async function login(
     !username ||
     !password ||
     username.length > 64 ||
-    [...password].length > 128
+    Array.from(password).length > 128
   ) {
     return fail(
       "Enter your username and a password of at most 128 characters.",

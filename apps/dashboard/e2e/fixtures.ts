@@ -101,13 +101,17 @@ function directives(csp: string): Record<string, string[]> {
 export async function expectSecureDocument(
   res: Response | null,
 ): Promise<string> {
-  expect(res, "navigation response").not.toBeNull();
-  const headers = res!.headers();
+  if (res === null) {
+    throw new Error("no navigation response");
+  }
+  const headers = res.headers();
   const csp = directives(headers["content-security-policy"] ?? "");
   const nonce = /^'nonce-([A-Za-z0-9+/=]+)'$/.exec(
     csp["script-src"]?.[1] ?? "",
   )?.[1];
-  expect(nonce, "script-src nonce").toBeTruthy();
+  if (!nonce) {
+    throw new Error("script-src carries no nonce");
+  }
   expect(csp).toEqual({
     "default-src": ["'self'"],
     "script-src": ["'self'", `'nonce-${nonce}'`, "'strict-dynamic'"],
@@ -122,7 +126,7 @@ export async function expectSecureDocument(
     "frame-src": ["'self'"],
   });
   expect(headers["cache-control"]).toContain("no-store");
-  const html = await res!.text();
+  const html = await res.text();
   const tags = html.match(/<script\b[^>]*>/g) ?? [];
   expect(tags.length).toBeGreaterThan(0);
   for (const tag of tags) {
@@ -130,7 +134,7 @@ export async function expectSecureDocument(
       `nonce="${nonce}"`,
     );
   }
-  return nonce!;
+  return nonce;
 }
 
 /**
