@@ -91,8 +91,10 @@ Resources:
       Topics: [!Ref Topic]
       PolicyDocument:
         Version: "2012-10-17"
+        # SNS rejects topic policy statements without a unique Sid.
         Statement:
-          - Effect: Allow
+          - Sid: SesPublishes
+            Effect: Allow
             Principal:
               Service: ses.amazonaws.com
             Action: sns:Publish
@@ -101,7 +103,8 @@ Resources:
               StringEquals:
                 AWS:SourceAccount: !Ref AWS::AccountId
                 AWS:SourceArn: !Sub arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:configuration-set/email-platform-${SetName}
-          - Effect: Deny
+          - Sid: OnlyThisConfigurationSet
+            Effect: Deny
             Principal: "*"
             Action: sns:Publish
             Resource: !Ref Topic
@@ -146,7 +149,8 @@ Resources:
       PolicyDocument:
         Version: "2012-10-17"
         Statement:
-          - Effect: Allow
+          - Sid: TopicDelivers
+            Effect: Allow
             Principal:
               Service: sns.amazonaws.com
             Action: sqs:SendMessage
@@ -154,7 +158,8 @@ Resources:
             Condition:
               ArnEquals:
                 aws:SourceArn: !Ref Topic
-          - Effect: Deny
+          - Sid: TlsOnly
+            Effect: Deny
             Principal: "*"
             Action: sqs:*
             Resource: !GetAtt Queue.Arn
@@ -169,7 +174,8 @@ Resources:
       PolicyDocument:
         Version: "2012-10-17"
         Statement:
-          - Effect: Deny
+          - Sid: TlsOnly
+            Effect: Deny
             Principal: "*"
             Action: sqs:*
             Resource: !GetAtt DeadLetterQueue.Arn
@@ -224,7 +230,8 @@ Resources:
         Statement:
           # Principal is always this account; the optional ARN pattern narrows
           # it (a role ARN as Principal would break when SSO re-creates it).
-          - Effect: Allow
+          - Sid: OperatorAssumes
+            Effect: Allow
             Principal:
               AWS: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:root
             Action: sts:AssumeRole

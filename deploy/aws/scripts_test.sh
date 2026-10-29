@@ -176,6 +176,12 @@ run leftovers "" && fail "leftovers passed although a check failed"
 grep -A2 "^LEFT  RDS instances" "$work/out" | grep -q "check failed" || fail "leftovers: failed check not shown: $(cat "$work/out")"
 rm "$work/fail/rds-describe-db-instances"
 
+# Templates: every policy statement starts with a Sid (SNS rejects topic
+# policies without unique ones; the others follow suit).
+if grep -nE '^[[:space:]]*- (Effect|Action|Principal|Resource|Condition):' "$here"/*.yaml; then
+  fail "policy statement without Sid (listed above)"
+fi
+
 if [[ "$failures" -gt 0 ]]; then
   echo "deploy/aws scripts: $failures failure(s)" >&2
   exit 1
