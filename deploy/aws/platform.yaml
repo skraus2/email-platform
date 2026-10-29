@@ -18,16 +18,18 @@ Parameters:
     Type: String
     AllowedPattern: "^18\\.[0-9]+$"
     Description: RDS PostgreSQL 18 minor version available in the region.
+  # Defaults fit accounts on the AWS free plan, which refuses other sizes.
   InstanceType:
     Type: String
-    Default: t4g.medium
+    Default: c7i-flex.large
+    Description: An x86_64 type (the image is amd64), 4 GiB memory or more.
   DbInstanceClass:
     Type: String
-    Default: db.t4g.small
+    Default: db.t4g.micro
   ImageId:
     Type: AWS::EC2::Image::Id
     Description: >-
-      Ubuntu 24.04 arm64 image, pinned (a new image replaces the VM). deploy/aws/up
+      Ubuntu 24.04 amd64 image, pinned (a new image replaces the VM). deploy/aws/up
       resolves it once from Canonical's public SSM parameter.
   SsmPrefix:
     Type: String

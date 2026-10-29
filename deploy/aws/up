@@ -11,7 +11,7 @@ set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
 conf="${TESTRUN_CONF:-$here/testrun.local}"
-ubuntu_ami_parameter=/aws/service/canonical/ubuntu/server/24.04/stable/current/arm64/hvm/ebs-gp3/ami-id
+ubuntu_ami_parameter=/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id
 
 die() {
   echo "up: $*" >&2
@@ -79,7 +79,7 @@ platform)
   # from Canonical's public parameter, then kept in the settings file.
   if [[ -z "${PLATFORM_IMAGE_ID:-}" ]]; then
     PLATFORM_IMAGE_ID="$(aws ssm get-parameter --name "$ubuntu_ami_parameter" --query Parameter.Value --output text)"
-    echo "image $PLATFORM_IMAGE_ID (current Ubuntu 24.04 arm64); add PLATFORM_IMAGE_ID=$PLATFORM_IMAGE_ID to $conf"
+    echo "image $PLATFORM_IMAGE_ID (current Ubuntu 24.04 amd64); add PLATFORM_IMAGE_ID=$PLATFORM_IMAGE_ID to $conf"
   fi
   add ImageId "$PLATFORM_IMAGE_ID"
   ;;
