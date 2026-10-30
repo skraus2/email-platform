@@ -5,15 +5,18 @@ import {
   useContext,
   useEffect,
   useId,
-  useLayoutEffect,
   useRef,
   useState,
-  useSyncExternalStore,
   type KeyboardEvent,
   type ReactNode,
   type RefObject,
 } from "react";
 import { Icon } from "@/components/icons";
+import {
+  useHydrated,
+  useOutsideClick,
+  usePopupPlacement,
+} from "@/components/popup";
 import {
   MAX_DAY,
   MIN_DAY,
@@ -30,17 +33,6 @@ import {
   todayUTC,
   type Day,
 } from "@/lib/calendar";
-
-const noSubscribe = () => () => undefined;
-
-/** False while rendering on the server and hydrating, true afterwards. */
-function useHydrated(): boolean {
-  return useSyncExternalStore(
-    noSubscribe,
-    () => true,
-    () => false,
-  );
-}
 
 type RangeEnd = "from" | "to";
 
@@ -131,23 +123,9 @@ export function DateField({
     }
   };
 
-  // A click outside the field closes the calendar and leaves the focus where
-  // the click put it. A click, not a press: on touch screens a press also
-  // starts every scroll, and scrolling must not close it.
-  useEffect(() => {
-    if (!open) {
-      return;
-    }
-    const onClick = (e: MouseEvent) => {
-      if (!wrapper.current?.contains(e.target as Node)) {
-        setOpen(null);
-      }
-    };
-    document.addEventListener("click", onClick);
-    return () => {
-      document.removeEventListener("click", onClick);
-    };
-  }, [open]);
+  useOutsideClick(wrapper, open !== null, () => {
+    setOpen(null);
+  });
 
   return (
     <div className="date-field" ref={wrapper}>
@@ -215,9 +193,6 @@ export function DateField({
   );
 }
 
-/** Keeps a popup this far from the viewport's edges. */
-const EDGE_GAP = 16;
-
 /**
  * The calendar popup (WAI-ARIA date picker dialog): month navigation, a grid
  * of days with one focusable day, Today and Clear. Focus stays inside until
@@ -268,30 +243,7 @@ function CalendarDialog({
     }
   }, [focus]);
 
-  // Below the field, shifted left when it would leave the viewport.
-  useLayoutEffect(() => {
-    const el = dialog.current;
-    const field = anchor.current;
-    if (!el || !field) {
-      return;
-    }
-    const place = () => {
-      el.style.left = "0px";
-      const box = el.getBoundingClientRect();
-      const fieldLeft = field.getBoundingClientRect().left;
-      const overflow =
-        box.right - (document.documentElement.clientWidth - EDGE_GAP);
-      if (overflow > 0) {
-        const shift = Math.min(overflow, fieldLeft - EDGE_GAP);
-        el.style.left = `${String(-Math.max(shift, 0))}px`;
-      }
-    };
-    place();
-    window.addEventListener("resize", place);
-    return () => {
-      window.removeEventListener("resize", place);
-    };
-  }, [anchor]);
+  usePopupPlacement(dialog, anchor);
 
   const days = monthGrid(focus);
   const weeks = Array.from({ length: 6 }, (_, i) =>
@@ -345,7 +297,7 @@ function CalendarDialog({
       role="dialog"
       aria-modal="true"
       aria-label={label}
-      className="calendar"
+      className="popup calendar"
       onKeyDown={onDialogKeyDown}
     >
       <div className="calendar-head">
