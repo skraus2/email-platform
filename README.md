@@ -32,6 +32,29 @@ Go (API and worker as one modular monolith), PostgreSQL, Next.js.
 API contract: [`api/openapi.yaml`](api/openapi.yaml) (operator API:
 [`api/admin-openapi.yaml`](api/admin-openapi.yaml)).
 
+## Operator dashboard
+
+A read-only console for the people running the platform: every project's
+emails with their delivery events and webhook deliveries, broadcasts,
+automations and their runs, templates with a preview, and projects with
+their senders and endpoints. It follows the system's light or dark setting.
+The screenshots show sample data.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/screenshots/messages-dark.png">
+  <img alt="Messages: filters for project, recipient, error code, date range and status above a table of emails with their status" src=".github/screenshots/messages-light.png">
+</picture>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/screenshots/email-dark.png">
+  <img alt="An email's detail: status, sender, recipient, provider and template, its delivery events and the webhook deliveries they triggered" src=".github/screenshots/email-light.png">
+</picture>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/screenshots/automation-dark.png">
+  <img alt="An automation: its trigger event, numbered steps, runs by status and the latest runs" src=".github/screenshots/automation-light.png">
+</picture>
+
 ## Status
 
 Built for internal use; one tenant per project, every project's data
