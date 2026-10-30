@@ -157,7 +157,7 @@ export default async function BroadcastPage({
         ) : (
           <>
             <div
-              className="table-wrap"
+              className="table-wrap compact"
               role="region"
               aria-labelledby="by-status-caption"
               tabIndex={0}
@@ -169,7 +169,9 @@ export default async function BroadcastPage({
                 <thead>
                   <tr>
                     <th scope="col">Status</th>
-                    <th scope="col">Emails</th>
+                    <th scope="col" className="num">
+                      Emails
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
@@ -178,7 +180,7 @@ export default async function BroadcastPage({
                       <th scope="row">
                         <Status value={st} />
                       </th>
-                      <td>{count(c.by_status[st] ?? 0)}</td>
+                      <td className="num">{count(c.by_status[st] ?? 0)}</td>
                     </tr>
                   ))}
                 </tbody>

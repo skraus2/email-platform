@@ -539,6 +539,19 @@ select[aria-invalid="true"]:focus-visible,
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
 }
+/* A short table of counts: as wide as it needs, not the whole page. */
+.table-wrap.compact {
+  max-width: 24rem;
+}
+/* Cards that follow each other in a section keep apart. */
+:is(dl.meta, .table-wrap) + :is(dl.meta, .table-wrap) {
+  margin-top: 1rem;
+}
+/* Counts line up by their digits. */
+th.num,
+td.num {
+  text-align: right;
+}
 table {
   border-collapse: collapse;
   width: 100%;
