@@ -330,17 +330,28 @@ textarea:focus-visible {
 }
 /* The native select arrow ignores padding and sits on the border; draw our
    own, lined up with the date field's calendar button. Images cannot take
-   currentColor, so the colour comes per scheme (--text). */
-select:not([multiple]) {
-  appearance: none;
-  padding-right: 2.5rem;
+   currentColor, so the colour comes per scheme (--text). Text fields with a
+   suggestion list get the same arrow, always visible. */
+select:not([multiple]),
+input[list] {
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%2318181b' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 6l4 4 4-4'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
   background-position: right 0.875rem center;
   background-size: 1rem;
 }
+select:not([multiple]) {
+  appearance: none;
+  padding-right: 2.5rem;
+}
+/* Chrome's own list button only shows on hover or focus; keep it as the
+   (invisible) click target over the drawn arrow. */
+input[list]::-webkit-calendar-picker-indicator {
+  opacity: 0;
+  cursor: pointer;
+}
 @media (prefers-color-scheme: dark) {
-  select:not([multiple]) {
+  select:not([multiple]),
+  input[list] {
     background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23ededef' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 6l4 4 4-4'/%3E%3C/svg%3E");
   }
 }
@@ -1024,6 +1035,12 @@ ul.plain {
   select:not([multiple]) {
     appearance: auto;
     background-image: none;
+  }
+  input[list] {
+    background-image: none;
+  }
+  input[list]::-webkit-calendar-picker-indicator {
+    opacity: 1;
   }
   /* Calendar: the selected day and the range ends keep their marks. */
   td:is([aria-selected="true"], [data-range-start], [data-range-end])
