@@ -114,30 +114,34 @@ export default async function AutomationPage({
 
       <section aria-labelledby="steps-h">
         <h2 id="steps-h">Steps</h2>
-        <ol>
+        {/* role: Safari drops the list role of a list without markers. */}
+        <ol className="steps" role="list">
           {a.steps.map((step, i) => (
             <li key={i} className="wrap">
-              {step.type === "send" ? (
-                <>
-                  Send{" "}
-                  <Link
-                    href={`/templates/${encodeURIComponent(step.template_id)}/versions/${encodeURIComponent(String(step.template_version))}`}
-                    prefetch={false}
-                  >
-                    version {step.template_version}
-                  </Link>{" "}
-                  of template{" "}
-                  <Link
-                    href={`/templates/${encodeURIComponent(step.template_id)}`}
-                    prefetch={false}
-                  >
-                    <code>{step.template_id}</code>
-                  </Link>{" "}
-                  from {step.from}
-                </>
-              ) : (
-                describeStep(step)
-              )}
+              {/* One flex item next to the step number. */}
+              <span>
+                {step.type === "send" ? (
+                  <>
+                    Send{" "}
+                    <Link
+                      href={`/templates/${encodeURIComponent(step.template_id)}/versions/${encodeURIComponent(String(step.template_version))}`}
+                      prefetch={false}
+                    >
+                      version {step.template_version}
+                    </Link>{" "}
+                    of template{" "}
+                    <Link
+                      href={`/templates/${encodeURIComponent(step.template_id)}`}
+                      prefetch={false}
+                    >
+                      <code>{step.template_id}</code>
+                    </Link>{" "}
+                    from {step.from}
+                  </>
+                ) : (
+                  describeStep(step)
+                )}
+              </span>
             </li>
           ))}
         </ol>
@@ -146,7 +150,7 @@ export default async function AutomationPage({
       <section aria-labelledby="counts-h">
         <h2 id="counts-h">Runs by status</h2>
         <div
-          className="table-wrap"
+          className="table-wrap compact"
           role="region"
           aria-labelledby="counts-caption"
           tabIndex={0}
@@ -158,7 +162,9 @@ export default async function AutomationPage({
             <thead>
               <tr>
                 <th scope="col">Status</th>
-                <th scope="col">Runs</th>
+                <th scope="col" className="num">
+                  Runs
+                </th>
               </tr>
             </thead>
             <tbody>
@@ -167,7 +173,9 @@ export default async function AutomationPage({
                   <th scope="row">
                     <Status value={st} />
                   </th>
-                  <td>{(a.run_counts[st] ?? 0).toLocaleString("en")}</td>
+                  <td className="num">
+                    {(a.run_counts[st] ?? 0).toLocaleString("en")}
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -220,10 +228,10 @@ export default async function AutomationPage({
                           prefetch={false}
                           aria-label={`Run ${r.id}`}
                         >
-                          <code>{r.id}</code>
+                          <code>{r.id.slice(0, 8)}…</code>
                         </Link>
                       </td>
-                      <td>
+                      <td className="breakable">
                         <RunStatus run={r} />
                       </td>
                       <td>

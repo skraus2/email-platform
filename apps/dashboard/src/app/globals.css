@@ -1039,6 +1039,41 @@ dl.kv dd {
   font-size: 0.75rem;
 }
 
+/* Numbered steps: a card like the detail lists, one row per step. */
+ol.steps {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: step;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+}
+ol.steps li {
+  counter-increment: step;
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+  padding: 0.625rem 1rem;
+  border-top: 1px solid var(--border);
+}
+ol.steps li:first-child {
+  border-top: 0;
+}
+ol.steps li::before {
+  content: counter(step);
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: 50%;
+  background: var(--selected-subtle);
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
 /* The link up to the list, above a detail page's title. */
 .back {
   margin: 0 0 0.75rem;
