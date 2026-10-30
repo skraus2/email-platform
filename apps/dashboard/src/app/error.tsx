@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { Brand } from "@/components/brand";
 
 /**
  * Shown when a page cannot load, e.g. while the admin API is unreachable.
@@ -15,6 +16,7 @@ export default function ErrorPage({
   return (
     <main className="login">
       <title>Unavailable · Email Platform</title>
+      <Brand />
       <h1>This page could not be loaded</h1>
       <p>
         The operator console cannot reach its data right now. Try again in a

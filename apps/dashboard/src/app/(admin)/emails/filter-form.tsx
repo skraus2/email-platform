@@ -137,36 +137,6 @@ export function FilterForm({
         </p>
         {fieldError("recipient")}
       </div>
-      <DateRange from={raw("from")} to={raw("to")}>
-        <div className="field">
-          <label htmlFor="f-from">From date (UTC)</label>
-          <DateField
-            label="from date"
-            range="from"
-            defaultValue={raw("from")}
-            disableFuture
-            {...fieldProps("from")}
-          />
-          <p id="h-from" className="hint">
-            {hints.from}
-          </p>
-          {fieldError("from")}
-        </div>
-        <div className="field">
-          <label htmlFor="f-to">To date (UTC, inclusive)</label>
-          <DateField
-            label="to date"
-            range="to"
-            defaultValue={raw("to")}
-            disableFuture
-            {...fieldProps("to")}
-          />
-          <p id="h-to" className="hint">
-            {hints.to}
-          </p>
-          {fieldError("to")}
-        </div>
-      </DateRange>
       <div className="field">
         <label htmlFor="f-error_code">Error code</label>
         <input
@@ -183,6 +153,39 @@ export function FilterForm({
           ))}
         </datalist>
         {fieldError("error_code")}
+      </div>
+      {/* From and to share a row, so the range reads as one. */}
+      <div className="wide date-range">
+        <DateRange from={raw("from")} to={raw("to")}>
+          <div className="field">
+            <label htmlFor="f-from">From date (UTC)</label>
+            <DateField
+              label="from date"
+              range="from"
+              defaultValue={raw("from")}
+              disableFuture
+              {...fieldProps("from")}
+            />
+            <p id="h-from" className="hint">
+              {hints.from}
+            </p>
+            {fieldError("from")}
+          </div>
+          <div className="field">
+            <label htmlFor="f-to">To date (UTC, inclusive)</label>
+            <DateField
+              label="to date"
+              range="to"
+              defaultValue={raw("to")}
+              disableFuture
+              {...fieldProps("to")}
+            />
+            <p id="h-to" className="hint">
+              {hints.to}
+            </p>
+            {fieldError("to")}
+          </div>
+        </DateRange>
       </div>
       <fieldset
         className="field wide statuses"

@@ -15,18 +15,20 @@ export default function AdminError({
     <>
       <title>Unavailable · Email Platform</title>
       <h1>This page could not be loaded</h1>
-      <p role="alert">
-        The data for this page is not available right now. Try again in a
-        moment.
-      </p>
-      <button
-        type="button"
-        onClick={() => {
-          retry();
-        }}
-      >
-        Try again
-      </button>
+      <div className="notice">
+        <p role="alert">
+          The data for this page is not available right now. Try again in a
+          moment.
+        </p>
+        <button
+          type="button"
+          onClick={() => {
+            retry();
+          }}
+        >
+          Try again
+        </button>
+      </div>
     </>
   );
 }

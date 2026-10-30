@@ -164,7 +164,6 @@ export function DateField({
         onFocus={() => {
           setOpen(null);
         }}
-        placeholder="YYYY-MM-DD"
         autoComplete="off"
         spellCheck={false}
         maxLength={10}

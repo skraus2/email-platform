@@ -440,9 +440,11 @@ code {
 
 /* Filter panel */
 .filters {
+  --filter-columns: repeat(auto-fill, minmax(min(14rem, 100%), 1fr));
+  --filter-gap: 1rem 1.25rem;
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(14rem, 100%), 1fr));
-  gap: 1rem 1.25rem;
+  grid-template-columns: var(--filter-columns);
+  gap: var(--filter-gap);
   margin-block: 0 1.5rem;
   padding: 1.25rem;
   background: var(--bg-subtle);
@@ -457,6 +459,13 @@ code {
 }
 .wide {
   grid-column: 1 / -1;
+}
+/* A full row on the same tracks as the panel, so its fields line up with
+   the fields above. */
+.date-range {
+  display: grid;
+  grid-template-columns: var(--filter-columns);
+  gap: var(--filter-gap);
 }
 .field input,
 .field select {
@@ -966,6 +975,8 @@ ul.plain {
 @media (max-width: 52rem) {
   .shell {
     grid-template-columns: minmax(0, 1fr);
+    /* The top bar keeps its height; short pages leave the rest to main. */
+    grid-template-rows: auto 1fr;
   }
   .sidebar {
     position: static;
@@ -1001,11 +1012,13 @@ ul.plain {
   .avatar {
     display: none;
   }
-  /* iOS zooms into text fields below 16px on focus. */
+  /* iOS zooms into text fields below 16px on focus. The tighter line
+     height keeps them as tall as the buttons. */
   input:not([type="checkbox"], [type="radio"]),
   select,
   textarea {
     font-size: 1rem;
+    line-height: 1.25;
   }
   main {
     padding: 1.5rem 1rem 2.5rem;
