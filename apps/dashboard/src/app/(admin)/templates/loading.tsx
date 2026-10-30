@@ -9,10 +9,9 @@ export default function Loading() {
   return (
     <Skeleton label="Loading templates…">
       <SkeletonTitle />
+      {/* One project group: how many there are depends on the data. */}
       <SkeletonHeading />
-      <SkeletonTable rows={2} cols={4} />
-      <SkeletonHeading />
-      <SkeletonTable rows={2} cols={4} />
+      <SkeletonTable rows={3} cols={4} />
     </Skeleton>
   );
 }
