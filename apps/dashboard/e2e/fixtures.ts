@@ -127,7 +127,7 @@ export async function expectSecureDocument(
   });
   expect(headers["cache-control"]).toContain("no-store");
   const html = await res.text();
-  const tags = html.match(/<script\b[^>]*>/g) ?? [];
+  const tags = html.match(/<script\b[^>]*>/gi) ?? [];
   expect(tags.length).toBeGreaterThan(0);
   for (const tag of tags) {
     expect(tag, "script tag carries the page nonce").toContain(
