@@ -13,7 +13,7 @@ export default function Loading() {
       <SkeletonBack />
       <SkeletonTitle />
       <SkeletonHeading />
-      <SkeletonCard rows={16} />
+      <SkeletonCard rows={15} />
       <SkeletonHeading />
       <SkeletonTable rows={3} cols={6} />
       <SkeletonHeading />

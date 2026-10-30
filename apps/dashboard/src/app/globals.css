@@ -73,7 +73,8 @@ body {
 
 h1,
 h2,
-h3 {
+h3,
+h4 {
   line-height: 1.25;
   letter-spacing: -0.011em;
 }
@@ -87,7 +88,8 @@ h2 {
   font-weight: 600;
   margin: 2rem 0 0.75rem;
 }
-h3 {
+h3,
+h4 {
   font-size: 0.875rem;
   font-weight: 600;
 }
@@ -552,14 +554,11 @@ select[aria-invalid="true"]:focus-visible,
   table-layout: fixed;
   min-width: 40rem;
 }
-.templates th:nth-child(1) {
-  width: 38%;
-}
-.templates th:nth-child(2) {
-  width: 30%;
-}
 .templates th:nth-child(3) {
-  width: 12%;
+  width: 7.5rem;
+}
+.templates th:nth-child(4) {
+  width: 12.5rem;
 }
 /* Counts line up by their digits. */
 th.num,
@@ -626,6 +625,10 @@ td a:hover {
 /* Short ids in tables keep their width; the table scrolls instead. */
 td code {
   overflow-wrap: normal;
+}
+/* Unless the cell wraps: a slug or id without hyphens must still break. */
+td.wrap code {
+  overflow-wrap: anywhere;
 }
 /* Cells stay on one line unless marked: .wrap breaks anywhere (after some room),
    .breakable only at spaces. */
@@ -1001,6 +1004,9 @@ td:not([aria-selected="true"], [data-range-start], [data-range-end])
   border: 1px dashed var(--border-control);
   border-radius: var(--radius-lg);
 }
+.empty > p {
+  margin: 0;
+}
 
 /* Loading skeletons: grey bars in the shape of the page. They fade in
    after a short delay, so a fast load shows nothing, and pulse unless
@@ -1080,6 +1086,9 @@ td:not([aria-selected="true"], [data-range-start], [data-range-end])
 }
 .sk-row:first-child {
   border-top: 0;
+}
+.sk-caption {
+  min-height: 2.75rem;
 }
 .sk-table .sk-head {
   min-height: 2.25rem;
@@ -1390,6 +1399,19 @@ p.source {
   outline-offset: 2px;
 }
 
+/* iOS zooms into text fields below 16px on focus: narrow screens and
+   touch screens (phones in landscape are wider than the narrow layout).
+   The tighter line height keeps them as tall as the buttons. */
+@media (max-width: 52rem), (pointer: coarse) {
+  input:not([type="checkbox"], [type="radio"]),
+  select,
+  textarea,
+  .select-button {
+    font-size: 1rem;
+    line-height: 1.25;
+  }
+}
+
 /* Narrow screens: the sidebar becomes a top bar, the nav wraps. */
 @media (max-width: 52rem) {
   .shell {
@@ -1430,15 +1452,6 @@ p.source {
   }
   .avatar {
     display: none;
-  }
-  /* iOS zooms into text fields below 16px on focus. The tighter line
-     height keeps them as tall as the buttons. */
-  input:not([type="checkbox"], [type="radio"]),
-  select,
-  textarea,
-  .select-button {
-    font-size: 1rem;
-    line-height: 1.25;
   }
   main {
     padding: 1.5rem 1rem 2.5rem;
@@ -1483,6 +1496,11 @@ p.source {
   }
   .option.active .muted {
     color: inherit;
+  }
+  /* Skeleton bars keep a system colour, so loading is not a blank page. */
+  .sk {
+    forced-color-adjust: none;
+    background: GrayText;
   }
   input[list]::-webkit-calendar-picker-indicator {
     opacity: 1;

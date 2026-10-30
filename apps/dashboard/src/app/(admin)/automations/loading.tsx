@@ -4,7 +4,7 @@ export default function Loading() {
   return (
     <Skeleton label="Loading automations…">
       <SkeletonTitle />
-      <SkeletonTable rows={4} cols={6} />
+      <SkeletonTable rows={4} cols={6} caption />
     </Skeleton>
   );
 }

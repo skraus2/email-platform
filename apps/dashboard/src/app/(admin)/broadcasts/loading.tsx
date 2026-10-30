@@ -4,7 +4,7 @@ export default function Loading() {
   return (
     <Skeleton label="Loading broadcasts…">
       <SkeletonTitle />
-      <SkeletonTable rows={5} cols={5} />
+      <SkeletonTable rows={5} cols={5} caption />
     </Skeleton>
   );
 }

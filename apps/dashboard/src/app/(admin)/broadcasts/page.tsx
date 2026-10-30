@@ -40,8 +40,9 @@ export default async function BroadcastsPage() {
           tabIndex={0}
         >
           <table>
-            <caption id="broadcasts-caption" className="visually-hidden">
-              Broadcasts, newest first
+            <caption id="broadcasts-caption">
+              {broadcasts.rows.length} broadcast
+              {broadcasts.rows.length === 1 ? "" : "s"}, newest first
             </caption>
             <thead>
               <tr>

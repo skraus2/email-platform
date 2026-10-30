@@ -88,7 +88,7 @@ export default async function TemplatePage({
         </dl>
       </section>
 
-      <section aria-labelledby="versions-h">
+      <section>
         <h2 id="versions-h">Versions</h2>
         {t.versions.length === 0 ? (
           <p className="empty">No version has been published yet.</p>

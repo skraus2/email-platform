@@ -16,7 +16,7 @@ export default function Loading() {
       <SkeletonCard rows={10} />
       <SkeletonHeading />
       <SkeletonCard rows={2} />
-      <SkeletonTable rows={9} cols={2} compact />
+      <SkeletonTable rows={9} cols={2} compact caption />
     </Skeleton>
   );
 }

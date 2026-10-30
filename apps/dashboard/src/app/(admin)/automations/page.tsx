@@ -39,8 +39,9 @@ export default async function AutomationsPage() {
           tabIndex={0}
         >
           <table>
-            <caption id="automations-caption" className="visually-hidden">
-              Automations, newest first
+            <caption id="automations-caption">
+              {automations.rows.length} automation
+              {automations.rows.length === 1 ? "" : "s"}, newest first
             </caption>
             <thead>
               <tr>

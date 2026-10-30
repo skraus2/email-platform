@@ -64,12 +64,15 @@ export function SkeletonTable({
   rows,
   cols,
   compact = false,
+  caption = false,
 }: {
   rows: number;
   /** 2 to 7 columns. */
   cols: number;
   /** As narrow as the short count tables. */
   compact?: boolean;
+  /** The table shows its caption (a count line) above the header. */
+  caption?: boolean;
 }) {
   const cells = (row: number) =>
     Array.from({ length: cols }, (_, c) => (
@@ -79,6 +82,11 @@ export function SkeletonTable({
     <div
       className={`sk-card sk-table sk-cols-${String(cols)}${compact ? " compact" : ""}`}
     >
+      {caption ? (
+        <div className="sk-row sk-caption">
+          <Bar width="short" />
+        </div>
+      ) : null}
       <div className="sk-row sk-head">{cells(1)}</div>
       {Array.from({ length: rows }, (_, r) => (
         <div key={r} className="sk-row">

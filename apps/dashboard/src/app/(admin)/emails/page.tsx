@@ -102,8 +102,8 @@ export default async function EmailsPage({
           <Suspense
             key={emailsHref(filters, filters.cursor)}
             fallback={
-              <Skeleton label="Loading emails…">
-                <SkeletonTable rows={8} cols={7} />
+              <Skeleton label="Loading messages…">
+                <SkeletonTable rows={8} cols={7} caption />
               </Skeleton>
             }
           >

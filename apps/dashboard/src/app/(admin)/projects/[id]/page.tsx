@@ -82,7 +82,7 @@ export default async function ProjectPage({
         </dl>
       </section>
 
-      <section aria-labelledby="senders-h">
+      <section>
         <h2 id="senders-h">Sender identities</h2>
         {senders.rows.length === 0 ? (
           <p className="empty">No sender identities.</p>
@@ -129,7 +129,7 @@ export default async function ProjectPage({
         {senders.more ? <MoreRows /> : null}
       </section>
 
-      <section aria-labelledby="endpoints-h">
+      <section>
         <h2 id="endpoints-h">Webhook endpoints</h2>
         {endpoints.rows.length === 0 ? (
           <p className="empty">No webhook endpoints.</p>
@@ -157,7 +157,7 @@ export default async function ProjectPage({
               <tbody>
                 {endpoints.rows.map((e) => (
                   <tr key={e.id}>
-                    <td className="wrap">{e.url}</td>
+                    <td className="wrap url">{e.url}</td>
                     <td>
                       {e.event_types.length === 0 ? (
                         <None />
@@ -187,7 +187,7 @@ export default async function ProjectPage({
         {endpoints.more ? <MoreRows /> : null}
       </section>
 
-      <section aria-labelledby="templates-h">
+      <section>
         <h2 id="templates-h">Templates</h2>
         {templates.rows.length === 0 ? (
           <p className="empty">No templates.</p>

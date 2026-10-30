@@ -43,7 +43,7 @@ export function RunPosition({
     );
   }
   if (run.status === "completed") {
-    return <span className="muted">all steps done</span>;
+    return <span className="muted">All steps done</span>;
   }
   // Cancelled runs and runs of a disabled project stopped before their
   // next step ran.

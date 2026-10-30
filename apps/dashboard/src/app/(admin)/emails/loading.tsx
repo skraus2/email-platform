@@ -12,7 +12,7 @@ export default function Loading() {
       <SkeletonTitle />
       <SkeletonFilters />
       <SkeletonHeading />
-      <SkeletonTable rows={8} cols={7} />
+      <SkeletonTable rows={8} cols={7} caption />
     </Skeleton>
   );
 }

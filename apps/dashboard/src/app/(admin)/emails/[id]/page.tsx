@@ -87,7 +87,12 @@ export default async function EmailPage({ params }: PageProps<"/emails/[id]">) {
           <dd>{email.error_code ?? <None />}</dd>
           <dt>Project</dt>
           <dd>
-            {email.project_name}{" "}
+            <Link
+              href={`/projects/${encodeURIComponent(email.project_id)}`}
+              prefetch={false}
+            >
+              {email.project_name}
+            </Link>{" "}
             <Link
               href={`/emails?project_id=${encodeURIComponent(email.project_id)}`}
             >
@@ -200,7 +205,7 @@ export default async function EmailPage({ params }: PageProps<"/emails/[id]">) {
         </dl>
       </section>
 
-      <section aria-labelledby="events-h">
+      <section>
         <h2 id="events-h">Events</h2>
         {events.rows.length === 0 ? (
           <p className="empty">No events recorded yet.</p>
@@ -249,7 +254,7 @@ export default async function EmailPage({ params }: PageProps<"/emails/[id]">) {
         {events.more ? <MoreRows /> : null}
       </section>
 
-      <section aria-labelledby="deliveries-h">
+      <section>
         <h2 id="deliveries-h">Webhook deliveries</h2>
         {deliveries.rows.length === 0 ? (
           <p className="empty">No webhook deliveries for this email.</p>

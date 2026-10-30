@@ -82,14 +82,13 @@ export default async function VersionPage({ params }: Props) {
       <h1 className="wrap">
         {displayName(t.name)}, version {v.version}
       </h1>
+      <p className="muted">
+        Template <code>{t.id}</code>
+      </p>
       <dl className="meta">
         <dt>Published</dt>
         <dd>
           <Timestamp iso={v.created_at} />
-        </dd>
-        <dt>Template</dt>
-        <dd>
-          <code>{t.id}</code>
         </dd>
       </dl>
       {newer ? (
@@ -101,7 +100,7 @@ export default async function VersionPage({ params }: Props) {
         </p>
       ) : null}
 
-      <section aria-labelledby="variables-h">
+      <section>
         <h2 id="variables-h">Variables</h2>
         {entries.length === 0 ? (
           <p className="empty">This version declares no variables.</p>
