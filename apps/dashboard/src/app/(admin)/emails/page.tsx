@@ -3,6 +3,7 @@ import Link from "next/link";
 import { unstable_rethrow } from "next/navigation";
 import { Suspense } from "react";
 import { None } from "@/components/none";
+import { Skeleton, SkeletonTable } from "@/components/skeleton";
 import { Status } from "@/components/status";
 import { Timestamp } from "@/components/timestamp";
 import {
@@ -100,7 +101,11 @@ export default async function EmailsPage({
           {/* Keyed by the query, so a new search shows the loading state. */}
           <Suspense
             key={emailsHref(filters, filters.cursor)}
-            fallback={<p className="loading">Loading emails…</p>}
+            fallback={
+              <Skeleton label="Loading emails…">
+                <SkeletonTable rows={8} cols={7} />
+              </Skeleton>
+            }
           >
             <EmailResults filters={filters} query={query} />
           </Suspense>

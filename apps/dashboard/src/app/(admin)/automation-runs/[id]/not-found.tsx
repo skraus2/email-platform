@@ -1,11 +1,11 @@
-import Link from "next/link";
+import { BackLink } from "@/components/back-link";
 
 export default function RunNotFound() {
   return (
     <>
+      <BackLink href="/automations">All automations</BackLink>
       <h1>Run not found</h1>
-      <p>There is no automation run with this id.</p>
-      <Link href="/automations">All automations</Link>
+      <p className="notice">There is no automation run with this id.</p>
     </>
   );
 }

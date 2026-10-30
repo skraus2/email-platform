@@ -1,7 +1,21 @@
+import {
+  Skeleton,
+  SkeletonBack,
+  SkeletonCard,
+  SkeletonHeading,
+  SkeletonTable,
+  SkeletonTitle,
+} from "@/components/skeleton";
+
 export default function Loading() {
   return (
-    <p role="status" className="loading">
-      Loading template…
-    </p>
+    <Skeleton label="Loading template…">
+      <SkeletonBack />
+      <SkeletonTitle />
+      <SkeletonHeading />
+      <SkeletonCard rows={5} />
+      <SkeletonHeading />
+      <SkeletonTable rows={3} cols={2} />
+    </Skeleton>
   );
 }

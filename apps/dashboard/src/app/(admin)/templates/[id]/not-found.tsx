@@ -1,11 +1,11 @@
-import Link from "next/link";
+import { BackLink } from "@/components/back-link";
 
 export default function TemplateNotFound() {
   return (
     <>
+      <BackLink href="/templates">All templates</BackLink>
       <h1>Template not found</h1>
-      <p>There is no template with this id.</p>
-      <Link href="/templates">All templates</Link>
+      <p className="notice">There is no template with this id.</p>
     </>
   );
 }

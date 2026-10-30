@@ -1001,9 +1001,175 @@ td:not([aria-selected="true"], [data-range-start], [data-range-end])
   border: 1px dashed var(--border-control);
   border-radius: var(--radius-lg);
 }
-.loading {
-  padding: 1rem 0;
-  color: var(--text-muted);
+
+/* Loading skeletons: grey bars in the shape of the page. They fade in
+   after a short delay, so a fast load shows nothing, and pulse unless
+   motion is reduced. */
+.skeleton {
+  animation: sk-appear 1ms 200ms both;
+}
+@keyframes sk-appear {
+  from {
+    visibility: hidden;
+  }
+}
+.sk {
+  display: block;
+  height: 0.75rem;
+  border-radius: var(--radius-sm);
+  background: var(--selected-subtle);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .sk {
+    animation: sk-pulse 1.5s ease-in-out infinite;
+  }
+}
+@keyframes sk-pulse {
+  50% {
+    opacity: 0.55;
+  }
+}
+.sk-short {
+  width: 6rem;
+}
+.sk-medium {
+  width: 60%;
+}
+.sk-long {
+  width: 85%;
+}
+.sk-full {
+  width: 100%;
+}
+.sk-title {
+  display: grid;
+  gap: 0.75rem;
+  margin-bottom: 1.5rem;
+}
+.sk-title .sk-h1 {
+  width: min(16rem, 60%);
+  height: 1.5rem;
+}
+.sk-title .sk-long {
+  width: min(32rem, 85%);
+}
+.sk-back {
+  width: 7rem;
+  margin-bottom: 1rem;
+}
+.sk-h2 {
+  width: 8rem;
+  height: 1rem;
+  margin: 2rem 0 0.875rem;
+}
+.sk-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+}
+.sk-card + .sk-card {
+  margin-top: 1rem;
+}
+.sk-row {
+  display: grid;
+  align-items: center;
+  gap: 1.5rem;
+  min-height: 3rem;
+  padding: 0 1rem;
+  border-top: 1px solid var(--border);
+}
+.sk-row:first-child {
+  border-top: 0;
+}
+.sk-table .sk-head {
+  min-height: 2.25rem;
+  background: var(--bg-subtle);
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+}
+.sk-table .sk-head .sk {
+  height: 0.5rem;
+  width: 50%;
+}
+.sk-cols-2 .sk-row {
+  grid-template-columns: repeat(2, 1fr);
+}
+.sk-cols-3 .sk-row {
+  grid-template-columns: repeat(3, 1fr);
+}
+.sk-cols-4 .sk-row {
+  grid-template-columns: repeat(4, 1fr);
+}
+.sk-cols-5 .sk-row {
+  grid-template-columns: repeat(5, 1fr);
+}
+.sk-cols-6 .sk-row {
+  grid-template-columns: repeat(6, 1fr);
+}
+.sk-cols-7 .sk-row {
+  grid-template-columns: repeat(7, 1fr);
+}
+.sk-table.compact {
+  max-width: 24rem;
+}
+.sk-meta .sk-row {
+  grid-template-columns: minmax(9rem, 12rem) 1fr;
+  min-height: 2.75rem;
+}
+.sk-filters {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(14rem, 100%), 1fr));
+  gap: 1rem 1.25rem;
+  margin-bottom: 1.5rem;
+  padding: 1.25rem;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+}
+.sk-field {
+  display: grid;
+  align-content: start;
+  gap: 0.625rem;
+}
+.sk-field.wide {
+  grid-column: 1 / -1;
+}
+.sk-control {
+  height: var(--control-h);
+  background: var(--surface);
+  border: 1px solid var(--border);
+}
+.sk-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+.sk-hint {
+  height: 0.625rem;
+}
+.sk-pill {
+  width: 6.5rem;
+  height: 1.9rem;
+  border-radius: 999px;
+}
+.sk-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+.sk-button {
+  width: 6.5rem;
+  height: var(--control-h);
+}
+.sk-block {
+  margin-bottom: 1rem;
+}
+.sk-block-small {
+  height: 2.75rem;
+}
+.sk-block-medium {
+  height: 7rem;
+}
+.sk-block-large {
+  height: 11rem;
 }
 
 /* Detail lists: a card like the tables, one row per entry. */

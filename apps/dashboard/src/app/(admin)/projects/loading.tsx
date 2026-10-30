@@ -1,7 +1,10 @@
+import { Skeleton, SkeletonTable, SkeletonTitle } from "@/components/skeleton";
+
 export default function Loading() {
   return (
-    <p role="status" className="loading">
-      Loading projects…
-    </p>
+    <Skeleton label="Loading projects…">
+      <SkeletonTitle />
+      <SkeletonTable rows={5} cols={4} />
+    </Skeleton>
   );
 }
