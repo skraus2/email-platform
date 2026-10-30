@@ -11,6 +11,7 @@ import {
   endOfWeek,
   formatDay,
   inRange,
+  keyTarget,
   monthGrid,
   monthLabel,
   parseDay,
@@ -177,4 +178,34 @@ test("labels name days and months in English", () => {
   assert.equal(dayLabel(day("2028-02-29")), "Tuesday, 29 February 2028");
   assert.equal(monthLabel(day("2026-10-30")), "October 2026");
   assert.equal(monthLabel(day("2027-01-01")), "January 2027");
+});
+
+test("grid keys move the focused day as in the APG date picker", () => {
+  const fri = day("2026-10-30");
+  for (const [key, shift, want] of [
+    ["ArrowLeft", false, "2026-10-29"],
+    ["ArrowRight", false, "2026-10-31"],
+    ["ArrowUp", false, "2026-10-23"],
+    ["ArrowDown", false, "2026-11-06"],
+    ["Home", false, "2026-10-26"],
+    ["End", false, "2026-11-01"],
+    ["PageUp", false, "2026-09-30"],
+    ["PageDown", false, "2026-11-30"],
+    ["PageUp", true, "2025-10-30"],
+    ["PageDown", true, "2027-10-30"],
+  ] as const) {
+    const got = keyTarget(key, shift, fri);
+    assert.equal(
+      got === undefined ? undefined : formatDay(got),
+      want,
+      `${key}${shift ? "+shift" : ""}`,
+    );
+  }
+  for (const key of ["Enter", " ", "Tab", "a", "Escape"]) {
+    assert.equal(keyTarget(key, false, fri), undefined, key);
+  }
+  assert.equal(
+    formatDay(keyTarget("ArrowLeft", false, MIN_DAY) ?? 0),
+    "1000-01-01",
+  );
 });

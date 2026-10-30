@@ -329,7 +329,7 @@ textarea:focus-visible {
   border-color: var(--focus);
 }
 /* The native select arrow ignores padding and sits on the border; draw our
-   own, lined up with the date input's calendar icon. Images cannot take
+   own, lined up with the date field's calendar button. Images cannot take
    currentColor, so the colour comes per scheme (--text). */
 select:not([multiple]) {
   appearance: none;
@@ -343,11 +343,6 @@ select:not([multiple]) {
   select:not([multiple]) {
     background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23ededef' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 6l4 4 4-4'/%3E%3C/svg%3E");
   }
-}
-/* The date picker popup is drawn by the browser; accent-color is the only
-   hook, and not every browser honours it there. */
-input[type="date"] {
-  accent-color: var(--primary);
 }
 input[type="checkbox"],
 input[type="radio"] {
@@ -593,6 +588,182 @@ td.wrap {
   min-width: 9rem;
   max-width: 24rem;
 }
+/* Date field: a text input with a calendar button inside its right edge,
+   and the calendar popup below it. The popup's table and buttons drop the
+   data-table and button looks. */
+.date-field {
+  position: relative;
+  display: grid;
+}
+.date-field input {
+  padding-right: 2.75rem;
+}
+.date-field-button,
+.calendar-nav,
+.calendar-day {
+  padding: 0;
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+  font-weight: 400;
+}
+.date-field-button,
+.calendar-nav {
+  color: var(--text-muted);
+}
+.date-field-button:hover,
+.calendar-nav:not([aria-disabled="true"]):hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+.date-field-button {
+  position: absolute;
+  top: 50%;
+  right: 0.25rem;
+  translate: 0 -50%;
+  width: 2.25rem;
+  min-height: 1.75rem;
+}
+.date-field-button[aria-expanded="true"] {
+  color: var(--text);
+}
+.date-field-button:focus-visible {
+  outline-offset: 0;
+}
+.calendar {
+  position: absolute;
+  top: calc(100% + 0.375rem);
+  left: 0;
+  z-index: 20;
+  display: grid;
+  gap: 0.5rem;
+  padding: 0.75rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .calendar {
+    animation: calendar-in 120ms ease-out;
+  }
+}
+@keyframes calendar-in {
+  from {
+    opacity: 0;
+    translate: 0 -0.25rem;
+  }
+}
+.calendar-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+.calendar-month {
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+.calendar-nav {
+  width: 2rem;
+  min-height: 2rem;
+}
+.calendar-grid {
+  width: auto;
+  font-size: 0.8125rem;
+}
+.calendar-grid th,
+.calendar-grid td {
+  padding: 1px;
+  border: 0;
+  background: none;
+  text-align: center;
+}
+.calendar-grid th {
+  padding-bottom: 0.25rem;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--text-muted);
+}
+.calendar-grid tbody tr:hover {
+  background: none;
+}
+/* Seven days fit the popup on the narrowest screens; 2.25rem otherwise. */
+.calendar-day {
+  width: min(2.25rem, calc((100vw - 4rem) / 7));
+  min-height: min(2.25rem, calc((100vw - 4rem) / 7));
+  font-size: inherit;
+}
+.calendar-day:hover {
+  background: var(--surface-hover);
+}
+.calendar-day:focus-visible {
+  outline-offset: 0;
+}
+.calendar-day[data-outside] {
+  color: var(--text-muted);
+}
+/* Today: a dot under the number, so it never looks like the focus ring. */
+.calendar-day[aria-current="date"] {
+  position: relative;
+  font-weight: 600;
+}
+.calendar-day[aria-current="date"]::after {
+  content: "";
+  position: absolute;
+  bottom: 0.25rem;
+  left: 50%;
+  translate: -50% 0;
+  width: 0.25rem;
+  height: 0.25rem;
+  border-radius: 50%;
+  background: currentColor;
+}
+td[aria-selected="true"] > .calendar-day {
+  border-color: var(--primary);
+  background: var(--primary);
+  color: var(--on-primary);
+  font-weight: 600;
+}
+td[aria-selected="true"] > .calendar-day:focus-visible {
+  outline-offset: 2px;
+}
+.calendar-day[aria-disabled="true"],
+.calendar-nav[aria-disabled="true"] {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.calendar-day[aria-disabled="true"]:hover {
+  background: transparent;
+}
+.calendar-foot {
+  display: flex;
+  justify-content: space-between;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--border);
+}
+.calendar-foot button {
+  min-height: 2rem;
+  padding: 0.25rem 0.75rem;
+  font-size: 0.8125rem;
+}
+/* Touch: bigger targets where the screen allows. */
+@media (pointer: coarse) {
+  .date-field-button {
+    width: 2.5rem;
+    min-height: 2rem;
+  }
+  .calendar-nav,
+  .calendar-foot button {
+    min-height: 2.5rem;
+    min-width: 2.5rem;
+  }
+  .calendar-day {
+    width: min(2.5rem, calc((100vw - 4rem) / 7));
+    min-height: min(2.5rem, calc((100vw - 4rem) / 7));
+  }
+}
+
 .ts {
   display: inline-grid;
   white-space: nowrap;
@@ -832,5 +1003,15 @@ ul.plain {
   select:not([multiple]) {
     appearance: auto;
     background-image: none;
+  }
+  /* Calendar: the selected day and today keep their marks. */
+  td[aria-selected="true"] > .calendar-day {
+    forced-color-adjust: none;
+    border-color: Highlight;
+    background: Highlight;
+    color: HighlightText;
+  }
+  .calendar-day[aria-disabled="true"] {
+    color: GrayText;
   }
 }

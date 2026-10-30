@@ -1,5 +1,6 @@
 import Form from "next/form";
 import Link from "next/link";
+import { DateField } from "@/components/date-field";
 import type { Project } from "@/lib/admin-api";
 import {
   EMAIL_STATUSES,
@@ -138,12 +139,28 @@ export function FilterForm({
       </div>
       <div className="field">
         <label htmlFor="f-from">From date (UTC)</label>
-        <input type="date" defaultValue={raw("from")} {...fieldProps("from")} />
+        <DateField
+          label="from date"
+          defaultValue={raw("from")}
+          disableFuture
+          {...fieldProps("from")}
+        />
+        <p id="h-from" className="hint">
+          {hints.from}
+        </p>
         {fieldError("from")}
       </div>
       <div className="field">
         <label htmlFor="f-to">To date (UTC, inclusive)</label>
-        <input type="date" defaultValue={raw("to")} {...fieldProps("to")} />
+        <DateField
+          label="to date"
+          defaultValue={raw("to")}
+          disableFuture
+          {...fieldProps("to")}
+        />
+        <p id="h-to" className="hint">
+          {hints.to}
+        </p>
         {fieldError("to")}
       </div>
       <div className="field">
@@ -237,4 +254,6 @@ export function FilterForm({
 const hints: Partial<Record<FilterField, string>> = {
   q: "Email id, provider message id or exact recipient address.",
   recipient: "Exact address, not case-sensitive.",
+  from: "YYYY-MM-DD",
+  to: "YYYY-MM-DD",
 };

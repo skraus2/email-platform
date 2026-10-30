@@ -148,3 +148,32 @@ export function monthLabel(d: Day): string {
   const date = new Date(d);
   return `${MONTHS[date.getUTCMonth()] ?? ""} ${String(date.getUTCFullYear())}`;
 }
+
+/** The day a key moves the calendar focus to (WAI-ARIA date picker keys),
+ *  undefined for keys the grid does not handle. */
+export function keyTarget(
+  key: string,
+  shift: boolean,
+  d: Day,
+): Day | undefined {
+  switch (key) {
+    case "ArrowLeft":
+      return addDays(d, -1);
+    case "ArrowRight":
+      return addDays(d, 1);
+    case "ArrowUp":
+      return addDays(d, -7);
+    case "ArrowDown":
+      return addDays(d, 7);
+    case "Home":
+      return startOfWeek(d);
+    case "End":
+      return endOfWeek(d);
+    case "PageUp":
+      return shift ? addYears(d, -1) : addMonths(d, -1);
+    case "PageDown":
+      return shift ? addYears(d, 1) : addMonths(d, 1);
+    default:
+      return undefined;
+  }
+}
