@@ -104,6 +104,11 @@ test("the preview renders escaped HTML in a sandboxed frame without remote conte
   await page.getByLabel("name").fill(value);
   await page.getByLabel("headline").fill("Preview headline");
   await page.getByLabel("amount").fill("12.5");
+  // Once interactive, so the click opens the list popup.
+  await expect(page.getByLabel("vip")).toHaveAttribute(
+    "aria-haspopup",
+    "listbox",
+  );
   await page.getByLabel("vip").click();
   await page.getByRole("option", { name: "true" }).click();
   const request = await render(page);

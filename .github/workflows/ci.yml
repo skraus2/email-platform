@@ -163,8 +163,8 @@ jobs:
           node-version-file: .nvmrc
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - name: Install Chromium for Playwright
-        run: pnpm --filter dashboard exec playwright install --with-deps chromium
+      - name: Install browsers for Playwright
+        run: pnpm --filter dashboard exec playwright install --with-deps chromium firefox webkit
       - name: Dashboard browser E2E (API + worker on a throwaway database)
         run: ./scripts/e2e.sh
 

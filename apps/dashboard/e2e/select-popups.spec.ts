@@ -13,6 +13,16 @@ const errorCode = (page: Page) =>
   page.getByRole("combobox", { name: "Error code", exact: true });
 const codeList = (page: Page) =>
   page.getByRole("listbox", { name: "Error code", exact: true });
+/**
+ * Opens the messages page once the custom controls have replaced the native
+ * ones: those have the same roles and names, so acting earlier would hit a
+ * control that is about to be swapped.
+ */
+async function open(page: Page, url = "/emails") {
+  await page.goto(url);
+  await expect(project(page)).toHaveAttribute("aria-haspopup", "listbox");
+  await expect(errorCode(page)).toHaveAttribute("aria-autocomplete", "list");
+}
 const apply = (page: Page) =>
   page.getByRole("button", { name: "Apply filters" }).click();
 
@@ -21,7 +31,7 @@ test.describe("the project select", () => {
     page,
   }) => {
     const s = seed();
-    await page.goto("/emails");
+    await open(page);
     await expect(project(page)).toHaveText("All projects");
 
     await project(page).focus();
@@ -58,7 +68,7 @@ test.describe("the project select", () => {
     page,
   }) => {
     const s = seed();
-    await page.goto("/emails");
+    await open(page);
 
     await project(page).click();
     await expect(projectList(page)).toBeVisible();
@@ -86,7 +96,7 @@ test.describe("the project select", () => {
     page,
   }) => {
     const s = seed();
-    await page.goto("/emails");
+    await open(page);
 
     await project(page).click();
     await projectList(page)
@@ -107,7 +117,7 @@ test.describe("the error code suggestions", () => {
   test("typing filters the suggestions and Enter picks one", async ({
     page,
   }) => {
-    await page.goto("/emails");
+    await open(page);
     await errorCode(page).fill("time");
     await expect(codeList(page)).toBeVisible();
     await expect(codeList(page).getByRole("option")).toHaveText([
@@ -131,7 +141,7 @@ test.describe("the error code suggestions", () => {
   test("any text is allowed; the arrow button shows all suggestions", async ({
     page,
   }) => {
-    await page.goto("/emails");
+    await open(page);
     await errorCode(page).fill("custom_code");
     // Nothing matches, so the list stays closed.
     await expect(codeList(page)).toBeHidden();
@@ -156,16 +166,29 @@ test.describe("the error code suggestions", () => {
   });
 });
 
-test.describe("without JavaScript", () => {
-  test.use({ javaScriptEnabled: false });
+// The page streams its content, which needs JavaScript; until the bundle
+// has loaded, the streamed form shows the native controls.
+test("the server renders native fields with the same names and values", async ({
+  page,
+}) => {
+  const s = seed();
+  const res = await page.request.get(
+    `/emails?project_id=${s.projectId}&error_code=provider_timeout`,
+  );
+  expect(res.status()).toBe(200);
+  const html = await res.text();
 
-  test("the native fields submit the same values", async ({ page }) => {
-    const s = seed();
-    await page.goto("/emails");
-    await page.getByLabel("Project").selectOption(s.projectId);
-    await page.getByLabel("Error code").fill("provider_timeout");
-    await apply(page);
-    await expect(page).toHaveURL(new RegExp(`[?&]project_id=${s.projectId}&`));
-    await expect(page).toHaveURL(/[?&]error_code=provider_timeout(&|$)/);
-  });
+  const select = /<select[^>]*\bid="f-project_id"[^>]*>/.exec(html)?.[0] ?? "";
+  expect(select).toContain('name="project_id"');
+  const chosen =
+    new RegExp(`<option[^>]*value="${s.projectId}"[^>]*>`).exec(html)?.[0] ??
+    "";
+  expect(chosen).toContain("selected");
+
+  const input = /<input[^>]*\bid="f-error_code"[^>]*>/.exec(html)?.[0] ?? "";
+  expect(input).toContain('name="error_code"');
+  expect(input).toContain('value="provider_timeout"');
+  expect(input).toContain("list=");
+  expect(input).not.toContain('role="combobox"');
+  expect(html).not.toContain("select-button");
 });

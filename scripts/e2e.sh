@@ -25,6 +25,7 @@ cd "$ROOT"
 API_ADDR="127.0.0.1:${E2E_API_PORT:-18180}"
 ADMIN_ADDR="127.0.0.1:${E2E_ADMIN_PORT:-18181}"
 export E2E_DASHBOARD_PORT="${E2E_DASHBOARD_PORT:-3100}"
+export E2E_TLS_PORT="${E2E_TLS_PORT:-3101}"
 export WEBHOOK_KEKS="${WEBHOOK_KEKS:-run:$(openssl rand -base64 32)}"
 # Short enough that the cookie expiry bound in the suite is meaningful.
 export ADMIN_SESSION_MAX=2h
@@ -72,6 +73,7 @@ go build -o "$TMP/" ./cmd/api ./cmd/worker ./cmd/admin ./cmd/migrate
 for addr in "$API_ADDR" "$ADMIN_ADDR" "127.0.0.1:$E2E_DASHBOARD_PORT"; do
   ! curl -s -o /dev/null --max-time 2 "http://$addr/" || fail "port $addr is in use"
 done
+! curl -sk -o /dev/null --max-time 2 "https://127.0.0.1:$E2E_TLS_PORT/" || fail "port 127.0.0.1:$E2E_TLS_PORT is in use"
 # The API runs without the key-encryption key (webhook registration off).
 env -u WEBHOOK_KEKS HTTP_ADDR="$API_ADDR" ADMIN_HTTP_ADDR="$ADMIN_ADDR" LOG_FORMAT=json "$TMP/api" >"$TMP/api.log" 2>&1 &
 API_PID=$!
@@ -100,6 +102,13 @@ echo "template sends, broadcasts with one-click unsubscribe, a reported unsubscr
 NO_SECRETS=(env -u DATABASE_URL -u TEST_DATABASE_URL -u WEBHOOK_KEKS)
 "${NO_SECRETS[@]}" pnpm --filter dashboard build >"$TMP/build.log" 2>&1 || { cat "$TMP/build.log" >&2; fail "dashboard build"; }
 echo "dashboard built"
+
+# WebKit drops Secure cookies over plain http, also on 127.0.0.1: its tests
+# reach the dashboard through a TLS proxy (e2e/tls-proxy.mts) with this
+# throwaway certificate.
+export E2E_TLS_CERT="$TMP/tls.crt" E2E_TLS_KEY="$TMP/tls.key"
+openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj "/CN=127.0.0.1" \
+  -keyout "$E2E_TLS_KEY" -out "$E2E_TLS_CERT" >/dev/null 2>&1 || fail "TLS certificate"
 
 # The dashboard's server log and the signed-in browser state stay in the
 # run directory.

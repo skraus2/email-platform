@@ -13,6 +13,10 @@ const ci = Boolean(process.env["CI"]);
 // The run script collects the server log in its run directory and checks it
 // for leaked secrets.
 const serverLog = process.env["E2E_DASHBOARD_LOG"];
+// WebKit drops Secure cookies over plain http, also on 127.0.0.1, so its
+// project goes through a TLS proxy the run script provides a certificate for.
+const tlsPort = process.env["E2E_TLS_PORT"];
+const controls = /(date-picker|select-popups)\.spec\.ts$/;
 
 export default defineConfig({
   testDir: "e2e",
@@ -41,16 +45,55 @@ export default defineConfig({
       },
       dependencies: ["setup"],
     },
+    // The custom form controls (calendar, list popups) depend on browser
+    // focus and key handling, so they also run in Firefox and WebKit.
+    {
+      name: "firefox",
+      testMatch: controls,
+      use: {
+        ...devices["Desktop Firefox"],
+        storageState: AUTH_STATE,
+      },
+      dependencies: ["setup"],
+    },
+    ...(tlsPort
+      ? [
+          {
+            name: "webkit",
+            testMatch: controls,
+            use: {
+              ...devices["Desktop Safari"],
+              baseURL: `https://127.0.0.1:${tlsPort}`,
+              ignoreHTTPSErrors: true,
+              storageState: AUTH_STATE,
+            },
+            dependencies: ["setup"],
+          },
+        ]
+      : []),
   ],
-  webServer: {
-    // The shell expands the log path itself (no quoting in JS).
-    command:
-      `pnpm exec next start -H 127.0.0.1 -p ${port}` +
-      (serverLog ? ' >>"$E2E_DASHBOARD_LOG" 2>&1' : ""),
-    url: `${baseURL}/login`,
-    reuseExistingServer: false,
-    timeout: 60_000,
-    stdout: "pipe",
-    stderr: "pipe",
-  },
+  webServer: [
+    {
+      // The shell expands the log path itself (no quoting in JS).
+      command:
+        `pnpm exec next start -H 127.0.0.1 -p ${port}` +
+        (serverLog ? ' >>"$E2E_DASHBOARD_LOG" 2>&1' : ""),
+      url: `${baseURL}/login`,
+      reuseExistingServer: false,
+      timeout: 60_000,
+      stdout: "pipe",
+      stderr: "pipe",
+    },
+    ...(tlsPort
+      ? [
+          {
+            command: "node e2e/tls-proxy.mts",
+            url: `https://127.0.0.1:${tlsPort}/login`,
+            ignoreHTTPSErrors: true,
+            reuseExistingServer: false,
+            timeout: 60_000,
+          },
+        ]
+      : []),
+  ],
 });
