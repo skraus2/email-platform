@@ -43,10 +43,12 @@ export function moveIndex(
 }
 
 /**
- * The option type-ahead lands on: the first label after current (wrapping
- * around, current itself last) that starts with query, ignoring case. A
- * query of one repeated letter ("bbb") cycles through the labels starting
- * with that letter, as native selects do. Undefined when nothing matches.
+ * The option type-ahead lands on: the first label that starts with query,
+ * ignoring case, wrapping around. A query of several letters is still being
+ * typed, so the search starts at current and stays there while it matches;
+ * one letter, or one letter repeated ("bbb"), starts after current and so
+ * cycles through the labels with that letter, as native selects do.
+ * Undefined when nothing matches.
  */
 export function typeahead(
   labels: readonly string[],
@@ -57,17 +59,17 @@ export function typeahead(
   if (q === "" || labels.length === 0) {
     return undefined;
   }
-  const order = labels.map(
-    (_, i) => (Math.max(current, -1) + 1 + i) % labels.length,
-  );
-  const find = (prefix: string) =>
-    order.find((i) => labels[i]?.toLowerCase().startsWith(prefix));
-  const match = find(q);
-  if (match !== undefined) {
-    return match;
-  }
   const first = q.charAt(0);
-  return Array.from(q).every((c) => c === first) ? find(first) : undefined;
+  const repeated = Array.from(q).every((c) => c === first);
+  const find = (prefix: string, start: number) =>
+    labels
+      .map((_, i) => (start + i) % labels.length)
+      .find((i) => labels[i]?.toLowerCase().startsWith(prefix));
+  const after = Math.max(current, -1) + 1;
+  if (!repeated) {
+    return find(q, Math.max(current, 0));
+  }
+  return find(q, after) ?? find(first, after);
 }
 
 /**

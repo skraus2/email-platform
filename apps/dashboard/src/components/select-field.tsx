@@ -10,6 +10,7 @@ import {
 } from "react";
 import { Icon } from "@/components/icons";
 import {
+  nativeControl,
   useHydrated,
   useOutsideClick,
   usePopupPlacement,
@@ -31,8 +32,9 @@ const TYPEAHEAD_MS = 500;
  * a button showing the chosen option and a listbox below it. The value is
  * sent in a hidden input under name. Until the page is interactive it is a
  * native <select> with the same id and name, so the form also works before
- * (or without) JavaScript. The <label for={id}> names it in both forms;
- * label repeats that text for the list.
+ * (or without) JavaScript; what was chosen there, and its focus, carry over.
+ * The <label for={id}> names it in both forms; label repeats that text for
+ * the list.
  */
 export function SelectField({
   id,
@@ -55,14 +57,19 @@ export function SelectField({
   "aria-describedby"?: string | undefined;
 }) {
   const hydrated = useHydrated();
-  const [value, setValue] = useState(defaultValue);
+  const [native] = useState(() => nativeControl(id, hydrated));
+  const [value, setValue] = useState(native?.value ?? defaultValue);
   // The active (highlighted) option while the list is open, else null.
   const [active, setActive] = useState<number | null>(null);
   const wrapper = useRef<HTMLDivElement>(null);
+  const button = useRef<HTMLButtonElement>(null);
   const list = useRef<HTMLUListElement>(null);
   const query = useRef({ text: "", at: 0 });
+  // Set when the pointer moved the highlight: the list must not scroll then.
+  const byPointer = useRef(false);
   const listId = useId();
   const optionId = (i: number) => `${listId}-${String(i)}`;
+  const activeId = active === null ? undefined : optionId(active);
   const open = active !== null;
   const selected = options.findIndex((o) => o.value === value);
   const current = options[selected];
@@ -72,14 +79,18 @@ export function SelectField({
   });
 
   useEffect(() => {
-    if (active !== null) {
-      document
-        .getElementById(optionId(active))
-        ?.scrollIntoView({ block: "nearest" });
+    if (hydrated && native?.focused) {
+      button.current?.focus();
     }
-    // optionId only depends on listId, which never changes.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active]);
+  }, [hydrated, native]);
+
+  useEffect(() => {
+    if (byPointer.current) {
+      byPointer.current = false;
+    } else if (activeId !== undefined) {
+      document.getElementById(activeId)?.scrollIntoView({ block: "nearest" });
+    }
+  }, [activeId]);
 
   if (!hydrated) {
     return (
@@ -127,8 +138,13 @@ export function SelectField({
       return;
     }
     const printable = e.key.length === 1 && !e.altKey;
+    // A space within type-ahead is part of the typed name ("e2e shop").
+    const typing = Date.now() - query.current.at < TYPEAHEAD_MS;
     if (active === null) {
-      if (["Enter", " ", "ArrowDown", "ArrowUp"].includes(e.key)) {
+      if (
+        ["Enter", "ArrowDown", "ArrowUp"].includes(e.key) ||
+        (e.key === " " && !typing)
+      ) {
         e.preventDefault();
         setActive(Math.max(selected, 0));
       } else if (printable) {
@@ -151,7 +167,7 @@ export function SelectField({
     } else if (e.key === "Tab") {
       // Picks the active option; the focus moves on as usual.
       pick(active);
-    } else if (e.key === " " && Date.now() - query.current.at >= TYPEAHEAD_MS) {
+    } else if (e.key === " " && !typing) {
       e.preventDefault();
       pick(active);
     } else if (printable) {
@@ -173,6 +189,7 @@ export function SelectField({
     <div className="select-field" ref={wrapper}>
       <input type="hidden" name={name} value={value} />
       <button
+        ref={button}
         type="button"
         id={id}
         role="combobox"
@@ -180,10 +197,13 @@ export function SelectField({
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-controls={open ? listId : undefined}
-        aria-activedescendant={active === null ? undefined : optionId(active)}
+        aria-activedescendant={activeId}
+        aria-required={required === true ? true : undefined}
         aria-invalid={ariaInvalid}
         aria-describedby={ariaDescribedBy}
-        onClick={() => {
+        onClick={(e) => {
+          // Safari does not focus a clicked button; the keys need it.
+          e.currentTarget.focus();
           setActive(open ? null : Math.max(selected, 0));
         }}
         onKeyDown={onKeyDown}
@@ -209,7 +229,10 @@ export function SelectField({
           optionId={optionId}
           list={list}
           anchor={wrapper}
-          onActive={setActive}
+          onActive={(i) => {
+            byPointer.current = true;
+            setActive(i);
+          }}
           onPick={pick}
         />
       ) : null}

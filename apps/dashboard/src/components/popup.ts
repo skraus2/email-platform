@@ -32,6 +32,26 @@ export function useHydrated(): boolean {
 }
 
 /**
+ * What the user did with a field's native control before the page became
+ * interactive: its value and whether it has the focus. Read when the custom
+ * control takes over, during hydration only (hydrated false); at any other
+ * time an element with the same id may belong to a page being replaced.
+ */
+export function nativeControl(
+  id: string,
+  hydrated: boolean,
+): { value: string; focused: boolean } | undefined {
+  if (hydrated || typeof document === "undefined") {
+    return undefined;
+  }
+  const el = document.getElementById(id);
+  if (!(el instanceof HTMLInputElement || el instanceof HTMLSelectElement)) {
+    return undefined;
+  }
+  return { value: el.value, focused: document.activeElement === el };
+}
+
+/**
  * Keeps a popup below its field (positioned by .popup), shifted left when
  * it would leave the viewport, also after a resize.
  */

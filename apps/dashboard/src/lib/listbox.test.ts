@@ -49,6 +49,19 @@ test("typeahead searches after the current option and wraps around", () => {
   assert.equal(typeahead(projects, "all", 0), 0);
 });
 
+test("typeahead stays on the current label while it still matches", () => {
+  const labels = ["All projects", "shop", "shop-eu"];
+  // Keys one at a time, as a user types "shop": each step searches from
+  // where the previous one landed.
+  let current = 0;
+  for (const query of ["s", "sh", "sho", "shop"]) {
+    current = typeahead(labels, query, current) ?? current;
+    assert.equal(current, 1, query);
+  }
+  assert.equal(typeahead(labels, "shop-", 1), 2);
+  assert.equal(typeahead(labels, "shop", 2), 2);
+});
+
 test("typeahead cycles through labels on a repeated letter", () => {
   assert.equal(typeahead(projects, "cc", 3), 4);
   assert.equal(typeahead(projects, "ccc", 4), 3);

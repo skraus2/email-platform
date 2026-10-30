@@ -2,7 +2,11 @@
 
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
 import { Icon } from "@/components/icons";
-import { useHydrated, useOutsideClick } from "@/components/popup";
+import {
+  nativeControl,
+  useHydrated,
+  useOutsideClick,
+} from "@/components/popup";
 import { OptionList } from "@/components/select-field";
 import { filterOptions, moveIndex } from "@/lib/listbox";
 
@@ -10,8 +14,9 @@ import { filterOptions, moveIndex } from "@/lib/listbox";
  * A text field with suggestions in the dashboard's own popup (WAI-ARIA
  * editable combobox with list autocomplete): typing filters the
  * suggestions, any text is allowed. The arrow button shows all of them.
- * Until the page is interactive it is a native <input list> with a
- * <datalist>, so the form also works before (or without) JavaScript.
+ * Until the page is interactive the same text field uses a native
+ * <datalist>, so the form also works before (or without) JavaScript, and
+ * what was typed there stays.
  */
 export function ComboboxField({
   id,
@@ -37,7 +42,9 @@ export function ComboboxField({
   "aria-describedby"?: string | undefined;
 }) {
   const hydrated = useHydrated();
-  const [value, setValue] = useState(defaultValue);
+  const [value, setValue] = useState(
+    () => nativeControl(id, hydrated)?.value ?? defaultValue,
+  );
   // Closed, open with the matches of the text, or open with all suggestions
   // (arrow button).
   const [open, setOpen] = useState<"closed" | "matches" | "all">("closed");
@@ -45,11 +52,14 @@ export function ComboboxField({
   const wrapper = useRef<HTMLDivElement>(null);
   const input = useRef<HTMLInputElement>(null);
   const list = useRef<HTMLUListElement>(null);
+  // Set when the pointer moved the highlight: the list must not scroll then.
+  const byPointer = useRef(false);
   const listId = useId();
   const optionId = (i: number) => `${listId}-${String(i)}`;
   const shown =
     open === "all" ? [...suggestions] : filterOptions(suggestions, value);
-  const expanded = open !== "closed" && shown.length > 0;
+  const expanded = hydrated && open !== "closed" && shown.length > 0;
+  const activeId = expanded && active >= 0 ? optionId(active) : undefined;
 
   const close = () => {
     setOpen("closed");
@@ -59,38 +69,12 @@ export function ComboboxField({
   useOutsideClick(wrapper, expanded, close);
 
   useEffect(() => {
-    if (active >= 0) {
-      document
-        .getElementById(optionId(active))
-        ?.scrollIntoView({ block: "nearest" });
+    if (byPointer.current) {
+      byPointer.current = false;
+    } else if (activeId !== undefined) {
+      document.getElementById(activeId)?.scrollIntoView({ block: "nearest" });
     }
-    // optionId only depends on listId, which never changes.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active]);
-
-  if (!hydrated) {
-    return (
-      <>
-        <input
-          type="text"
-          id={id}
-          name={name}
-          list={listId}
-          defaultValue={defaultValue}
-          autoComplete="off"
-          spellCheck={false}
-          maxLength={maxLength}
-          aria-invalid={ariaInvalid}
-          aria-describedby={ariaDescribedBy}
-        />
-        <datalist id={listId}>
-          {suggestions.map((s) => (
-            <option key={s} value={s} />
-          ))}
-        </datalist>
-      </>
-    );
-  }
+  }, [activeId]);
 
   const pick = (i: number) => {
     const s = shown[i];
@@ -139,6 +123,8 @@ export function ComboboxField({
         return;
       case "Home":
       case "End":
+      case "ArrowLeft":
+      case "ArrowRight":
         // These move the caret; the list loses its highlight.
         setActive(-1);
         return;
@@ -149,12 +135,15 @@ export function ComboboxField({
 
   return (
     <div className="combobox-field" ref={wrapper}>
+      {/* The same element before and after hydration, so typed text and the
+          focus survive it; only the native list and the ARIA change. */}
       <input
         ref={input}
         type="text"
         id={id}
         name={name}
-        role="combobox"
+        list={hydrated ? undefined : listId}
+        role={hydrated ? "combobox" : undefined}
         value={value}
         onChange={(e) => {
           setValue(e.target.value);
@@ -164,40 +153,47 @@ export function ComboboxField({
         onKeyDown={onKeyDown}
         onBlur={close}
         autoComplete="off"
+        autoCapitalize="none"
         spellCheck={false}
         maxLength={maxLength}
-        aria-autocomplete="list"
-        aria-expanded={expanded}
+        aria-autocomplete={hydrated ? "list" : undefined}
+        aria-expanded={hydrated ? expanded : undefined}
         aria-controls={expanded ? listId : undefined}
-        aria-activedescendant={
-          expanded && active >= 0 ? optionId(active) : undefined
-        }
+        aria-activedescendant={activeId}
         aria-invalid={ariaInvalid}
         aria-describedby={ariaDescribedBy}
       />
-      <button
-        type="button"
-        tabIndex={-1}
-        className="combobox-button"
-        aria-label={showLabel}
-        aria-expanded={expanded}
-        aria-controls={expanded ? listId : undefined}
-        // The focus stays in the text field.
-        onMouseDown={(e) => {
-          e.preventDefault();
-        }}
-        onClick={() => {
-          input.current?.focus();
-          if (expanded) {
-            close();
-          } else {
-            setOpen("all");
-            setActive(-1);
-          }
-        }}
-      >
-        <Icon name="chevronDown" />
-      </button>
+      {hydrated ? (
+        <button
+          type="button"
+          tabIndex={-1}
+          className="combobox-button"
+          aria-label={showLabel}
+          aria-expanded={expanded}
+          aria-controls={expanded ? listId : undefined}
+          // The focus stays in the text field.
+          onMouseDown={(e) => {
+            e.preventDefault();
+          }}
+          onClick={() => {
+            input.current?.focus();
+            if (expanded) {
+              close();
+            } else {
+              setOpen("all");
+              setActive(-1);
+            }
+          }}
+        >
+          <Icon name="chevronDown" />
+        </button>
+      ) : (
+        <datalist id={listId}>
+          {suggestions.map((s) => (
+            <option key={s} value={s} />
+          ))}
+        </datalist>
+      )}
       {expanded ? (
         <OptionList
           id={listId}
@@ -208,7 +204,10 @@ export function ComboboxField({
           optionId={optionId}
           list={list}
           anchor={wrapper}
-          onActive={setActive}
+          onActive={(i) => {
+            byPointer.current = true;
+            setActive(i);
+          }}
           onPick={pick}
         />
       ) : null}
