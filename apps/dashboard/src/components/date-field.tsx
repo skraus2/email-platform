@@ -417,7 +417,10 @@ function CalendarDialog({
                       aria-disabled={disabled || undefined}
                       data-outside={sameMonth(d, focus) ? undefined : ""}
                       onClick={() => {
-                        if (!disabled) {
+                        if (disabled) {
+                          // The press focused it; keep the grid in step.
+                          setFocus(d);
+                        } else {
                           onSelect(d);
                         }
                       }}
