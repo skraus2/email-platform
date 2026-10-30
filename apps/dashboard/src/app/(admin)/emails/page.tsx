@@ -217,7 +217,7 @@ async function EmailResults({
                   <Status value={e.status} />
                 </td>
                 <td>{e.error_code ?? <None />}</td>
-                <td>
+                <td className="breakable">
                   {e.template_id && e.template_version !== null ? (
                     <Link
                       href={`/templates/${encodeURIComponent(e.template_id)}/versions/${e.template_version}`}

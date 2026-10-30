@@ -223,8 +223,12 @@ export function FilterForm({
         <p className="wide error">{broadcastError.message}</p>
       ) : null}
       <div className="actions wide">
-        <button type="submit">Apply filters</button>
-        <Link href="/emails">Clear filters</Link>
+        <button type="submit" className="primary">
+          Apply filters
+        </button>
+        <Link href="/emails" className="button">
+          Clear filters
+        </Link>
       </div>
     </Form>
   );

@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
+import { Icon } from "@/components/icons";
 import {
   isFailuresView,
   parseEmailFilters,
@@ -62,36 +63,43 @@ export function MainNav() {
       <ul>
         <li>
           <Link href="/" aria-current={current("overview")}>
+            <Icon name="overview" />
             Overview
           </Link>
         </li>
         <li>
           <Link href="/emails" aria-current={current("messages")}>
+            <Icon name="messages" />
             Messages
           </Link>
         </li>
         <li>
           <Link href="/emails?status=failed" aria-current={current("failures")}>
+            <Icon name="failures" />
             Failures
           </Link>
         </li>
         <li>
           <Link href="/broadcasts" aria-current={current("broadcasts")}>
+            <Icon name="broadcasts" />
             Broadcasts
           </Link>
         </li>
         <li>
           <Link href="/automations" aria-current={current("automations")}>
+            <Icon name="automations" />
             Automations
           </Link>
         </li>
         <li>
           <Link href="/templates" aria-current={current("templates")}>
+            <Icon name="templates" />
             Templates
           </Link>
         </li>
         <li>
           <Link href="/projects" aria-current={current("projects")}>
+            <Icon name="projects" />
             Projects
           </Link>
         </li>

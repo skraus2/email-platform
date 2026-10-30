@@ -1,28 +1,112 @@
+/* Design tokens. Every colour has a light and a dark value; text tones keep
+   4.5:1 and control borders 3:1 against the surfaces they sit on. */
 :root {
   color-scheme: light dark;
-  font-family: system-ui, sans-serif;
-  --muted: color-mix(in srgb, CanvasText 65%, Canvas);
-  --line: color-mix(in srgb, CanvasText 20%, Canvas);
-  /* Two values: dark Canvas needs lighter tones for 4.5:1 text and 3:1 focus. */
-  --accent: light-dark(#1a5fb4, #78aeed);
-  --danger: light-dark(#a51d2d, #ff8080);
-  --ok: light-dark(#26734d, #8ff0a4);
-  --wait: light-dark(#7a5c00, #f6d32d);
+
+  --font-sans:
+    ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+
+  --bg: light-dark(#ffffff, #0f0f11);
+  --bg-subtle: light-dark(#f7f7f8, #151517);
+  --surface: light-dark(#ffffff, #1a1a1d);
+  --surface-hover: light-dark(#f4f4f5, #222226);
+  --border: light-dark(#e4e4e7, #2a2a2f);
+  /* Borders that identify a control: 3:1 against the surface. */
+  --border-control: light-dark(#8b8b94, #6b6b74);
+
+  --text: light-dark(#18181b, #ededef);
+  --text-muted: light-dark(#5f5f69, #a0a0ab);
+
+  /* Solid controls (primary button, brand, selection), focus and notices
+     are monochrome; blue is kept for links. */
+  --primary: light-dark(#18181b, #ededef);
+  --primary-hover: light-dark(#3f3f46, #d4d4d8);
+  --on-primary: light-dark(#ffffff, #18181b);
+  --selected-subtle: light-dark(#f4f4f5, #27272a);
+  --accent: light-dark(#2563eb, #60a5fa);
+  --focus: var(--primary);
+  /* Email previews are drawn on white in both schemes, like a mail client. */
+  --preview-canvas: #ffffff;
+
+  --danger: light-dark(#b91c1c, #f87171);
+
+  /* Status badges: text and background per tone. */
+  --ok-fg: light-dark(#166534, #86efac);
+  --ok-bg: light-dark(#dcfce7, #0f2e1c);
+  --bad-fg: light-dark(#991b1b, #fca5a5);
+  --bad-bg: light-dark(#fee2e2, #3a1517);
+  --wait-fg: light-dark(#854d0e, #fde047);
+  --wait-bg: light-dark(#fef9c3, #33280a);
+  --off-fg: light-dark(#52525b, #a1a1aa);
+  --off-bg: light-dark(#f4f4f5, #26262a);
+
+  --radius-sm: 6px;
+  --radius: 8px;
+  --radius-lg: 12px;
+  --shadow-sm: 0 1px 2px light-dark(rgb(0 0 0 / 0.05), rgb(0 0 0 / 0.4));
+  --shadow:
+    0 1px 3px light-dark(rgb(0 0 0 / 0.08), rgb(0 0 0 / 0.5)),
+    0 8px 24px light-dark(rgb(0 0 0 / 0.06), rgb(0 0 0 / 0.4));
+
+  --control-h: 2.25rem;
+  --sidebar-w: 14rem;
+
+  font-family: var(--font-sans);
+  font-size: 100%;
+  color: var(--text);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
 }
 
 body {
   margin: 0;
+  font-size: 0.875rem;
   line-height: 1.5;
 }
 
-main {
-  padding: 1.5rem 2rem;
-  max-width: 80rem;
-  margin-inline: auto;
+h1,
+h2,
+h3 {
+  line-height: 1.25;
+  letter-spacing: -0.011em;
+}
+h1 {
+  font-size: 1.5rem;
+  font-weight: 600;
+  margin: 0 0 0.25rem;
+}
+h2 {
+  font-size: 1rem;
+  font-weight: 600;
+  margin: 2rem 0 0.75rem;
+}
+h3 {
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+/* The intro line under a page title. */
+h1 + p.muted {
+  margin: 0 0 1.5rem;
+}
+
+a {
+  color: var(--accent);
+  text-underline-offset: 2px;
+  text-decoration-thickness: 1px;
+}
+a:hover {
+  text-decoration-thickness: 2px;
 }
 
 :focus-visible {
-  outline: 3px solid var(--accent);
+  outline: 2px solid var(--focus);
   outline-offset: 2px;
 }
 
@@ -42,109 +126,310 @@ main {
 .skip:focus {
   left: 1rem;
   top: 1rem;
-  background: Canvas;
-  padding: 0.5rem;
-  z-index: 1;
+  background: var(--surface);
+  padding: 0.5rem 0.75rem;
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  z-index: 10;
 }
 
-.topbar {
+/* App shell: sidebar on the left, content on the right. */
+.shell {
+  display: grid;
+  grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
+  min-height: 100dvh;
+}
+
+.sidebar {
+  position: sticky;
+  top: 0;
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  padding: 1rem 0.75rem;
+  background: var(--bg-subtle);
+  border-right: 1px solid var(--border);
+  overflow-y: auto;
+}
+.brand {
   display: flex;
   align-items: center;
-  gap: 1.5rem;
-  padding: 0.75rem 2rem;
-  border-bottom: 1px solid var(--line);
-  flex-wrap: wrap;
+  gap: 0.5rem;
+  padding: 0.25rem 0.5rem;
+  color: var(--text);
+  font-weight: 600;
+  text-decoration: none;
 }
-.topbar nav ul {
-  display: flex;
-  gap: 1.25rem;
-  flex-wrap: wrap;
+.brand-mark {
+  display: grid;
+  place-items: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: var(--radius-sm);
+  background: var(--primary);
+  color: var(--on-primary);
+}
+.sidebar nav ul {
+  display: grid;
+  gap: 0.125rem;
   margin: 0;
   padding: 0;
   list-style: none;
 }
-.topbar a {
-  color: inherit;
-}
-.topbar a[aria-current] {
-  font-weight: 700;
-  text-decoration-thickness: 3px;
-}
-.brand {
-  font-weight: 700;
+.sidebar nav a {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  padding: 0.4rem 0.5rem;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  font-weight: 500;
   text-decoration: none;
 }
+.sidebar nav a:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+.sidebar nav a[aria-current] {
+  background: var(--surface);
+  border-color: var(--border-control);
+  color: var(--text);
+  box-shadow: var(--shadow-sm);
+}
+.sidebar nav a[aria-current] .icon {
+  color: var(--text);
+}
+.icon {
+  flex: none;
+}
+
 .user {
   display: flex;
-  gap: 0.75rem;
   align-items: center;
-  flex-wrap: wrap;
-  margin-left: auto;
+  gap: 0.5rem;
+  margin-top: auto;
+  padding: 0.75rem 0.5rem 0;
+  border-top: 1px solid var(--border);
 }
+.avatar {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: 50%;
+  background: var(--selected-subtle);
+  color: var(--text);
+  font-weight: 600;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+}
+.user-name {
+  display: grid;
+  min-width: 0;
+  line-height: 1.3;
+}
+.user-name .muted {
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+.user button {
+  margin-left: auto;
+  flex: none;
+}
+
+main {
+  width: 100%;
+  max-width: 80rem;
+  margin-inline: auto;
+  padding: 2rem 2rem 3rem;
+}
+
 .wrap {
   overflow-wrap: anywhere;
 }
 
-.login {
-  max-width: 24rem;
-  margin: 4rem auto;
+/* Sign-in, not-found and error pages: one centred card. */
+body:has(> main.login) {
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  background: var(--bg-subtle);
 }
+main.login {
+  width: calc(100% - 2rem);
+  max-width: 24rem;
+  margin: 2rem 1rem;
+  padding: 2rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
+}
+.login .brand {
+  padding: 0;
+  margin-bottom: 1.5rem;
+}
+.login h1 {
+  font-size: 1.25rem;
+}
+.login h1 + p.muted {
+  margin-bottom: 1.5rem;
+}
+.login .stack {
+  gap: 0.375rem;
+}
+.login .stack label:not(:first-child) {
+  margin-top: 0.75rem;
+}
+.login .stack button {
+  margin-top: 1.25rem;
+  width: 100%;
+}
+
 .stack {
   display: grid;
   gap: 0.5rem;
 }
 .actions {
   display: flex;
-  gap: 1rem;
+  gap: 0.75rem;
   align-items: center;
+  flex-wrap: wrap;
+}
+
+/* Form controls */
+label,
+legend {
+  font-weight: 500;
 }
 input,
 select,
 button,
 textarea {
   font: inherit;
-  padding: 0.4rem 0.6rem;
+  color: inherit;
 }
-button {
+input:not([type="checkbox"], [type="radio"], [type="hidden"]),
+select,
+textarea {
+  min-height: var(--control-h);
+  padding: 0.375rem 0.625rem;
+  background: var(--surface);
+  border: 1px solid var(--border-control);
+  border-radius: var(--radius-sm);
+}
+input:not([type="checkbox"], [type="radio"]):focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 0;
+  border-color: var(--focus);
+}
+/* The date picker popup is drawn by the browser; accent-color is the only
+   hook, and not every browser honours it there. */
+input[type="date"] {
+  accent-color: var(--primary);
+}
+input[type="checkbox"],
+input[type="radio"] {
+  accent-color: var(--primary);
+  width: 1rem;
+  height: 1rem;
+  margin: 0;
+}
+
+/* Buttons: secondary by default, .primary for the main action of a form. */
+button,
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.375rem;
+  min-height: var(--control-h);
+  padding: 0.375rem 0.875rem;
+  border: 1px solid var(--border-control);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font-weight: 500;
+  line-height: 1.25;
+  text-decoration: none;
   cursor: pointer;
+  box-shadow: var(--shadow-sm);
+}
+button:hover,
+.button:hover {
+  background: var(--surface-hover);
+}
+button.primary {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: var(--on-primary);
+}
+button.primary:hover {
+  background: var(--primary-hover);
+  border-color: var(--primary-hover);
+}
+button.ghost {
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+  color: var(--text-muted);
+  padding-inline: 0.5rem;
+}
+button.ghost:hover {
+  background: var(--surface-hover);
+  color: var(--text);
 }
 button[aria-disabled="true"] {
   opacity: 0.7;
   cursor: progress;
 }
+
 .muted {
-  color: var(--muted);
+  color: var(--text-muted);
 }
 .error {
   color: var(--danger);
-  font-weight: 600;
+  font-weight: 500;
 }
 .notice {
-  border-left: 4px solid var(--accent);
-  padding-left: 0.75rem;
+  margin-block: 1rem;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--border-control);
+  border-radius: var(--radius);
+  background: var(--bg-subtle);
+}
+.notice p,
+.notice ul {
+  margin-block: 0.25rem;
 }
 
-h2 {
-  margin-top: 2rem;
-}
 code {
-  font-family: ui-monospace, monospace;
-  font-size: 0.9em;
+  font-family: var(--font-mono);
+  font-size: 0.85em;
   /* Ids have no break opportunities; let them wrap at narrow widths. */
   overflow-wrap: anywhere;
 }
 
+/* Filter panel */
 .filters {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr));
-  gap: 1rem 1.5rem;
-  margin-block: 1rem 1.5rem;
-  padding: 1rem;
-  border: 1px solid var(--line);
+  grid-template-columns: repeat(auto-fill, minmax(min(14rem, 100%), 1fr));
+  gap: 1rem 1.25rem;
+  margin-block: 0 1.5rem;
+  padding: 1.25rem;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
 }
 .field {
   display: grid;
-  gap: 0.25rem;
+  gap: 0.375rem;
   align-content: start;
   min-width: 0;
 }
@@ -157,64 +442,139 @@ code {
 }
 .hint {
   margin: 0;
-  font-size: 0.875rem;
-  color: var(--muted);
+  font-size: 0.8125rem;
+  color: var(--text-muted);
 }
 .field .error {
   margin: 0;
 }
 fieldset.statuses {
-  border: 1px solid var(--line);
+  border: 0;
   margin: 0;
+  padding: 0;
+}
+.statuses legend {
+  padding: 0;
+  margin-bottom: 0.375rem;
 }
 .statuses ul {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.5rem 1.25rem;
+  gap: 0.5rem;
   margin: 0;
   padding: 0;
   list-style: none;
 }
+/* Each status is a pill with its checkbox inside. */
 .statuses label {
   display: inline-flex;
   align-items: center;
-  gap: 0.25rem;
-  padding-block: 0.25rem;
+  gap: 0.375rem;
+  padding: 0.25rem 0.75rem 0.25rem 0.5rem;
+  border: 1px solid var(--border-control);
+  border-radius: 999px;
+  background: var(--surface);
+  font-weight: 400;
+  cursor: pointer;
+}
+.statuses label:hover {
+  background: var(--surface-hover);
+}
+.statuses label:has(input:checked) {
+  border-color: var(--primary);
+  background: var(--selected-subtle);
+}
+.filters .actions {
+  padding-top: 0.25rem;
 }
 /* The invalid state uses the border, so the focus outline stays visible. */
 input[aria-invalid="true"],
-select[aria-invalid="true"] {
+select[aria-invalid="true"],
+input[aria-invalid="true"]:focus-visible,
+select[aria-invalid="true"]:focus-visible {
   border: 2px solid var(--danger);
 }
 
+/* Tables sit in a card; the caption is the card's header. */
 .table-wrap {
+  /* Contains absolutely positioned descendants (visually hidden text), which
+     would otherwise widen the page instead of scrolling with the table. */
+  position: relative;
   overflow-x: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
 }
 table {
   border-collapse: collapse;
   width: 100%;
+  font-size: 0.8125rem;
+  font-variant-numeric: tabular-nums;
 }
 caption {
   text-align: left;
-  font-weight: 600;
-  padding-block: 0.5rem;
+  font-weight: 500;
+  color: var(--text-muted);
+  padding: 0.75rem 1rem;
 }
 th,
 td {
   text-align: left;
   vertical-align: top;
-  padding: 0.5rem 0.75rem 0.5rem 0;
-  border-bottom: 1px solid var(--line);
+  padding: 0.625rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+}
+th:first-child,
+td:first-child {
+  padding-left: 1rem;
+}
+th:last-child,
+td:last-child {
+  padding-right: 1rem;
+}
+thead th {
+  background: var(--bg-subtle);
+  border-top: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  font-weight: 500;
+  white-space: nowrap;
+}
+/* Without a visible caption the card border already separates the header. */
+caption.visually-hidden + thead th {
+  border-top: 0;
 }
 th {
   white-space: nowrap;
+}
+tbody tr:last-child > * {
+  border-bottom: 0;
+}
+tbody tr:hover {
+  background: var(--surface-hover);
+}
+td a {
+  color: var(--text);
+  font-weight: 500;
+  text-decoration-color: var(--border-control);
+}
+td a:hover {
+  color: var(--accent);
+  text-decoration-color: currentColor;
 }
 /* Short ids in tables keep their width; the table scrolls instead. */
 td code {
   overflow-wrap: normal;
 }
+/* Cells stay on one line unless marked: .wrap breaks anywhere (after some room),
+   .breakable only at spaces. */
+td:not(.wrap, .breakable) {
+  white-space: nowrap;
+}
 td .wrap,
 td.wrap {
+  white-space: normal;
+  min-width: 9rem;
   max-width: 24rem;
 }
 .ts {
@@ -222,50 +582,88 @@ td.wrap {
   white-space: nowrap;
 }
 .ts .muted {
-  font-size: 0.875rem;
+  font-size: 0.75rem;
 }
 
+/* Status badge: the text carries the meaning, the colour is an extra cue. */
 .status {
-  display: inline-block;
-  padding-inline: 0.4rem;
-  border: 1px solid currentColor;
-  border-radius: 0.25rem;
-  font-size: 0.875rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.0625rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 500;
   white-space: nowrap;
 }
+.status::before {
+  content: "";
+  width: 0.375rem;
+  height: 0.375rem;
+  border-radius: 50%;
+  background: currentColor;
+}
 .status-ok {
-  color: var(--ok);
+  color: var(--ok-fg);
+  background: var(--ok-bg);
 }
 .status-bad {
-  color: var(--danger);
-  font-weight: 700;
+  color: var(--bad-fg);
+  background: var(--bad-bg);
 }
 .status-wait {
-  color: var(--wait);
+  color: var(--wait-fg);
+  background: var(--wait-bg);
 }
 .status-off {
-  color: var(--muted);
-  border-style: dashed;
+  color: var(--off-fg);
+  background: var(--off-bg);
 }
 
 .pager ul {
   display: flex;
-  gap: 1.5rem;
+  gap: 0.5rem;
   list-style: none;
   padding: 0;
+  margin: 1rem 0 0;
 }
-.empty,
+.pager a {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--control-h);
+  padding: 0.375rem 0.875rem;
+  border: 1px solid var(--border-control);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font-weight: 500;
+  text-decoration: none;
+  box-shadow: var(--shadow-sm);
+}
+.pager a:hover {
+  background: var(--surface-hover);
+}
+
+.empty {
+  padding: 2.5rem 1rem;
+  text-align: center;
+  color: var(--text-muted);
+  border: 1px dashed var(--border-control);
+  border-radius: var(--radius-lg);
+}
 .loading {
   padding: 1rem 0;
+  color: var(--text-muted);
 }
 
 dl.meta {
   display: grid;
   grid-template-columns: max-content 1fr;
-  gap: 0.4rem 1.5rem;
+  gap: 0.5rem 1.5rem;
 }
 dl.meta dt {
-  font-weight: 600;
+  font-weight: 500;
+  color: var(--text-muted);
 }
 dl.meta dd {
   margin: 0;
@@ -273,14 +671,14 @@ dl.meta dd {
 }
 dl.kv {
   margin: 0;
-  font-size: 0.875rem;
+  font-size: 0.8125rem;
 }
 dl.kv div {
   display: flex;
   gap: 0.5rem;
 }
 dl.kv dt {
-  color: var(--muted);
+  color: var(--text-muted);
 }
 dl.kv dt::after {
   content: ":";
@@ -299,23 +697,27 @@ ul.plain {
 .source {
   max-height: min(24rem, 60vh);
   overflow: auto;
-  border: 1px solid var(--line);
-  padding: 0.5rem 0.75rem;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.75rem 1rem;
 }
 .source pre {
   margin: 0;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  font-family: ui-monospace, monospace;
-  font-size: 0.9rem;
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
 }
 .preview-form {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(min(16rem, 100%), 1fr));
-  gap: 1rem 1.5rem;
+  gap: 1rem 1.25rem;
   margin-block: 1rem;
-  padding: 1rem;
-  border: 1px solid var(--line);
+  padding: 1.25rem;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
 }
 .preview-form .error,
 .preview-form .actions {
@@ -331,24 +733,83 @@ ul.plain {
   height: min(32rem, 70vh);
   resize: vertical;
   overflow: auto;
-  border: 1px solid var(--line);
-  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--preview-canvas);
 }
 /* Focus inside the frame is drawn by the email document, if at all. */
 .preview-frame:focus {
-  outline: 3px solid var(--accent);
+  outline: 2px solid var(--focus);
   outline-offset: 2px;
 }
 
-@media (max-width: 40rem) {
-  main,
-  .topbar {
-    padding-inline: 1rem;
+/* Narrow screens: the sidebar becomes a top bar, the nav wraps. */
+@media (max-width: 52rem) {
+  .shell {
+    grid-template-columns: minmax(0, 1fr);
   }
+  .sidebar {
+    position: static;
+    height: auto;
+    display: grid;
+    grid-template-columns: 1fr auto;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem 1rem;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+    overflow: visible;
+  }
+  .sidebar nav {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+  .sidebar nav ul {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.25rem;
+  }
+  .sidebar nav a {
+    white-space: nowrap;
+  }
+  .user {
+    grid-column: 2;
+    grid-row: 1;
+    margin: 0;
+    padding: 0;
+    border-top: 0;
+  }
+  .avatar {
+    display: none;
+  }
+  /* iOS zooms into text fields below 16px on focus. */
+  input:not([type="checkbox"], [type="radio"]),
+  select,
+  textarea {
+    font-size: 1rem;
+  }
+  main {
+    padding: 1.5rem 1rem 2.5rem;
+  }
+}
+
+@media (max-width: 40rem) {
   dl.meta {
     grid-template-columns: 1fr;
+    gap: 0.125rem;
   }
   dl.meta dd {
     margin-bottom: 0.5rem;
+  }
+}
+
+/* Forced colours drop backgrounds and shadows; keep the current nav item
+   marked by its border. */
+@media (forced-colors: active) {
+  .sidebar nav a:not([aria-current]) {
+    border-color: Canvas;
+  }
+  .sidebar nav a[aria-current] {
+    border-color: Highlight;
   }
 }

@@ -1,4 +1,5 @@
-import Link from "next/link";
+import { Brand } from "@/components/brand";
+import { Icon } from "@/components/icons";
 import { adminFetch, type Me } from "@/lib/admin-api";
 import { logout } from "../actions";
 import { MainNav } from "./nav";
@@ -11,23 +12,28 @@ import { MainNav } from "./nav";
 export default async function AdminLayout({ children }: LayoutProps<"/">) {
   const me = await adminFetch<Me>("/admin/v1/me");
   return (
-    <>
+    <div className="shell">
       <a className="skip" href="#main">
         Skip to content
       </a>
-      <header className="topbar">
-        <Link href="/" className="brand">
-          Email Platform
-        </Link>
+      <header className="sidebar">
+        <Brand />
         <MainNav />
         <form action={logout} className="user">
-          <span>
-            Signed in as <strong className="wrap">{me.username}</strong>
+          <span className="avatar" aria-hidden="true">
+            {me.username.slice(0, 1)}
           </span>
-          <button type="submit">Sign out</button>
+          <span className="user-name">
+            <span className="muted">Signed in as </span>
+            <strong className="wrap">{me.username}</strong>
+          </span>
+          <button type="submit" className="ghost" title="Sign out">
+            <Icon name="signOut" />
+            <span className="visually-hidden">Sign out</span>
+          </button>
         </form>
       </header>
       <main id="main">{children}</main>
-    </>
+    </div>
   );
 }

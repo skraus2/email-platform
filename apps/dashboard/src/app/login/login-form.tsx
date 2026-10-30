@@ -61,7 +61,11 @@ export function LoginForm() {
         </p>
       ) : null}
       {/* Kept enabled while pending so focus stays on it; a second submit is ignored. */}
-      <button type="submit" aria-disabled={pending || undefined}>
+      <button
+        type="submit"
+        className="primary"
+        aria-disabled={pending || undefined}
+      >
         {pending ? "Signing in…" : "Sign in"}
       </button>
       <p className="visually-hidden" role="status">

@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { connection } from "next/server";
 import "./globals.css";
 
@@ -8,6 +8,10 @@ export const metadata: Metadata = {
   description: "Internal email platform dashboard",
   robots: { index: false, follow: false },
 };
+
+// Lets the browser draw its own UI (scrollbars, form controls) in the
+// scheme the page follows before the stylesheet has loaded.
+export const viewport: Viewport = { colorScheme: "light dark" };
 
 // Every page renders per request so it carries the request's CSP nonce
 // (no prerendered pages: their scripts would lack the nonce).
