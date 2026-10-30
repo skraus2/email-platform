@@ -65,7 +65,7 @@ test.describe("the calendar", () => {
     await expect(field(page, "To")).toHaveValue("2026-10-30");
   });
 
-  test("focus stays in the calendar; Escape and an outside press close it unchanged", async ({
+  test("focus stays in the calendar; Escape and a click elsewhere close it unchanged", async ({
     page,
   }) => {
     await page.goto("/emails?from=2026-10-12");
@@ -100,9 +100,19 @@ test.describe("the calendar", () => {
 
     await opener(page, "from").click();
     await page.keyboard.press("ArrowRight");
-    await page.getByRole("heading", { name: "Messages" }).click();
+    // A click elsewhere leaves the focus where the click put it.
+    const search = page.getByRole("searchbox", { name: "Search" });
+    await search.click();
     await expect(calendar(page, "from")).toBeHidden();
+    await expect(search).toBeFocused();
     await expect(field(page, "From")).toHaveValue("2026-10-12");
+
+    // Going back to the text field closes it too.
+    await opener(page, "from").click();
+    await expect(calendar(page, "from")).toBeVisible();
+    await field(page, "From").click();
+    await expect(calendar(page, "from")).toBeHidden();
+    await expect(field(page, "From")).toBeFocused();
   });
 
   test("Today and Clear set and empty the field; future days cannot be picked", async ({

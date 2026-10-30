@@ -131,20 +131,21 @@ export function DateField({
     }
   };
 
-  // A press outside the field closes the calendar and leaves the focus where
-  // the press put it.
+  // A click outside the field closes the calendar and leaves the focus where
+  // the click put it. A click, not a press: on touch screens a press also
+  // starts every scroll, and scrolling must not close it.
   useEffect(() => {
     if (!open) {
       return;
     }
-    const onPointerDown = (e: PointerEvent) => {
+    const onClick = (e: MouseEvent) => {
       if (!wrapper.current?.contains(e.target as Node)) {
         setOpen(null);
       }
     };
-    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("click", onClick);
     return () => {
-      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("click", onClick);
     };
   }, [open]);
 
@@ -157,6 +158,11 @@ export function DateField({
         value={value}
         onChange={(e) => {
           setValue(e.target.value);
+        }}
+        // Typing closes the calendar: focus must not sit outside an open
+        // dialog.
+        onFocus={() => {
+          setOpen(null);
         }}
         placeholder="YYYY-MM-DD"
         autoComplete="off"
@@ -296,6 +302,10 @@ function CalendarDialog({
   const atLastMonth = sameMonth(focus, max) || focus > max;
 
   const onGridKeyDown = (e: KeyboardEvent) => {
+    // Browser shortcuts such as Alt+ArrowLeft stay with the browser.
+    if (e.altKey || e.ctrlKey || e.metaKey) {
+      return;
+    }
     const next = keyTarget(e.key, e.shiftKey, focus);
     if (next === undefined) {
       return;
@@ -345,7 +355,10 @@ function CalendarDialog({
           className="calendar-nav"
           aria-label="Previous month"
           aria-disabled={atFirstMonth || undefined}
-          onClick={() => {
+          onClick={(e) => {
+            // Safari does not focus a clicked button; the focused day may
+            // leave the grid, so keep the focus inside the dialog.
+            e.currentTarget.focus();
             if (!atFirstMonth) {
               setFocus(addMonths(focus, -1));
             }
@@ -361,7 +374,10 @@ function CalendarDialog({
           className="calendar-nav"
           aria-label="Next month"
           aria-disabled={atLastMonth || undefined}
-          onClick={() => {
+          onClick={(e) => {
+            // Safari does not focus a clicked button; the focused day may
+            // leave the grid, so keep the focus inside the dialog.
+            e.currentTarget.focus();
             if (!atLastMonth) {
               setFocus(addMonths(focus, 1));
             }
@@ -399,7 +415,7 @@ function CalendarDialog({
                 return (
                   <td
                     key={d}
-                    aria-selected={d === selected}
+                    aria-selected={d === selected || undefined}
                     data-range-start={start ? "" : undefined}
                     data-range-end={end ? "" : undefined}
                     data-in-range={
@@ -416,9 +432,11 @@ function CalendarDialog({
                       aria-current={d === today ? "date" : undefined}
                       aria-disabled={disabled || undefined}
                       data-outside={sameMonth(d, focus) ? undefined : ""}
-                      onClick={() => {
+                      onClick={(e) => {
                         if (disabled) {
-                          // The press focused it; keep the grid in step.
+                          // Focus it (Safari does not on click) and keep
+                          // the grid in step.
+                          e.currentTarget.focus();
                           setFocus(d);
                         } else {
                           onSelect(d);

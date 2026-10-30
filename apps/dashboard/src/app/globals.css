@@ -746,12 +746,15 @@ td:is([aria-selected="true"], [data-range-start], [data-range-end])
   > .calendar-day:focus-visible {
   outline-offset: 2px;
 }
+/* Disabled: only the content fades, so the focus ring keeps its contrast. */
 .calendar-day[aria-disabled="true"],
 .calendar-nav[aria-disabled="true"] {
-  opacity: 0.4;
+  color: color-mix(in srgb, currentColor 40%, transparent);
+  opacity: 1;
   cursor: not-allowed;
 }
-.calendar-day[aria-disabled="true"]:hover {
+td:not([aria-selected="true"], [data-range-start], [data-range-end])
+  > .calendar-day[aria-disabled="true"]:hover {
   background: transparent;
 }
 .calendar-foot {
