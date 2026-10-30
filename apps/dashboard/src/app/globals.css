@@ -671,6 +671,9 @@ td.wrap {
 .calendar-grid {
   width: auto;
   font-size: 0.8125rem;
+  /* Separate borders, so the range band's ends can be rounded. */
+  border-collapse: separate;
+  border-spacing: 0;
 }
 .calendar-grid th,
 .calendar-grid td {
@@ -719,13 +722,28 @@ td.wrap {
   border-radius: 50%;
   background: currentColor;
 }
-td[aria-selected="true"] > .calendar-day {
+/* The range between the from and to dates: a band behind its days, rounded
+   at its ends and at the week edges; both ends look selected. */
+.calendar-grid td[data-in-range] {
+  background: var(--selected-subtle);
+}
+.calendar-grid td[data-in-range]:is([data-range-start], :first-child) {
+  border-start-start-radius: var(--radius-sm);
+  border-end-start-radius: var(--radius-sm);
+}
+.calendar-grid td[data-in-range]:is([data-range-end], :last-child) {
+  border-start-end-radius: var(--radius-sm);
+  border-end-end-radius: var(--radius-sm);
+}
+td:is([aria-selected="true"], [data-range-start], [data-range-end])
+  > .calendar-day {
   border-color: var(--primary);
   background: var(--primary);
   color: var(--on-primary);
   font-weight: 600;
 }
-td[aria-selected="true"] > .calendar-day:focus-visible {
+td:is([aria-selected="true"], [data-range-start], [data-range-end])
+  > .calendar-day:focus-visible {
   outline-offset: 2px;
 }
 .calendar-day[aria-disabled="true"],
@@ -1004,8 +1022,9 @@ ul.plain {
     appearance: auto;
     background-image: none;
   }
-  /* Calendar: the selected day and today keep their marks. */
-  td[aria-selected="true"] > .calendar-day {
+  /* Calendar: the selected day and the range ends keep their marks. */
+  td:is([aria-selected="true"], [data-range-start], [data-range-end])
+    > .calendar-day {
     forced-color-adjust: none;
     border-color: Highlight;
     background: Highlight;

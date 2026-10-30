@@ -1,6 +1,8 @@
 "use client";
 
 import {
+  createContext,
+  useContext,
   useEffect,
   useId,
   useLayoutEffect,
@@ -8,6 +10,7 @@ import {
   useState,
   useSyncExternalStore,
   type KeyboardEvent,
+  type ReactNode,
   type RefObject,
 } from "react";
 import { Icon } from "@/components/icons";
@@ -18,6 +21,7 @@ import {
   addMonths,
   dayLabel,
   formatDay,
+  inRange,
   keyTarget,
   monthGrid,
   monthLabel,
@@ -38,6 +42,41 @@ function useHydrated(): boolean {
   );
 }
 
+type RangeEnd = "from" | "to";
+
+const RangeContext = createContext<{
+  values: Record<RangeEnd, string>;
+  set: (end: RangeEnd, value: string) => void;
+} | null>(null);
+
+/**
+ * Shares the values of a from and a to date field, so each calendar shows
+ * the range between them. Renders no element of its own.
+ */
+export function DateRange({
+  from,
+  to,
+  children,
+}: {
+  from: string;
+  to: string;
+  children: ReactNode;
+}) {
+  const [values, setValues] = useState({ from, to });
+  return (
+    <RangeContext
+      value={{
+        values,
+        set: (end, value) => {
+          setValues((prev) => ({ ...prev, [end]: value }));
+        },
+      }}
+    >
+      {children}
+    </RangeContext>
+  );
+}
+
 /**
  * A YYYY-MM-DD text field with a calendar popup. The text field is the form
  * value, so the field also works before (or without) JavaScript; the button
@@ -49,6 +88,7 @@ export function DateField({
   name,
   defaultValue,
   label,
+  range,
   disableFuture = false,
   "aria-invalid": ariaInvalid,
   "aria-describedby": ariaDescribedBy,
@@ -58,12 +98,24 @@ export function DateField({
   defaultValue: string;
   /** What is chosen, for the button and dialog names ("from date"). */
   label: string;
+  /** Which end of the surrounding DateRange this field is. */
+  range?: RangeEnd;
   /** Days after today (UTC) cannot be picked; typing them is still possible. */
   disableFuture?: boolean;
   "aria-invalid"?: boolean | undefined;
   "aria-describedby"?: string | undefined;
 }) {
-  const [value, setValue] = useState(defaultValue);
+  const shared = useContext(RangeContext);
+  const [local, setLocal] = useState(defaultValue);
+  const inShared = shared !== null && range !== undefined;
+  const value = inShared ? shared.values[range] : local;
+  const setValue = (v: string) => {
+    if (inShared) {
+      shared.set(range, v);
+    } else {
+      setLocal(v);
+    }
+  };
   // Today is fixed when the calendar opens, so it does not change under it.
   const [open, setOpen] = useState<{ today: Day; focus: Day } | null>(null);
   const hydrated = useHydrated();
@@ -139,6 +191,8 @@ export function DateField({
           id={dialogId}
           label={dialogLabel}
           selected={parseDay(value)}
+          rangeFrom={inShared ? parseDay(shared.values.from) : undefined}
+          rangeTo={inShared ? parseDay(shared.values.to) : undefined}
           today={open.today}
           max={disableFuture ? open.today : MAX_DAY}
           initialFocus={open.focus}
@@ -168,6 +222,8 @@ function CalendarDialog({
   id,
   label,
   selected,
+  rangeFrom,
+  rangeTo,
   today,
   max,
   initialFocus,
@@ -178,6 +234,9 @@ function CalendarDialog({
   id: string;
   label: string;
   selected: Day | undefined;
+  /** Ends of the range this field belongs to, if any. */
+  rangeFrom: Day | undefined;
+  rangeTo: Day | undefined;
   today: Day;
   /** Last selectable day. */
   max: Day;
@@ -332,13 +391,28 @@ function CalendarDialog({
             <tr key={week[0]}>
               {week.map((d) => {
                 const disabled = d < MIN_DAY || d > max;
+                const start = d === rangeFrom;
+                const end = d === rangeTo;
+                const ends = [start ? "from" : "", end ? "to" : ""]
+                  .filter(Boolean)
+                  .join(" and ");
                 return (
-                  <td key={d} aria-selected={d === selected}>
+                  <td
+                    key={d}
+                    aria-selected={d === selected}
+                    data-range-start={start ? "" : undefined}
+                    data-range-end={end ? "" : undefined}
+                    data-in-range={
+                      inRange(d, rangeFrom, rangeTo) ? "" : undefined
+                    }
+                  >
                     <button
                       type="button"
                       className="calendar-day"
                       tabIndex={d === focus ? 0 : -1}
-                      aria-label={dayLabel(d)}
+                      aria-label={
+                        ends ? `${dayLabel(d)}, ${ends} date` : dayLabel(d)
+                      }
                       aria-current={d === today ? "date" : undefined}
                       aria-disabled={disabled || undefined}
                       data-outside={sameMonth(d, focus) ? undefined : ""}

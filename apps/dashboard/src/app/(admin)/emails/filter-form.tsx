@@ -1,6 +1,6 @@
 import Form from "next/form";
 import Link from "next/link";
-import { DateField } from "@/components/date-field";
+import { DateField, DateRange } from "@/components/date-field";
 import type { Project } from "@/lib/admin-api";
 import {
   EMAIL_STATUSES,
@@ -137,32 +137,36 @@ export function FilterForm({
         </p>
         {fieldError("recipient")}
       </div>
-      <div className="field">
-        <label htmlFor="f-from">From date (UTC)</label>
-        <DateField
-          label="from date"
-          defaultValue={raw("from")}
-          disableFuture
-          {...fieldProps("from")}
-        />
-        <p id="h-from" className="hint">
-          {hints.from}
-        </p>
-        {fieldError("from")}
-      </div>
-      <div className="field">
-        <label htmlFor="f-to">To date (UTC, inclusive)</label>
-        <DateField
-          label="to date"
-          defaultValue={raw("to")}
-          disableFuture
-          {...fieldProps("to")}
-        />
-        <p id="h-to" className="hint">
-          {hints.to}
-        </p>
-        {fieldError("to")}
-      </div>
+      <DateRange from={raw("from")} to={raw("to")}>
+        <div className="field">
+          <label htmlFor="f-from">From date (UTC)</label>
+          <DateField
+            label="from date"
+            range="from"
+            defaultValue={raw("from")}
+            disableFuture
+            {...fieldProps("from")}
+          />
+          <p id="h-from" className="hint">
+            {hints.from}
+          </p>
+          {fieldError("from")}
+        </div>
+        <div className="field">
+          <label htmlFor="f-to">To date (UTC, inclusive)</label>
+          <DateField
+            label="to date"
+            range="to"
+            defaultValue={raw("to")}
+            disableFuture
+            {...fieldProps("to")}
+          />
+          <p id="h-to" className="hint">
+            {hints.to}
+          </p>
+          {fieldError("to")}
+        </div>
+      </DateRange>
       <div className="field">
         <label htmlFor="f-error_code">Error code</label>
         <input
