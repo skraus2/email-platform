@@ -1,6 +1,7 @@
 import Form from "next/form";
 import Link from "next/link";
 import { DateField, DateRange } from "@/components/date-field";
+import { SelectField, type SelectOption } from "@/components/select-field";
 import type { Project } from "@/lib/admin-api";
 import {
   EMAIL_STATUSES,
@@ -73,6 +74,15 @@ export function FilterForm({
   const broadcastError = errorOf("broadcast_id");
   const project = raw("project_id").toLowerCase();
   const knownProject = !project || projects.some((p) => p.id === project);
+  const projectOptions: SelectOption[] = [
+    { value: "", label: "All projects" },
+    ...projects.map((p) => ({
+      value: p.id,
+      label: p.name,
+      ...(p.status === "disabled" ? { note: "(disabled)" } : {}),
+    })),
+    ...(knownProject ? [] : [{ value: project, label: "Unknown project" }]),
+  ];
   const statuses = new Set(
     [params["status"] ?? []].flat().filter((s) => s !== ""),
   );
@@ -102,18 +112,12 @@ export function FilterForm({
       </div>
       <div className="field">
         <label htmlFor="f-project_id">Project</label>
-        <select defaultValue={project} {...fieldProps("project_id")}>
-          <option value="">All projects</option>
-          {projects.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.name}
-              {p.status === "disabled" ? " (disabled)" : ""}
-            </option>
-          ))}
-          {knownProject ? null : (
-            <option value={project}>Unknown project</option>
-          )}
-        </select>
+        <SelectField
+          label="Project"
+          options={projectOptions}
+          defaultValue={project}
+          {...fieldProps("project_id")}
+        />
         {fieldHints.project_id ? (
           <p id="h-project_id" className="hint">
             {fieldHints.project_id}

@@ -323,7 +323,8 @@ textarea {
 }
 input:not([type="checkbox"], [type="radio"]):focus-visible,
 select:focus-visible,
-textarea:focus-visible {
+textarea:focus-visible,
+.select-button:focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 0;
   border-color: var(--focus);
@@ -521,8 +522,10 @@ fieldset.statuses {
 /* The invalid state uses the border, so the focus outline stays visible. */
 input[aria-invalid="true"],
 select[aria-invalid="true"],
+.select-button[aria-invalid="true"],
 input[aria-invalid="true"]:focus-visible,
-select[aria-invalid="true"]:focus-visible {
+select[aria-invalid="true"]:focus-visible,
+.select-button[aria-invalid="true"]:focus-visible {
   border: 2px solid var(--danger);
 }
 
@@ -608,6 +611,69 @@ td.wrap {
   min-width: 9rem;
   max-width: 24rem;
 }
+/* Select field: a button styled like the text fields, with the arrow in
+   the column of the date field's calendar icon, and a listbox popup. */
+.select-field {
+  position: relative;
+  display: grid;
+}
+.select-button {
+  justify-content: flex-start;
+  width: 100%;
+  padding: 0.375rem 2.5rem 0.375rem 0.625rem;
+  box-shadow: none;
+  font-weight: 400;
+  text-align: left;
+}
+.select-button:hover {
+  background: var(--surface);
+}
+.select-button > .icon {
+  position: absolute;
+  top: 50%;
+  right: 0.875rem;
+  translate: 0 -50%;
+  pointer-events: none;
+}
+.select-value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.listbox {
+  min-width: 100%;
+  max-width: min(24rem, calc(100vw - 2rem));
+  max-height: 18rem;
+  overflow-y: auto;
+  margin: 0;
+  padding: 0.25rem;
+  list-style: none;
+}
+.option {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 2rem;
+  padding: 0.25rem 0.5rem;
+  border-radius: var(--radius-sm);
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+/* Selected: a check mark, not colour alone. */
+.option > .icon {
+  visibility: hidden;
+}
+.option[aria-selected="true"] {
+  font-weight: 500;
+}
+.option[aria-selected="true"] > .icon {
+  visibility: visible;
+}
+.option.active {
+  background: var(--surface-hover);
+}
+
 /* Date field: a text input with a calendar button inside its right edge,
    and the calendar popup below it. The popup's table and buttons drop the
    data-table and button looks. */
@@ -794,6 +860,9 @@ td:not([aria-selected="true"], [data-range-start], [data-range-end])
 }
 /* Touch: bigger targets where the screen allows. */
 @media (pointer: coarse) {
+  .option {
+    min-height: 2.75rem;
+  }
   .date-field-button {
     width: 2.5rem;
     min-height: 2rem;
@@ -1020,7 +1089,8 @@ ul.plain {
      height keeps them as tall as the buttons. */
   input:not([type="checkbox"], [type="radio"]),
   select,
-  textarea {
+  textarea,
+  .select-button {
     font-size: 1rem;
     line-height: 1.25;
   }
@@ -1055,6 +1125,11 @@ ul.plain {
   }
   input[list] {
     background-image: none;
+  }
+  .option.active {
+    forced-color-adjust: none;
+    background: Highlight;
+    color: HighlightText;
   }
   input[list]::-webkit-calendar-picker-indicator {
     opacity: 1;
