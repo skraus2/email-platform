@@ -1088,6 +1088,65 @@ ol.steps li::before {
   font-weight: 600;
 }
 
+/* Overview: one card per area of the console; the title link covers the
+   card, the focus ring goes around the card. */
+.areas {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(16rem, 100%), 1fr));
+  gap: 1rem;
+  margin: 1.5rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+.areas li {
+  position: relative;
+  display: grid;
+  align-content: start;
+  gap: 0.375rem;
+  padding: 1rem 1.125rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+}
+.areas li:hover {
+  border-color: var(--border-control);
+}
+.areas li:has(a:focus-visible) {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.areas a {
+  color: var(--text);
+  font-weight: 600;
+  text-decoration: none;
+}
+.areas a:focus-visible {
+  outline: none;
+}
+.areas li:hover a {
+  text-decoration: underline;
+}
+.areas a::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+}
+.areas p {
+  margin: 0;
+  font-size: 0.8125rem;
+}
+.area-icon {
+  display: grid;
+  place-items: center;
+  width: 2rem;
+  height: 2rem;
+  margin-bottom: 0.25rem;
+  border-radius: var(--radius);
+  background: var(--selected-subtle);
+  color: var(--text);
+}
+
 /* The link up to the list, above a detail page's title. */
 .back {
   margin: 0 0 0.75rem;
