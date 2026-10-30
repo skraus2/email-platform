@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound, unstable_rethrow } from "next/navigation";
+import { BackLink } from "@/components/back-link";
 import { None } from "@/components/none";
 import { displayName } from "@/components/templates-table";
 import { Timestamp } from "@/components/timestamp";
@@ -75,11 +76,9 @@ export default async function VersionPage({ params }: Props) {
 
   return (
     <>
-      <p>
-        <Link href={base} prefetch={false}>
-          All versions<span className="visually-hidden"> of this template</span>
-        </Link>
-      </p>
+      <BackLink href={base} prefetch={false}>
+        All versions<span className="visually-hidden"> of this template</span>
+      </BackLink>
       <h1 className="wrap">
         {displayName(t.name)}, version {v.version}
       </h1>

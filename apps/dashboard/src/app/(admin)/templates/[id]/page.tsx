@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound, unstable_rethrow } from "next/navigation";
+import { BackLink } from "@/components/back-link";
 import { None } from "@/components/none";
 import { displayName } from "@/components/templates-table";
 import { Timestamp } from "@/components/timestamp";
@@ -50,9 +51,7 @@ export default async function TemplatePage({
 
   return (
     <>
-      <p>
-        <Link href="/templates">All templates</Link>
-      </p>
+      <BackLink href="/templates">All templates</BackLink>
       <h1 className="wrap">{displayName(t.name)}</h1>
       <p className="muted">
         Template <code>{t.id}</code>

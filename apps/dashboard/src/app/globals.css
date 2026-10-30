@@ -897,11 +897,14 @@ td:not([aria-selected="true"], [data-range-start], [data-range-end])
   }
 }
 
-.ts {
+/* Two lines in a cell: a value and a smaller hint below it. */
+.ts,
+.pair {
   display: inline-grid;
   white-space: nowrap;
 }
-.ts .muted {
+.ts .muted,
+.pair .muted {
   font-size: 0.75rem;
 }
 
@@ -976,35 +979,71 @@ td:not([aria-selected="true"], [data-range-start], [data-range-end])
   color: var(--text-muted);
 }
 
+/* Detail lists: a card like the tables, one row per entry. */
 dl.meta {
   display: grid;
-  grid-template-columns: max-content 1fr;
-  gap: 0.5rem 1.5rem;
+  grid-template-columns: minmax(9rem, max-content) minmax(0, 1fr);
+  margin: 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+}
+dl.meta dt,
+dl.meta dd {
+  padding: 0.625rem 1rem;
+  border-top: 1px solid var(--border);
+}
+dl.meta dt:first-of-type,
+dl.meta dt:first-of-type + dd {
+  border-top: 0;
 }
 dl.meta dt {
-  font-weight: 500;
   color: var(--text-muted);
+  font-size: 0.8125rem;
+  font-weight: 500;
 }
 dl.meta dd {
   margin: 0;
   min-width: 0;
 }
+/* Key-value details inside a table cell (event details). */
 dl.kv {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 0.125rem 0.75rem;
   margin: 0;
   font-size: 0.8125rem;
 }
 dl.kv div {
-  display: flex;
-  gap: 0.5rem;
+  display: contents;
 }
 dl.kv dt {
   color: var(--text-muted);
 }
-dl.kv dt::after {
-  content: ":";
-}
 dl.kv dd {
   margin: 0;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+}
+
+/* The link up to the list, above a detail page's title. */
+.back {
+  margin: 0 0 0.75rem;
+  font-size: 0.8125rem;
+}
+.back a {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  color: var(--text-muted);
+  text-decoration: none;
+}
+.back a:hover {
+  color: var(--text);
+}
+/* URLs break anywhere; give them room for a few lines, not one per word. */
+td.url {
+  min-width: 14rem;
 }
 
 ul.plain {
@@ -1119,12 +1158,16 @@ ul.plain {
 }
 
 @media (max-width: 40rem) {
+  /* One column: the label above its value, a line between entries. */
   dl.meta {
-    grid-template-columns: 1fr;
-    gap: 0.125rem;
+    grid-template-columns: minmax(0, 1fr);
+  }
+  dl.meta dt {
+    padding-bottom: 0;
   }
   dl.meta dd {
-    margin-bottom: 0.5rem;
+    padding-top: 0.125rem;
+    border-top: 0;
   }
 }
 

@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound, unstable_rethrow } from "next/navigation";
 import { cache } from "react";
+import { BackLink } from "@/components/back-link";
 import { None } from "@/components/none";
 import { Status } from "@/components/status";
 import { Timestamp } from "@/components/timestamp";
@@ -69,9 +70,7 @@ export default async function EmailPage({ params }: PageProps<"/emails/[id]">) {
 
   return (
     <>
-      <p>
-        <Link href="/emails">All messages</Link>
-      </p>
+      <BackLink href="/emails">All messages</BackLink>
       <h1 className="wrap">{displaySubject(email.subject)}</h1>
       <p className="muted">
         Email <code>{email.id}</code>
@@ -270,30 +269,26 @@ export default async function EmailPage({ params }: PageProps<"/emails/[id]">) {
                   <th scope="col">Endpoint</th>
                   <th scope="col">Event</th>
                   <th scope="col">Status</th>
-                  <th scope="col">Attempts</th>
-                  <th scope="col">Last HTTP status</th>
-                  <th scope="col">Last error code</th>
-                  <th scope="col">Next attempt</th>
-                  <th scope="col">Delivered</th>
+                  <th scope="col">Last attempt</th>
+                  <th scope="col">Delivered / next attempt</th>
                   <th scope="col">Updated</th>
                 </tr>
               </thead>
               <tbody>
                 {deliveries.rows.map((d) => (
                   <tr key={d.id}>
-                    <td className="wrap">{d.endpoint_url}</td>
+                    <td className="wrap url">{d.endpoint_url}</td>
                     <td>{d.event_type}</td>
                     <td>
                       <Status value={d.status} />
                     </td>
-                    <td>{d.attempts}</td>
-                    <td>{d.last_status_code ?? <None />}</td>
-                    <td>{d.last_error_code ?? <None />}</td>
                     <td>
-                      <Timestamp iso={d.next_attempt_at} />
+                      <LastAttempt delivery={d} />
                     </td>
                     <td>
-                      <Timestamp iso={d.delivered_at} />
+                      {/* The status says which: delivered, or pending with
+                          its next attempt. */}
+                      <Timestamp iso={d.delivered_at ?? d.next_attempt_at} />
                     </td>
                     <td>
                       <Timestamp iso={d.updated_at} />
@@ -307,6 +302,24 @@ export default async function EmailPage({ params }: PageProps<"/emails/[id]">) {
         {deliveries.more ? <MoreRows /> : null}
       </section>
     </>
+  );
+}
+
+/** Attempts so far, and what the last one got back. */
+function LastAttempt({ delivery: d }: { delivery: WebhookDelivery }) {
+  const result = [
+    d.last_status_code === null ? null : `HTTP ${String(d.last_status_code)}`,
+    d.last_error_code,
+  ]
+    .filter((part) => part !== null)
+    .join(" · ");
+  return (
+    <span className="pair">
+      <span>
+        {d.attempts} {d.attempts === 1 ? "attempt" : "attempts"}
+      </span>
+      {result ? <span className="muted">{result}</span> : null}
+    </span>
   );
 }
 

@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound, unstable_rethrow } from "next/navigation";
 import { cache } from "react";
+import { BackLink } from "@/components/back-link";
 import { RunPosition, RunStatus } from "@/components/run-state";
 import { Status } from "@/components/status";
 import { Timestamp } from "@/components/timestamp";
@@ -58,11 +59,9 @@ export default async function RunPage({
 
   return (
     <>
-      <p className="wrap">
-        <Link href={`/automations/${encodeURIComponent(r.automation_id)}`}>
-          Automation {r.automation_name}
-        </Link>
-      </p>
+      <BackLink href={`/automations/${encodeURIComponent(r.automation_id)}`}>
+        Automation {r.automation_name}
+      </BackLink>
       <h1>Automation run</h1>
       <p className="muted">
         Run <code>{r.id}</code>

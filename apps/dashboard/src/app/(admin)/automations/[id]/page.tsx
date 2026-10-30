@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound, unstable_rethrow } from "next/navigation";
 import { cache } from "react";
+import { BackLink } from "@/components/back-link";
 import { RunPosition, RunStatus } from "@/components/run-state";
 import { Status } from "@/components/status";
 import { Timestamp } from "@/components/timestamp";
@@ -68,9 +69,7 @@ export default async function AutomationPage({
 
   return (
     <>
-      <p>
-        <Link href="/automations">All automations</Link>
-      </p>
+      <BackLink href="/automations">All automations</BackLink>
       <h1 className="wrap">{a.name}</h1>
       <p className="muted">
         Automation <code>{a.id}</code>

@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { BackLink } from "@/components/back-link";
 import { None } from "@/components/none";
 import { Status } from "@/components/status";
 import { TemplatesTable } from "@/components/templates-table";
@@ -55,9 +56,7 @@ export default async function ProjectPage({
 
   return (
     <>
-      <p>
-        <Link href="/projects">All projects</Link>
-      </p>
+      <BackLink href="/projects">All projects</BackLink>
       <h1 className="wrap">{project.name}</h1>
       <p className="muted">
         Project <code>{project.id}</code>

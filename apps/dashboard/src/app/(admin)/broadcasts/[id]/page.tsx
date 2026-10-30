@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound, unstable_rethrow } from "next/navigation";
 import { cache } from "react";
+import { BackLink } from "@/components/back-link";
 import { Status } from "@/components/status";
 import { Timestamp } from "@/components/timestamp";
 import {
@@ -64,9 +65,7 @@ export default async function BroadcastPage({
 
   return (
     <>
-      <p>
-        <Link href="/broadcasts">All broadcasts</Link>
-      </p>
+      <BackLink href="/broadcasts">All broadcasts</BackLink>
       <h1 className="wrap">{broadcastName(b.name)}</h1>
       <p className="muted">
         Broadcast <code>{b.id}</code>
