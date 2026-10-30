@@ -2,9 +2,11 @@
  * Filters of the messages view. They live in the page URL (shareable, the
  * back button works) and are validated here before any admin API call, so
  * a bad value is shown next to the form instead of as a failed page.
- * Messages name the field, never its value. No imports: unit-tested with
- * node --test.
+ * Messages name the field, never its value. Imports only other
+ * dependency-free modules: unit-tested with node --test.
  */
+
+import { DAY_MS, parseDay } from "./calendar.ts";
 
 export const EMAIL_STATUSES = [
   "queued",
@@ -149,7 +151,7 @@ export function parseEmailFilters(sp: SearchParams): {
     if (v === undefined) {
       continue;
     }
-    if (dayStart(v) === undefined) {
+    if (parseDay(v) === undefined) {
       fail(field, "must be a date (YYYY-MM-DD).");
     } else {
       filters[field] = v;
@@ -209,31 +211,6 @@ export function parseEmailFilters(sp: SearchParams): {
   return { filters, errors };
 }
 
-/** Milliseconds of 00:00 UTC of a YYYY-MM-DD date (years 1000–9998), undefined if invalid. */
-function dayStart(date: string): number | undefined {
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
-  if (!m) {
-    return undefined;
-  }
-  const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])];
-  // Four-digit years only, with room for the day after (to date + 1).
-  if (y < 1000 || y > 9998) {
-    return undefined;
-  }
-  const t = Date.UTC(y, mo - 1, d);
-  const back = new Date(t);
-  if (
-    back.getUTCFullYear() !== y ||
-    back.getUTCMonth() !== mo - 1 ||
-    back.getUTCDate() !== d
-  ) {
-    return undefined;
-  }
-  return t;
-}
-
-const DAY_MS = 24 * 60 * 60 * 1000;
-
 function rfc3339(ms: number): string {
   return new Date(ms).toISOString().replace(".000Z", "Z");
 }
@@ -244,9 +221,9 @@ export function apiQuery(f: EmailFilters): URLSearchParams {
   if (f.project_id) q.set("project_id", f.project_id);
   for (const s of f.status) q.append("status", s);
   if (f.recipient) q.set("recipient", f.recipient);
-  const after = f.from === undefined ? undefined : dayStart(f.from);
+  const after = f.from === undefined ? undefined : parseDay(f.from);
   if (after !== undefined) q.set("created_after", rfc3339(after));
-  const before = f.to === undefined ? undefined : dayStart(f.to);
+  const before = f.to === undefined ? undefined : parseDay(f.to);
   if (before !== undefined) q.set("created_before", rfc3339(before + DAY_MS));
   if (f.error_code) q.set("error_code", f.error_code);
   if (f.q) q.set("q", f.q);
