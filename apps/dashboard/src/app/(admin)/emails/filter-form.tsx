@@ -1,5 +1,6 @@
 import Form from "next/form";
 import Link from "next/link";
+import { ComboboxField } from "@/components/combobox-field";
 import { DateField, DateRange } from "@/components/date-field";
 import { SelectField, type SelectOption } from "@/components/select-field";
 import type { Project } from "@/lib/admin-api";
@@ -143,19 +144,14 @@ export function FilterForm({
       </div>
       <div className="field">
         <label htmlFor="f-error_code">Error code</label>
-        <input
-          list="error-codes"
-          autoComplete="off"
-          spellCheck={false}
+        <ComboboxField
+          label="Error code"
+          showLabel="Show error codes"
+          suggestions={FAILURE_CODES}
           maxLength={40}
           defaultValue={raw("error_code")}
           {...fieldProps("error_code")}
         />
-        <datalist id="error-codes">
-          {FAILURE_CODES.map((c) => (
-            <option key={c} value={c} />
-          ))}
-        </datalist>
         {fieldError("error_code")}
       </div>
       {/* From and to share a row, so the range reads as one. */}

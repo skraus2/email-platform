@@ -200,7 +200,7 @@ export function SelectField({
         <Icon name="chevronDown" />
       </button>
       {open ? (
-        <SelectList
+        <OptionList
           id={listId}
           label={label}
           options={options}
@@ -217,7 +217,12 @@ export function SelectField({
   );
 }
 
-function SelectList({
+/**
+ * The listbox popup of the select and suggestion fields. The focus stays on
+ * the field; active is the highlighted option (-1: none), selected the one
+ * matching the field's value (-1: none).
+ */
+export function OptionList({
   id,
   label,
   options,

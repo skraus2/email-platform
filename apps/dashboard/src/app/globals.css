@@ -331,11 +331,11 @@ textarea:focus-visible,
 }
 /* The native select arrow ignores padding and sits on the border; draw our
    own, lined up with the date field's calendar button. Images cannot take
-   currentColor, so the colour comes per scheme (--text). Text fields with a
+   currentColor, so the colour comes per scheme (--text-muted). Text fields with a
    suggestion list get the same arrow, always visible. */
 select:not([multiple]),
 input[list] {
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%2318181b' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 6l4 4 4-4'/%3E%3C/svg%3E");
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%235f5f69' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 6l4 4 4-4'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
   background-position: right 0.875rem center;
   background-size: 1rem;
@@ -353,7 +353,7 @@ input[list]::-webkit-calendar-picker-indicator {
 @media (prefers-color-scheme: dark) {
   select:not([multiple]),
   input[list] {
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23ededef' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 6l4 4 4-4'/%3E%3C/svg%3E");
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23a0a0ab' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 6l4 4 4-4'/%3E%3C/svg%3E");
   }
 }
 input[type="checkbox"],
@@ -633,7 +633,11 @@ td.wrap {
   top: 50%;
   right: 0.875rem;
   translate: 0 -50%;
+  color: var(--text-muted);
   pointer-events: none;
+}
+.select-button:is(:hover, [aria-expanded="true"]) > .icon {
+  color: var(--text);
 }
 .select-value {
   min-width: 0;
@@ -677,14 +681,17 @@ td.wrap {
 /* Date field: a text input with a calendar button inside its right edge,
    and the calendar popup below it. The popup's table and buttons drop the
    data-table and button looks. */
-.date-field {
+.date-field,
+.combobox-field {
   position: relative;
   display: grid;
 }
-.date-field input {
+.date-field input,
+.combobox-field input {
   padding-right: 2.75rem;
 }
 .date-field-button,
+.combobox-button,
 .calendar-nav,
 .calendar-day {
   padding: 0;
@@ -694,15 +701,18 @@ td.wrap {
   font-weight: 400;
 }
 .date-field-button,
+.combobox-button,
 .calendar-nav {
   color: var(--text-muted);
 }
 .date-field-button:hover,
+.combobox-button:hover,
 .calendar-nav:not([aria-disabled="true"]):hover {
   background: var(--surface-hover);
   color: var(--text);
 }
-.date-field-button {
+.date-field-button,
+.combobox-button {
   position: absolute;
   top: 50%;
   right: 0.25rem;
@@ -710,7 +720,8 @@ td.wrap {
   width: 2.25rem;
   min-height: 1.75rem;
 }
-.date-field-button[aria-expanded="true"] {
+.date-field-button[aria-expanded="true"],
+.combobox-button[aria-expanded="true"] {
   color: var(--text);
 }
 .date-field-button:focus-visible {
@@ -863,7 +874,8 @@ td:not([aria-selected="true"], [data-range-start], [data-range-end])
   .option {
     min-height: 2.75rem;
   }
-  .date-field-button {
+  .date-field-button,
+  .combobox-button {
     width: 2.5rem;
     min-height: 2rem;
   }
