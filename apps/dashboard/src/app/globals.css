@@ -547,6 +547,20 @@ select[aria-invalid="true"]:focus-visible,
 :is(dl.meta, .table-wrap) + :is(dl.meta, .table-wrap) {
   margin-top: 1rem;
 }
+/* Template tables: one per project, with the same columns in each. */
+.templates table {
+  table-layout: fixed;
+  min-width: 40rem;
+}
+.templates th:nth-child(1) {
+  width: 38%;
+}
+.templates th:nth-child(2) {
+  width: 30%;
+}
+.templates th:nth-child(3) {
+  width: 12%;
+}
 /* Counts line up by their digits. */
 th.num,
 td.num {
@@ -1109,7 +1123,8 @@ ul.plain {
   border-radius: var(--radius);
   padding: 0.75rem 1rem;
 }
-.source pre {
+.source pre,
+p.source {
   margin: 0;
   white-space: pre-wrap;
   overflow-wrap: anywhere;

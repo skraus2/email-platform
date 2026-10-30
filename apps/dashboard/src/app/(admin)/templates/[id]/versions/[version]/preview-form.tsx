@@ -98,7 +98,11 @@ export function PreviewForm({
           {/* Kept enabled while pending so focus stays on it; a second
               submit is ignored. The label stays the same: the status
               below announces the progress. */}
-          <button type="submit" aria-disabled={pending || undefined}>
+          <button
+            type="submit"
+            className="primary"
+            aria-disabled={pending || undefined}
+          >
             Render preview
           </button>
         </div>
@@ -114,7 +118,7 @@ export function PreviewForm({
         ) : (
           <>
             <h4 id="result-subject">Rendered subject</h4>
-            <p className="wrap">{displaySubject(result.subject)}</p>
+            <p className="source wrap">{displaySubject(result.subject)}</p>
             <h4 id="result-text">Rendered text part</h4>
             {result.text === "" ? (
               <p className="empty">Empty.</p>

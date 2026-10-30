@@ -119,7 +119,9 @@ export default async function TemplatePage({
                       >
                         Version {v.version}
                       </Link>
-                      {v.version === t.latest_version ? " (latest)" : null}
+                      {v.version === t.latest_version ? (
+                        <span className="muted"> (latest)</span>
+                      ) : null}
                     </td>
                     <td>
                       <Timestamp iso={v.created_at} />

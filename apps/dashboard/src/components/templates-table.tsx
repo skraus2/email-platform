@@ -15,7 +15,7 @@ export function TemplatesTable({
 }) {
   return (
     <div
-      className="table-wrap"
+      className="table-wrap templates"
       role="region"
       aria-labelledby={labelId}
       tabIndex={0}
