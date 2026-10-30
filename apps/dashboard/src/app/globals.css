@@ -1414,6 +1414,22 @@ p.source {
 
 /* Narrow screens: the sidebar becomes a top bar, the nav wraps. */
 @media (max-width: 52rem) {
+  /* Tables scroll sideways in their card; the first column (what a row
+     is: subject, name, type) stays in view, with a line at its edge. */
+  .table-wrap :is(th, td):first-child {
+    position: sticky;
+    left: 0;
+    z-index: 1;
+    max-width: 11rem;
+    background: var(--surface);
+    box-shadow: inset -1px 0 0 var(--border);
+  }
+  .table-wrap thead th:first-child {
+    background: var(--bg-subtle);
+  }
+  .table-wrap tbody tr:hover > :first-child {
+    background: var(--surface-hover);
+  }
   .shell {
     grid-template-columns: minmax(0, 1fr);
     /* The top bar keeps its height; short pages leave the rest to main. */

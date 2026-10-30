@@ -191,11 +191,11 @@ async function EmailResults({
           <caption id="emails-caption">{summary}</caption>
           <thead>
             <tr>
-              <th scope="col">Created</th>
-              <th scope="col">Project</th>
-              <th scope="col">Recipient</th>
               <th scope="col">Subject</th>
               <th scope="col">Status</th>
+              <th scope="col">Recipient</th>
+              <th scope="col">Project</th>
+              <th scope="col">Created</th>
               <th scope="col">Error code</th>
               <th scope="col">Template</th>
             </tr>
@@ -203,11 +203,6 @@ async function EmailResults({
           <tbody>
             {page.data.map((e) => (
               <tr key={e.id}>
-                <td>
-                  <Timestamp iso={e.created_at} />
-                </td>
-                <td>{e.project_name}</td>
-                <td className="wrap">{e.to}</td>
                 <td className="wrap">
                   {/* No prefetch: it would load every listed email's details
                       (and its title) from the admin API. */}
@@ -220,6 +215,11 @@ async function EmailResults({
                 </td>
                 <td>
                   <Status value={e.status} />
+                </td>
+                <td className="wrap">{e.to}</td>
+                <td>{e.project_name}</td>
+                <td>
+                  <Timestamp iso={e.created_at} />
                 </td>
                 <td>{e.error_code ?? <None />}</td>
                 <td className="breakable">
