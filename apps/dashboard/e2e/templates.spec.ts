@@ -104,7 +104,8 @@ test("the preview renders escaped HTML in a sandboxed frame without remote conte
   await page.getByLabel("name").fill(value);
   await page.getByLabel("headline").fill("Preview headline");
   await page.getByLabel("amount").fill("12.5");
-  await page.getByLabel("vip").selectOption("true");
+  await page.getByLabel("vip").click();
+  await page.getByRole("option", { name: "true" }).click();
   const request = await render(page);
   expect(request.url()).not.toContain(s.previewValue);
   expect(page.url()).not.toContain(s.previewValue);

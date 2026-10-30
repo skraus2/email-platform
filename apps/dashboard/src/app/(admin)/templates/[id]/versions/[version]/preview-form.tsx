@@ -2,6 +2,7 @@
 
 import { unstable_rethrow } from "next/navigation";
 import { startTransition, useActionState } from "react";
+import { SelectField } from "@/components/select-field";
 import { displaySubject } from "@/lib/format";
 import {
   fieldName,
@@ -174,11 +175,17 @@ function Field({
         {needed ? " (required)" : null}
       </label>
       {spec.type === "boolean" ? (
-        <select {...common} required={needed}>
-          <option value="">{needed ? "Choose…" : "(not set)"}</option>
-          <option value="true">true</option>
-          <option value="false">false</option>
-        </select>
+        <SelectField
+          {...common}
+          label={name}
+          options={[
+            { value: "", label: needed ? "Choose…" : "(not set)" },
+            { value: "true", label: "true" },
+            { value: "false", label: "false" },
+          ]}
+          defaultValue=""
+          required={needed}
+        />
       ) : spec.type === "number" ? (
         <input
           {...common}
