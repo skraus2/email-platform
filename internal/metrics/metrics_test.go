@@ -182,3 +182,19 @@ func TestUsageRollupMetrics(t *testing.T) {
 		t.Errorf("got %q, want %q", got, want)
 	}
 }
+
+func TestEventQueueGaugeStartsAtProcessStart(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := metrics.NewEventQueue(reg, time.Unix(1_800_000_000, 0))
+	want := []string{"email_platform_ses_queue_drained_timestamp_seconds{} 1.8e+09"}
+	if got := series(t, reg, "email_platform_ses_queue"); !slices.Equal(got, want) {
+		t.Fatalf("at start: got %q, want %q", got, want)
+	}
+	var nilM *metrics.EventQueue
+	nilM.Drained(time.Now()) // no panic
+	m.Drained(time.Unix(1_800_000_060, 0))
+	want = []string{"email_platform_ses_queue_drained_timestamp_seconds{} 1.80000006e+09"}
+	if got := series(t, reg, "email_platform_ses_queue"); !slices.Equal(got, want) {
+		t.Fatalf("after drain: got %q, want %q", got, want)
+	}
+}

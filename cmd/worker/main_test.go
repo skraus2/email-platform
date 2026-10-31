@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+
 	"github.com/skraus2/email-platform/internal/config"
 	"github.com/skraus2/email-platform/internal/delivery"
 	"github.com/skraus2/email-platform/internal/events"
@@ -105,12 +107,23 @@ func TestEventPollerOnlyWithSES(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p, err := newEventPoller(context.Background(), cfg, nil, logger); p != nil || err != nil {
+	reg := prometheus.NewRegistry()
+	if p, err := newEventPoller(context.Background(), cfg, nil, nil, reg, logger); p != nil || err != nil {
 		t.Fatalf("Mailpit: poller %v, err %v; want none", p, err)
 	}
 	rec := events.NewRecorder(nil, logger) // never used: nothing is received
-	if p, err := newEventPoller(context.Background(), sesConfig(t), rec, logger); p == nil || err != nil {
+	start := time.Now().Unix()
+	if p, err := newEventPoller(context.Background(), sesConfig(t), rec, nil, reg, logger); p == nil || err != nil {
 		t.Fatalf("SES: poller %v, err %v; want one", p, err)
+	}
+	// The drained-queue gauge starts at the process start, so a poller that
+	// never drains the queue turns stale like one that stopped.
+	families, err := reg.Gather()
+	if err != nil || len(families) != 1 || families[0].GetName() != "email_platform_ses_queue_drained_timestamp_seconds" {
+		t.Fatalf("metrics = %v, %v; want only the drained-queue gauge", families, err)
+	}
+	if v := families[0].GetMetric()[0].GetGauge().GetValue(); v < float64(start) || v > float64(time.Now().Unix()) {
+		t.Fatalf("gauge = %v, want the poller's creation time", v)
 	}
 }
 

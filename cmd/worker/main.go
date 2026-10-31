@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/skraus2/email-platform/internal/automations"
@@ -157,7 +158,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	poller, err := newEventPoller(ctx, cfg, dispatcher.Events(), logger)
+	poller, err := newEventPoller(ctx, cfg, dispatcher.Events(), pool, registry, logger)
 	if err != nil {
 		return err
 	}
@@ -269,13 +270,14 @@ func newProvider(ctx context.Context, cfg config.Config) (delivery.Provider, err
 // newEventPoller builds the SES event poller, or nil without SES: the queue
 // and topic settings, like every AWS client, exist only with the complete
 // opt-in. Ingested events go through rec, which carries the webhook outbox.
-func newEventPoller(ctx context.Context, cfg config.Config, rec *events.Recorder, logger *slog.Logger) (*ses.Poller, error) {
+func newEventPoller(ctx context.Context, cfg config.Config, rec *events.Recorder, pool *pgxpool.Pool, reg prometheus.Registerer, logger *slog.Logger) (*ses.Poller, error) {
 	if cfg.MailProvider != "ses" {
 		return nil, nil //nolint:nilnil // no poller without SES, as documented
 	}
 	return ses.NewPoller(ctx, ses.PollerConfig{
 		Region: cfg.SES.Region, QueueURL: cfg.SES.EventsQueueURL, TopicARN: cfg.SES.EventsTopicARN,
 		Endpoint: cfg.SES.SQSEndpoint, Recorder: rec, Logger: logger,
+		Pool: pool, Metrics: metrics.NewEventQueue(reg, time.Now()),
 		// A message being handled is finished on shutdown.
 		MessageTimeout: cfg.ShutdownTimeout,
 	})

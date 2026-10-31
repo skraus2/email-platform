@@ -9,11 +9,13 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/skraus2/email-platform/internal/events"
+	"github.com/skraus2/email-platform/internal/store"
 	"github.com/skraus2/email-platform/internal/testaws"
 	"github.com/skraus2/email-platform/internal/testdb"
 )
@@ -174,5 +176,90 @@ func TestPollerDropsUnknownEmails(t *testing.T) {
 	}
 	if !strings.Contains(ps.logs.String(), `"outcome":"unknown_email"`) {
 		t.Fatalf("logs:\n%s", ps.logs)
+	}
+}
+
+// AC12: a drained receive reaches the shared record; health is judged by
+// the database clock, per queue, and a hold wins over drains.
+func TestPollerHeartbeatReachesStore(t *testing.T) {
+	t.Parallel()
+	db := newPollerDB(t)
+	ctx := context.Background()
+	q := store.New(db.pool)
+	key := QueueKey(queueURL)
+	healthy := func(k string, within time.Duration) bool {
+		t.Helper()
+		ok, err := q.QueueDrainedWithin(ctx, store.QueueDrainedWithinParams{QueueKey: k, WithinSeconds: within.Seconds()})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ok
+	}
+	if healthy(key, time.Hour) {
+		t.Fatal("healthy without any heartbeat")
+	}
+	ps := newTestPoller(t, nil)
+	ps.poller.ingest = db.rec.Ingest
+	ps.poller.health = healthIn(db.pool, queueURL)
+	ps.stub.Add(ps.signed(t, fixture(t, "delivery")))
+	if err := ps.poller.poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if !healthy(key, 2*time.Minute) {
+		t.Fatal("not healthy after a drained receive")
+	}
+	if healthy(QueueKey(queueURL+"-other"), time.Hour) {
+		t.Fatal("another queue counts as healthy")
+	}
+	if _, err := db.pool.Exec(ctx, "UPDATE ses_queue_heartbeats SET drained_at = now() - interval '3 minutes'"); err != nil {
+		t.Fatal(err)
+	}
+	if healthy(key, 2*time.Minute) || !healthy(key, 4*time.Minute) {
+		t.Fatal("health ignores the drain time")
+	}
+	// A drain time in the future (the clock moved back) proves nothing.
+	if _, err := db.pool.Exec(ctx, "UPDATE ses_queue_heartbeats SET drained_at = now() + interval '1 hour'"); err != nil {
+		t.Fatal(err)
+	}
+	if healthy(key, time.Hour) {
+		t.Fatal("future drain time counts as healthy")
+	}
+	// A hold wins over drains until it ends, and a shorter hold never
+	// shortens a longer one.
+	if err := q.MarkQueueDrained(ctx, key); err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range []time.Duration{time.Hour, time.Second} {
+		if err := q.HoldQueueHealth(ctx, store.HoldQueueHealthParams{QueueKey: key, HoldSeconds: d.Seconds()}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := q.MarkQueueDrained(ctx, key); err != nil {
+		t.Fatal(err)
+	}
+	if healthy(key, time.Hour) {
+		t.Fatal("healthy while held")
+	}
+	// A sibling's drain during the hold proves nothing about the message
+	// held, even once the hold ended; a drain after it does.
+	if _, err := db.pool.Exec(ctx, "UPDATE ses_queue_heartbeats SET held_until = now() - interval '1 second', drained_at = now() - interval '2 seconds'"); err != nil {
+		t.Fatal(err)
+	}
+	if healthy(key, time.Hour) {
+		t.Fatal("a drain during the hold counts after it ended")
+	}
+	if err := q.MarkQueueDrained(ctx, key); err != nil {
+		t.Fatal(err)
+	}
+	if !healthy(key, time.Hour) {
+		t.Fatal("not healthy after a drain past the hold")
+	}
+	// A hold of a queue never drained creates its row.
+	other := QueueKey(queueURL + "-held")
+	if err := q.HoldQueueHealth(ctx, store.HoldQueueHealthParams{QueueKey: other, HoldSeconds: 60}); err != nil {
+		t.Fatal(err)
+	}
+	if healthy(other, time.Hour) {
+		t.Fatal("held queue without a drain is healthy")
 	}
 }

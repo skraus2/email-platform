@@ -200,3 +200,27 @@ func (m *UsageRollup) Run(at time.Time, err error) {
 	}
 	m.lastSuccess.Set(float64(at.Unix()))
 }
+
+// EventQueue tracks the SES event queue this process polls. A nil
+// *EventQueue records nothing.
+type EventQueue struct{ drained prometheus.Gauge }
+
+// NewEventQueue registers the drained-queue gauge, starting at start (the
+// process start): a poller that never drains the queue then looks stale
+// after the same time as one that stopped draining it.
+func NewEventQueue(reg prometheus.Registerer, start time.Time) *EventQueue {
+	m := &EventQueue{drained: prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: namespace, Name: "ses_queue_drained_timestamp_seconds",
+		Help: "Unix time this process last drained the SES event queue (a receive with less than a full batch, all handled); the process start until then.",
+	})}
+	reg.MustRegister(m.drained)
+	m.drained.Set(float64(start.Unix()))
+	return m
+}
+
+// Drained records a drained receive at at.
+func (m *EventQueue) Drained(at time.Time) {
+	if m != nil {
+		m.drained.Set(float64(at.Unix()))
+	}
+}

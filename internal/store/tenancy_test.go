@@ -15,6 +15,9 @@ var globalTables = map[string]string{
 	"river_migration":    "job queue bookkeeping",
 	"river_notification": "job queue bookkeeping",
 	"river_queue":        "job queue bookkeeping",
+	// Shared by all workers to tell whether SES events reach the database;
+	// keyed by a hash of the queue URL.
+	"ses_queue_heartbeats": "SES event queue health, platform-wide",
 }
 
 // tenantTables carry project_id on every row.

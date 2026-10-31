@@ -216,6 +216,12 @@ type SenderIdentity struct {
 	CreatedAt  time.Time
 }
 
+type SesQueueHeartbeat struct {
+	QueueKey  string
+	DrainedAt *time.Time
+	HeldUntil *time.Time
+}
+
 type Suppression struct {
 	ID        uuid.UUID
 	ProjectID uuid.UUID

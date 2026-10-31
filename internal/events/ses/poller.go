@@ -2,6 +2,8 @@ package ses
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -16,9 +18,12 @@ import (
 	"github.com/aws/smithy-go"
 	smithyhttp "github.com/aws/smithy-go/transport/http"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/skraus2/email-platform/internal/awsconfig"
 	"github.com/skraus2/email-platform/internal/events"
+	"github.com/skraus2/email-platform/internal/metrics"
+	"github.com/skraus2/email-platform/internal/store"
 )
 
 // PollerConfig selects the queue the SES events arrive in, the SNS topic
@@ -34,6 +39,13 @@ type PollerConfig struct {
 	// (and by default) maxMessageTimeout. Keep it within the shutdown
 	// timeout: a message being handled is finished on shutdown.
 	MessageTimeout time.Duration
+	// Pool receives the queue's health, shared by all workers (nil: none):
+	// when the queue was last drained, and holds after a message was left
+	// for redelivery.
+	Pool *pgxpool.Pool
+	// Metrics tracks when this process last recorded a drained queue (nil:
+	// none).
+	Metrics *metrics.EventQueue
 }
 
 // Poller receives SES event notifications from SQS, authenticates and
@@ -51,6 +63,23 @@ type Poller struct {
 	logger         *slog.Logger
 	messageTimeout time.Duration
 	backoff        func(failures int) time.Duration
+	// health records the shared queue health (nil: not recorded). A drained
+	// queue is recorded at most every heartbeatEvery (lastBeat: the last
+	// successful record) and not while this process holds it (heldUntil).
+	health    *queueHealth
+	lastBeat  time.Time
+	heldUntil time.Time
+	// holdPending: the last hold could not be written; retried on every
+	// round until it lands or would have ended.
+	holdPending bool
+	metrics     *metrics.EventQueue
+	now         func() time.Time
+}
+
+// queueHealth writes the shared health of one queue.
+type queueHealth struct {
+	drained func(context.Context) error
+	hold    func(context.Context, time.Duration) error
 }
 
 const (
@@ -64,7 +93,23 @@ const (
 	// alertReceiveCount: a message left for redelivery this often is logged
 	// as an error (it will end in the dead-letter queue unless fixed).
 	alertReceiveCount = 10
+	// heartbeatEvery spaces the drained records of one process.
+	heartbeatEvery   = 30 * time.Second
+	heartbeatTimeout = 5 * time.Second
+	// holdFor: a message left for redelivery is hidden from every receive
+	// for the visibility timeout; until it was received and handled again
+	// (one more receive, a full batch, the hold write), drained receives
+	// prove nothing about it. A worker failing it again holds anew before
+	// this hold ends.
+	holdFor = visibilityTimeout + receiveTimeout + maxMessages*maxMessageTimeout + heartbeatTimeout
 )
+
+// QueueKey identifies a queue in the health table: the hex SHA-256 of its
+// URL (not a secret; the URL itself is not stored).
+func QueueKey(queueURL string) string {
+	sum := sha256.Sum256([]byte(queueURL))
+	return hex.EncodeToString(sum[:])
+}
 
 // NewPoller builds the poller. It is only called with the SES opt-in
 // configuration in place. Signing certificates are only ever fetched from
@@ -82,7 +127,21 @@ func NewPoller(ctx context.Context, c PollerConfig) (*Poller, error) {
 		return nil, err
 	}
 	p.ingest = c.Recorder.Ingest
+	if c.Pool != nil {
+		p.health = healthIn(c.Pool, c.QueueURL)
+	}
 	return p, nil
+}
+
+// healthIn records the health of the queue in pool.
+func healthIn(pool *pgxpool.Pool, queueURL string) *queueHealth {
+	key := QueueKey(queueURL)
+	return &queueHealth{
+		drained: func(ctx context.Context) error { return store.New(pool).MarkQueueDrained(ctx, key) },
+		hold: func(ctx context.Context, d time.Duration) error {
+			return store.New(pool).HoldQueueHealth(ctx, store.HoldQueueHealthParams{QueueKey: key, HoldSeconds: d.Seconds()})
+		},
+	}
 }
 
 // newPoller lets tests replace the verifier's certificate fetch, the HTTP
@@ -113,6 +172,7 @@ func newPoller(ctx context.Context, c PollerConfig, v *Verifier, opts ...func(*s
 	return &Poller{
 		client: sqs.NewFromConfig(cfg, opts...), queueURL: c.QueueURL, verifier: v, account: account,
 		logger: c.Logger, messageTimeout: timeout, backoff: receiveBackoff,
+		metrics: c.Metrics, now: time.Now,
 	}, nil
 }
 
@@ -164,7 +224,96 @@ var errTransient = errors.New("messages left for redelivery")
 
 // poll receives one batch and handles each message. It returns an error if
 // the receive failed or a message was left for redelivery.
+//
+// It also records the queue's health. A receive that found less than a full
+// batch and handled all of it counts as drained: together with the wait
+// before a resend, that is taken as evidence that SES events reach the event
+// store (a heuristic: SQS may return short batches while more is queued). A
+// message left for redelivery holds the queue unhealthy, for every worker,
+// until it can have been received again.
 func (p *Poller) poll(ctx context.Context) error {
+	n, err := p.receive(ctx)
+	if p.holdPending && !errors.Is(err, errTransient) {
+		p.writeHold(ctx)
+	}
+	switch {
+	case errors.Is(err, errTransient):
+		p.hold(ctx)
+	case err == nil && n < maxMessages && ctx.Err() == nil:
+		p.drained(ctx)
+	}
+	return err
+}
+
+// drained records a drained queue, at most every heartbeatEvery and not
+// while this process holds it. The gauge follows the successful records, so
+// a process that cannot record them turns stale. A failed write is retried
+// on the next drained receive.
+func (p *Poller) drained(ctx context.Context) {
+	now := p.now()
+	if now.Before(p.heldUntil) {
+		return
+	}
+	if p.health == nil {
+		p.metrics.Drained(now)
+		return
+	}
+	if now.Sub(p.lastBeat) < heartbeatEvery {
+		return
+	}
+	hctx, cancel := context.WithTimeout(ctx, heartbeatTimeout)
+	defer cancel()
+	if err := p.health.drained(hctx); err != nil {
+		p.logger.WarnContext(ctx, "ses event queue heartbeat failed", dbErrorAttrs(err)...)
+		return
+	}
+	p.lastBeat = now
+	p.metrics.Drained(now)
+}
+
+// hold marks the queue unhealthy for holdFor, here and in the shared record.
+func (p *Poller) hold(ctx context.Context) {
+	p.heldUntil = p.now().Add(holdFor)
+	p.holdPending = p.health != nil
+	p.writeHold(ctx)
+}
+
+// writeHold writes the pending hold for the rest of its time; a failed write
+// stays pending.
+func (p *Poller) writeHold(ctx context.Context) {
+	left := p.heldUntil.Sub(p.now())
+	if !p.holdPending || left <= 0 {
+		p.holdPending = false
+		return
+	}
+	// Detached: a shutdown must not drop the hold of a message left behind.
+	hctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), heartbeatTimeout)
+	defer cancel()
+	if err := p.health.hold(hctx, left); err != nil {
+		p.logger.WarnContext(ctx, "ses event queue hold failed", dbErrorAttrs(err)...)
+		return
+	}
+	p.holdPending = false
+}
+
+// dbErrorAttrs describes a database error by its code or kind only:
+// connection errors name hosts and users.
+func dbErrorAttrs(err error) []any {
+	if pgErr, ok := errors.AsType[*pgconn.PgError](err); ok {
+		return []any{slog.String("sqlstate", pgErr.Code)}
+	}
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return []any{slog.String("error", "timeout")}
+	case errors.Is(err, context.Canceled):
+		return []any{slog.String("error", "canceled")}
+	}
+	return []any{slog.String("error", "database unavailable")}
+}
+
+// receive receives one batch, handles each message and returns how many
+// messages the batch held.
+func (p *Poller) receive(ctx context.Context) (int, error) {
 	rctx, cancel := context.WithTimeout(ctx, receiveTimeout)
 	defer cancel()
 	out, err := p.client.ReceiveMessage(rctx, &sqs.ReceiveMessageInput{
@@ -177,18 +326,20 @@ func (p *Poller) poll(ctx context.Context) error {
 	if err != nil {
 		// The SDK error may quote the provider's message; only its kind is
 		// reported.
-		return fmt.Errorf("receive: %s", awsErrorKind(err))
+		return 0, fmt.Errorf("receive: %s", awsErrorKind(err))
 	}
 	var result error
 	for _, m := range out.Messages {
 		if ctx.Err() != nil {
-			break // shutdown: the rest comes back after the visibility timeout
+			// Shutdown: the rest comes back after the visibility timeout.
+			result = errTransient
+			break
 		}
 		if !p.handle(ctx, m) {
 			result = errTransient
 		}
 	}
-	return result
+	return len(out.Messages), result
 }
 
 // handle processes one message in its own context, which shutdown does not

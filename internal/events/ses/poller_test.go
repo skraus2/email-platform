@@ -18,9 +18,11 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/skraus2/email-platform/internal/awsconfig"
 	"github.com/skraus2/email-platform/internal/events"
+	"github.com/skraus2/email-platform/internal/metrics"
 	"github.com/skraus2/email-platform/internal/testaws"
 )
 
@@ -554,4 +556,232 @@ func TestPollerReportsPersistentFailures(t *testing.T) {
 	if n := strings.Count(logs, `"level":"ERROR"`); n != 1 || !strings.Contains(logs, `"receive_count":`+strconv.Itoa(alertReceiveCount)) {
 		t.Fatalf("%d error lines, want one at receive %d:\n%s", n, alertReceiveCount, logs)
 	}
+}
+
+// fakeHealth records the shared health writes; fail makes them fail.
+type fakeHealth struct {
+	drains int
+	holds  []time.Duration
+	fail   error
+}
+
+func (f *fakeHealth) health() *queueHealth {
+	return &queueHealth{
+		drained: func(ctx context.Context) error {
+			if f.fail != nil {
+				return f.fail
+			}
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			f.drains++
+			return nil
+		},
+		hold: func(ctx context.Context, d time.Duration) error {
+			if f.fail != nil {
+				return f.fail
+			}
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			f.holds = append(f.holds, d)
+			return nil
+		},
+	}
+}
+
+// healthSetup is a poller with a fake shared health, a gauge starting at
+// 1000 and a clock at 2000.
+func healthSetup(t *testing.T) (*pollerSetup, *fakeHealth, *prometheus.Registry, *time.Time) {
+	t.Helper()
+	ps := newTestPoller(t, nil)
+	reg := prometheus.NewRegistry()
+	ps.poller.metrics = metrics.NewEventQueue(reg, time.Unix(1_000, 0))
+	h := &fakeHealth{}
+	ps.poller.health = h.health()
+	now := time.Unix(2_000, 0)
+	ps.poller.now = func() time.Time { return now }
+	return ps, h, reg, &now
+}
+
+// AC12: the queue counts as drained only after a successful receive that
+// found less than a full batch and handled every message for good; a
+// message left for redelivery holds it unhealthy instead.
+func TestPollerHealthOnlyOnDrainedReceive(t *testing.T) {
+	transient := func(context.Context, events.ProviderEvent) (events.Outcome, error) {
+		return 0, errors.New("ingest event: connection refused")
+	}
+	for _, tc := range []struct {
+		name     string
+		messages int
+		ingest   func(context.Context, events.ProviderEvent) (events.Outcome, error)
+		fail     bool
+		drained  bool
+		held     bool
+	}{
+		{name: "drained", messages: 1, drained: true},
+		{name: "drained after refusals", messages: 3, ingest: func(context.Context, events.ProviderEvent) (events.Outcome, error) {
+			return 0, events.ErrInvalidEvent
+		}, drained: true},
+		{name: "full batch (backlog)", messages: maxMessages},
+		{name: "message left for redelivery", messages: 1, ingest: transient, held: true},
+		{name: "receive failed", messages: 1, fail: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ps, h, reg, _ := healthSetup(t)
+			ps.ingest.fn = tc.ingest
+			for range tc.messages {
+				ps.stub.Add(ps.signed(t, fixture(t, "delivery")))
+			}
+			if tc.fail {
+				ps.stub.Fail(func(testaws.SQSRequest) testaws.Response {
+					return testaws.Response{Status: http.StatusInternalServerError, ErrorType: "InternalError", Message: "x"}
+				})
+			}
+			_ = ps.poller.poll(context.Background())
+			wantDrains, wantGauge := 0, 1_000.0
+			if tc.drained {
+				wantDrains, wantGauge = 1, 2_000
+			}
+			if h.drains != wantDrains {
+				t.Fatalf("drained records = %d, want %d", h.drains, wantDrains)
+			}
+			if g := gauge(t, reg); g != wantGauge {
+				t.Fatalf("gauge = %v, want %v", g, wantGauge)
+			}
+			if held := len(h.holds) == 1 && h.holds[0] == holdFor; held != tc.held {
+				t.Fatalf("holds = %v, want held %v", h.holds, tc.held)
+			}
+		})
+	}
+}
+
+// A message left for redelivery stays hidden for the visibility timeout,
+// so the empty receives that follow prove nothing: no drained record until
+// it can have come back.
+func TestPollerHoldsAfterTransientFailure(t *testing.T) {
+	ps, h, _, now := healthSetup(t)
+	ps.ingest.fn = func(context.Context, events.ProviderEvent) (events.Outcome, error) {
+		return 0, errors.New("ingest event: connection refused")
+	}
+	ps.stub.Add(ps.signed(t, fixture(t, "delivery")))
+	if err := ps.poller.poll(context.Background()); !errors.Is(err, errTransient) {
+		t.Fatalf("poll = %v, want transient", err)
+	}
+	ps.ingest.fn = nil
+	ps.stub.Add(ps.signed(t, fixture(t, "send"))) // another event, handled
+	*now = now.Add(holdFor - time.Second)
+	if err := ps.poller.poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if h.drains != 0 {
+		t.Fatalf("drained recorded %d times during the hold", h.drains)
+	}
+	*now = now.Add(time.Second)
+	ps.stub.Add(ps.signed(t, fixture(t, "bounce_permanent")))
+	if err := ps.poller.poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if h.drains != 1 {
+		t.Fatalf("drained records = %d after the hold, want 1", h.drains)
+	}
+}
+
+// A shutdown during a batch leaves the rest hidden: held, not drained, and
+// the hold is written although the context is cancelled.
+func TestPollerHoldsOnShutdownMidBatch(t *testing.T) {
+	ps, h, reg, _ := healthSetup(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	ps.ingest.fn = func(context.Context, events.ProviderEvent) (events.Outcome, error) {
+		cancel()
+		return events.Stored, nil
+	}
+	ps.stub.Add(ps.signed(t, fixture(t, "delivery")))
+	ps.stub.Add(ps.signed(t, fixture(t, "send")))
+	_ = ps.poller.poll(ctx)
+	if h.drains != 0 || len(h.holds) != 1 || gauge(t, reg) != 1_000 {
+		t.Fatalf("drains %d, holds %v, gauge %v; want held only", h.drains, h.holds, gauge(t, reg))
+	}
+}
+
+// A hold that could not be written is retried on the next rounds, for the
+// rest of its time only.
+func TestPollerRetriesFailedHold(t *testing.T) {
+	ps, h, _, now := healthSetup(t)
+	h.fail = errors.New("connection refused")
+	ps.ingest.fn = func(context.Context, events.ProviderEvent) (events.Outcome, error) {
+		return 0, errors.New("ingest event: connection refused")
+	}
+	ps.stub.Add(ps.signed(t, fixture(t, "delivery")))
+	_ = ps.poller.poll(context.Background())
+	if len(h.holds) != 0 || !strings.Contains(ps.logs.String(), "ses event queue hold failed") {
+		t.Fatalf("holds %v, logs:\n%s", h.holds, ps.logs)
+	}
+	h.fail = nil
+	ps.ingest.fn = nil
+	*now = now.Add(time.Minute)
+	ps.stub.Add(ps.signed(t, fixture(t, "send")))
+	if err := ps.poller.poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(h.holds) != 1 || h.holds[0] != holdFor-time.Minute || h.drains != 0 {
+		t.Fatalf("holds %v, drains %d; want the rest of the hold retried, no drain", h.holds, h.drains)
+	}
+	ps.stub.Add(ps.signed(t, fixture(t, "bounce_permanent")))
+	if err := ps.poller.poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(h.holds) != 1 {
+		t.Fatalf("hold written again after it landed: %v", h.holds)
+	}
+}
+
+// One process records a drained queue at most every heartbeatEvery; a
+// failed write is retried on the next drained receive, logged without
+// detail, and leaves the gauge behind.
+func TestPollerHeartbeatSpacingAndFailure(t *testing.T) {
+	ps, h, reg, now := healthSetup(t)
+	h.fail = errors.New("dial tcp db.internal:5432: user ep refused")
+	drain := func() {
+		t.Helper()
+		ps.stub.Add(ps.signed(t, fixture(t, "delivery")))
+		if err := ps.poller.poll(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	drain()
+	if h.drains != 0 || gauge(t, reg) != 1_000 || !strings.Contains(ps.logs.String(), "ses event queue heartbeat failed") {
+		t.Fatalf("failed record: drains %d, gauge %v, logs:\n%s", h.drains, gauge(t, reg), ps.logs)
+	}
+	if strings.Contains(ps.logs.String(), "db.internal") {
+		t.Fatalf("database error detail logged:\n%s", ps.logs)
+	}
+	h.fail = nil
+	drain() // retried at once after the failure
+	*now = now.Add(heartbeatEvery - time.Second)
+	drain() // too soon
+	if h.drains != 1 || gauge(t, reg) != 2_000 {
+		t.Fatalf("drains %d, gauge %v; want 1, 2000", h.drains, gauge(t, reg))
+	}
+	*now = now.Add(time.Second)
+	drain()
+	if h.drains != 2 {
+		t.Fatalf("drains = %d, want 2 after %v", h.drains, heartbeatEvery)
+	}
+}
+
+func TestQueueKey(t *testing.T) {
+	k := QueueKey(queueURL)
+	if len(k) != 64 || strings.Contains(k, "123456789012") || k != QueueKey(queueURL) || k == QueueKey(queueURL+"-2") {
+		t.Fatalf("QueueKey = %q", k)
+	}
+}
+
+func gauge(t *testing.T, reg *prometheus.Registry) float64 {
+	t.Helper()
+	families, err := reg.Gather()
+	if err != nil || len(families) != 1 {
+		t.Fatalf("gather: %v, %d families", err, len(families))
+	}
+	return families[0].GetMetric()[0].GetGauge().GetValue()
 }
