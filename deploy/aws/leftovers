@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Lists what is left of the AWS setup in the region (read-only). Exit 1 if
-# anything that costs money or holds data remains; free items that are
+# anything that costs money or holds data remains, or if AWS cannot be
+# reached with the configured credentials; free items that are
 # expected for a while (the budget, KMS keys pending deletion) are listed as
 # info. Some checks cover the whole region, not only this project's
 # resources: an Elastic IP, a detached volume or a database snapshot costs
@@ -23,6 +24,12 @@ prefix="${SSM_PREFIX:-/email-platform/prod/}"
 }
 export AWS_REGION
 [[ -z "${AWS_PROFILE:-}" ]] || export AWS_PROFILE
+
+# Without working credentials every check would fail; say so once instead.
+if ! err="$(aws sts get-caller-identity --query Account --output text 2>&1 >/dev/null)"; then
+  echo "leftovers: cannot reach AWS, nothing was checked (expired session? run aws login): $(printf '%s\n' "$err" | head -1)" >&2
+  exit 1
+fi
 
 left=0
 # check LABEL KIND OUTPUT: KIND is "left" (fails the run) or "info".
@@ -51,7 +58,11 @@ q() {
 stacks="$(q cloudformation list-stacks \
   --query "StackSummaries[?StackStatus!='DELETE_COMPLETE' && starts_with(StackName,'email-platform-')].[StackName,StackStatus]")"
 check "CloudFormation stacks" left "$(printf '%s\n' "$stacks" | grep -v '^email-platform-budget[[:space:]]' || true)"
-check "budget stack (free; delete with teardown --with-budget)" info "$(printf '%s\n' "$stacks" | grep '^email-platform-budget[[:space:]]' || true)"
+if [[ "$stacks" == *"check failed: "* ]]; then
+  check "budget stack" info "not checked: the stack listing failed"
+else
+  check "budget stack (free; delete with teardown --with-budget)" info "$(printf '%s\n' "$stacks" | grep '^email-platform-budget[[:space:]]' || true)"
+fi
 
 check "SSM parameters under $prefix" left \
   "$(q ssm describe-parameters --parameter-filters "Key=Path,Option=Recursive,Values=$prefix" --query 'Parameters[].Name')"
@@ -89,6 +100,7 @@ keys="$(q resourcegroupstaggingapi get-resources --resource-type-filters kms:key
   --tag-filters Key=project,Values=email-platform --query 'ResourceTagMappingList[].ResourceARN')"
 [[ "$keys" != *"check failed: "* ]] || {
   keys_left="$keys"
+  keys_pending="not checked: the key lookup failed"
   keys=""
 }
 for arn in $keys; do

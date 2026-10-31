@@ -170,7 +170,21 @@ touch "$work/fail/resourcegroupstaggingapi-get-resources"
 run leftovers "" && fail "leftovers passed although the key lookup failed"
 grep -A2 "^LEFT  KMS keys not scheduled" "$work/out" | grep -q "check failed" || fail "leftovers: key lookup failure not shown"
 called "kms describe-key" && fail "leftovers described words of an error message as keys"
+grep -q "^ok    KMS keys pending deletion" "$work/out" && fail "leftovers: pending keys reported ok although the lookup failed"
 rm "$work/fail/resourcegroupstaggingapi-get-resources"
+
+# leftovers: a failed stack listing does not report the budget stack as ok.
+touch "$work/fail/cloudformation-list-stacks"
+run leftovers "" && fail "leftovers passed although the stack listing failed"
+grep -q "^ok    budget stack" "$work/out" && fail "leftovers: budget stack reported ok although the stack listing failed"
+rm "$work/fail/cloudformation-list-stacks"
+
+# leftovers: without working credentials it stops before any check.
+touch "$work/fail/sts-get-caller-identity"
+run leftovers "" && fail "leftovers passed without working credentials"
+grep -q "cannot reach AWS" "$work/out" || fail "leftovers: credential failure not named: $(cat "$work/out")"
+[[ "$(grep -cv '^sts get-caller-identity' "$work/calls")" == 0 ]] || fail "leftovers ran checks without working credentials"
+rm "$work/fail/sts-get-caller-identity"
 
 # leftovers: a failing check counts as a leftover.
 touch "$work/fail/rds-describe-db-instances"
