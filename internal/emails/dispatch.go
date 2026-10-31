@@ -489,9 +489,11 @@ func (d *Dispatcher) finish(ctx context.Context, log *slog.Logger, key store.Get
 	dctx, cancel := detached(ctx)
 	defer cancel()
 	var n int64
+	var duplicates int
 	err := pgx.BeginFunc(dctx, d.pool, func(tx pgx.Tx) error {
 		q := store.New(tx)
 		var err error
+		duplicates = 0
 		n, err = q.MarkDispatched(dctx, store.MarkDispatchedParams{
 			ID: key.ID, ProjectID: key.ProjectID, Status: res.Status,
 			Provider: &res.Provider, ProviderID: &res.ProviderID,
@@ -500,7 +502,7 @@ func (d *Dispatcher) finish(ctx context.Context, log *slog.Logger, key store.Get
 			return err
 		}
 		if n > 0 {
-			if err := d.events.Dispatched(dctx, tx, key.ProjectID, key.ID, res.Status, res.Provider); err != nil {
+			if duplicates, err = d.events.Dispatched(dctx, tx, key.ProjectID, key.ID, res.Status, res.Provider, res.ProviderID); err != nil {
 				return err
 			}
 		}
@@ -519,6 +521,7 @@ func (d *Dispatcher) finish(ctx context.Context, log *slog.Logger, key store.Get
 		return nil
 	}
 	d.metrics.Outcome(metrics.OutcomeHandedOff)
+	d.events.ConfirmedDuplicates(ctx, key.ProjectID, key.ID, duplicates)
 	log.InfoContext(ctx, "email dispatched",
 		slog.String("status", res.Status),
 		slog.String("provider", res.Provider),

@@ -405,7 +405,8 @@ func finish(ctx context.Context, f *fixture, id uuid.UUID, status, provider stri
 		if err != nil || n == 0 {
 			return err
 		}
-		return f.rec.Dispatched(ctx, tx, f.projectID, id, status, provider)
+		_, err = f.rec.Dispatched(ctx, tx, f.projectID, id, status, provider, "msg-1")
+		return err
 	})
 }
 
@@ -494,7 +495,7 @@ func TestIngestWaitsForFinish(t *testing.T) {
 		done <- out
 	}()
 	waitForLockWait(t, f.pool)
-	if err := f.rec.Dispatched(ctx, tx, f.projectID, id, "submitted", "ses"); err != nil {
+	if _, err := f.rec.Dispatched(ctx, tx, f.projectID, id, "submitted", "ses", "msg-1"); err != nil {
 		t.Fatal(err)
 	}
 	if err := tx.Commit(ctx); err != nil {

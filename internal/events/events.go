@@ -47,6 +47,8 @@ type Recorder struct {
 	hook   Hook
 	// metrics counts ingested provider events (nil: none).
 	metrics *metrics.ProviderEvents
+	// duplicates counts confirmed duplicate sends (nil: none).
+	duplicates *metrics.Duplicates
 	// afterInsert runs after a provider event is inserted, before commit
 	// (tests only).
 	afterInsert func()
@@ -55,6 +57,36 @@ type Recorder struct {
 // Observe sets where ingested provider events are counted. Set it before the
 // recorder is used.
 func (r *Recorder) Observe(m *metrics.ProviderEvents) { r.metrics = m }
+
+// ObserveDuplicates sets where confirmed duplicate sends are counted. Set it
+// before the recorder is used.
+func (r *Recorder) ObserveDuplicates(m *metrics.Duplicates) { r.duplicates = m }
+
+// otherMessageIDs counts the stored message ids of the provider for the email
+// other than providerID. Without a message id there is nothing to compare.
+func otherMessageIDs(ctx context.Context, q *store.Queries, projectID, emailID uuid.UUID, provider, providerID string) (int, error) {
+	if providerID == "" {
+		return 0, nil
+	}
+	n, err := q.CountOtherProviderMessageIDs(ctx, store.CountOtherProviderMessageIDsParams{
+		ProjectID: projectID, EmailID: emailID, Provider: provider, ProviderID: &providerID,
+	})
+	if err != nil {
+		return 0, fmt.Errorf("count duplicate sends: %w", err)
+	}
+	return int(n), nil
+}
+
+// ConfirmedDuplicates counts n duplicate sends Dispatched reported, once the
+// transaction that recorded the dispatch committed, and logs them.
+func (r *Recorder) ConfirmedDuplicates(ctx context.Context, projectID, emailID uuid.UUID, n int) {
+	if n <= 0 {
+		return
+	}
+	r.duplicates.Confirmed(n)
+	r.logger.WarnContext(ctx, "confirmed_duplicate_send", slog.String("project_id", projectID.String()),
+		slog.String("email_id", emailID.String()), slog.Int("duplicates", n))
+}
 
 // ProviderEventTypes lists the provider event types Ingest accepts.
 func ProviderEventTypes() []string {
@@ -113,35 +145,45 @@ func (r *Recorder) Transition(ctx context.Context, tx pgx.Tx, projectID, emailID
 }
 
 // Dispatched records the provider acceptance the caller just wrote in tx
-// (captured or submitted). For a submitted email it then applies provider
-// events that arrived while it was still being sent. That runs as its own
-// statement after the status update, so it sees every event committed by an
-// ingest that held the row lock before.
-func (r *Recorder) Dispatched(ctx context.Context, tx pgx.Tx, projectID, emailID uuid.UUID, status, provider string) error {
+// (captured or submitted, with the provider's message id providerID). For a
+// submitted email it then applies provider events that arrived while it was
+// still being sent. That runs as its own statement after the status update,
+// so it sees every event committed by an ingest that held the row lock
+// before.
+//
+// It returns how many duplicate sends the stored events prove: each stored
+// message id other than providerID is another accepted copy. Count them with
+// ConfirmedDuplicates once tx committed. Ingest counts message ids first
+// seen after this (both hold the email row lock), so each counts once.
+func (r *Recorder) Dispatched(ctx context.Context, tx pgx.Tx, projectID, emailID uuid.UUID, status, provider, providerID string) (int, error) {
 	if err := r.Transition(ctx, tx, projectID, emailID, status, provider, ""); err != nil {
-		return err
+		return 0, err
 	}
 	// Only events of the provider that sent the email can be projected
 	// (the database refuses provider statuses for any other).
 	if status != TypeSubmitted || provider != "ses" {
-		return nil
+		return 0, nil
 	}
 	q := store.New(tx)
+	duplicates, err := otherMessageIDs(ctx, q, projectID, emailID, provider, providerID)
+	if err != nil {
+		return 0, err
+	}
 	top, err := q.TopProviderEvent(ctx, store.TopProviderEventParams{ProjectID: projectID, EmailID: emailID})
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil
+		return duplicates, nil
 	}
 	if err != nil {
-		return fmt.Errorf("load stored provider events: %w", err)
+		return 0, fmt.Errorf("load stored provider events: %w", err)
 	}
 	n, err := q.ProjectEmailStatus(ctx, store.ProjectEmailStatusParams{ID: emailID, ProjectID: projectID, Status: top.Type})
 	if err != nil {
-		return fmt.Errorf("project stored events: %w", err)
+		return 0, fmt.Errorf("project stored events: %w", err)
 	}
 	if n == 0 {
-		return nil
+		return duplicates, nil
 	}
-	return r.changed(ctx, tx, Change{ProjectID: projectID, EmailID: emailID, EventID: top.ID, Status: top.Type})
+	return duplicates, r.changed(ctx, tx, Change{ProjectID: projectID, EmailID: emailID, EventID: top.ID, Status: top.Type})
 }
 
 // ProviderEvent is an authenticated, parsed event of a real provider.
@@ -315,8 +357,9 @@ func (r *Recorder) Ingest(ctx context.Context, e ProviderEvent) (Outcome, error)
 	var out Outcome
 	var warn string
 	var added int64
+	var duplicate bool
 	err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
-		out, warn, added = 0, "", 0
+		out, warn, added, duplicate = 0, "", 0, false
 		q := store.New(tx)
 		// Lock the email first: the worker's finish takes the same row lock,
 		// so either it sees this event or this ingest sees its status.
@@ -368,6 +411,16 @@ func (r *Recorder) Ingest(ctx context.Context, e ProviderEvent) (Outcome, error)
 		out = Stored
 		if msgID != nil && email.ProviderID != nil && *email.ProviderID != *msgID {
 			warn = "possible_duplicate_send"
+			// Another accepted copy, unless an earlier event already showed
+			// this message id (then it was counted when that one arrived or
+			// when the email was dispatched).
+			seen, err := q.ProviderMessageIDSeenBefore(ctx, store.ProviderMessageIDSeenBeforeParams{
+				ProjectID: e.ProjectID, EmailID: e.EmailID, Provider: e.Provider, ProviderMessageID: msgID, ExceptID: eventID,
+			})
+			if err != nil {
+				return fmt.Errorf("check duplicate send: %w", err)
+			}
+			duplicate = !seen
 		}
 		if reason := suppressionReason(e); reason != "" {
 			if _, err := q.AddSuppression(ctx, store.AddSuppressionParams{
@@ -395,6 +448,9 @@ func (r *Recorder) Ingest(ctx context.Context, e ProviderEvent) (Outcome, error)
 		return 0, fmt.Errorf("ingest event: %w", err)
 	}
 	r.metrics.Event(e.Type, metrics.BounceType(e.Type, e.Details["bounce_type"]), out.String())
+	if duplicate {
+		r.ConfirmedDuplicates(ctx, e.ProjectID, e.EmailID, 1)
+	}
 	attrs := []any{slog.String("outcome", out.String())}
 	if out == UnknownEmailSuppressed {
 		attrs = append(attrs, slog.Int64("suppressed", added))

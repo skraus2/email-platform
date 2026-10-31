@@ -12,6 +12,33 @@ import (
 	"github.com/google/uuid"
 )
 
+const countOtherProviderMessageIDs = `-- name: CountOtherProviderMessageIDs :one
+SELECT count(DISTINCT provider_message_id) FROM email_events
+WHERE project_id = $1 AND email_id = $2 AND origin = $3
+  AND provider_message_id IS NOT NULL AND provider_message_id <> $4
+`
+
+type CountOtherProviderMessageIDsParams struct {
+	ProjectID  uuid.UUID
+	EmailID    uuid.UUID
+	Provider   string
+	ProviderID *string
+}
+
+// Distinct provider message ids stored for the email other than the one it
+// was dispatched with: each is another accepted copy (a duplicate send).
+func (q *Queries) CountOtherProviderMessageIDs(ctx context.Context, arg CountOtherProviderMessageIDsParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countOtherProviderMessageIDs,
+		arg.ProjectID,
+		arg.EmailID,
+		arg.Provider,
+		arg.ProviderID,
+	)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const deleteOldEvents = `-- name: DeleteOldEvents :execrows
 DELETE FROM email_events WHERE id IN (
     SELECT ev.id FROM email_events ev
@@ -237,6 +264,37 @@ func (q *Queries) ProviderEventOwner(ctx context.Context, arg ProviderEventOwner
 	var i ProviderEventOwnerRow
 	err := row.Scan(&i.ProjectID, &i.EmailID)
 	return i, err
+}
+
+const providerMessageIDSeenBefore = `-- name: ProviderMessageIDSeenBefore :one
+SELECT EXISTS (
+    SELECT 1 FROM email_events
+    WHERE project_id = $1 AND email_id = $2 AND origin = $3
+      AND provider_message_id = $4 AND id <> $5
+)
+`
+
+type ProviderMessageIDSeenBeforeParams struct {
+	ProjectID         uuid.UUID
+	EmailID           uuid.UUID
+	Provider          string
+	ProviderMessageID *string
+	ExceptID          uuid.UUID
+}
+
+// Whether an event of the provider for the email other than except_id
+// carries the message id.
+func (q *Queries) ProviderMessageIDSeenBefore(ctx context.Context, arg ProviderMessageIDSeenBeforeParams) (bool, error) {
+	row := q.db.QueryRow(ctx, providerMessageIDSeenBefore,
+		arg.ProjectID,
+		arg.EmailID,
+		arg.Provider,
+		arg.ProviderMessageID,
+		arg.ExceptID,
+	)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
 }
 
 const topProviderEvent = `-- name: TopProviderEvent :one

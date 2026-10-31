@@ -224,3 +224,39 @@ func (m *EventQueue) Drained(at time.Time) {
 		m.drained.Set(float64(at.Unix()))
 	}
 }
+
+// Duplicate send kinds.
+const (
+	DuplicatePossible  = "possible"  // an email an earlier attempt left sending was sent again
+	DuplicateConfirmed = "confirmed" // the provider reported another accepted copy
+)
+
+// Duplicates counts duplicate sends. A nil *Duplicates records nothing.
+type Duplicates struct{ sends *prometheus.CounterVec }
+
+// NewDuplicates registers the duplicate send counter, both kinds at zero.
+func NewDuplicates(reg prometheus.Registerer) *Duplicates {
+	m := &Duplicates{sends: prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: namespace, Name: "duplicate_sends_total",
+		Help: "Duplicate sends: possible (sent again without proof the earlier attempt failed) and confirmed (another provider message id for the same email).",
+	}, []string{"kind"})}
+	reg.MustRegister(m.sends)
+	for _, k := range []string{DuplicatePossible, DuplicateConfirmed} {
+		m.sends.WithLabelValues(k)
+	}
+	return m
+}
+
+// Possible counts one send of an email an earlier attempt left sending.
+func (m *Duplicates) Possible() {
+	if m != nil {
+		m.sends.WithLabelValues(DuplicatePossible).Inc()
+	}
+}
+
+// Confirmed counts n duplicate sends the provider's events prove.
+func (m *Duplicates) Confirmed(n int) {
+	if m != nil && n > 0 {
+		m.sends.WithLabelValues(DuplicateConfirmed).Add(float64(n))
+	}
+}

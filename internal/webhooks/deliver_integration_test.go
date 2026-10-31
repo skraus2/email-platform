@@ -517,7 +517,8 @@ func TestDelayedProjectionCreatesTwoDeliveries(t *testing.T) {
 		}); err != nil {
 			return err
 		}
-		return rec.Dispatched(ctx, tx, f.projectID, sending, "submitted", "ses")
+		_, err := rec.Dispatched(ctx, tx, f.projectID, sending, "submitted", "ses", "m")
+		return err
 	}); err != nil {
 		t.Fatal(err)
 	}

@@ -12,11 +12,13 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/skraus2/email-platform/internal/auth"
 	"github.com/skraus2/email-platform/internal/delivery"
 	"github.com/skraus2/email-platform/internal/emails"
 	"github.com/skraus2/email-platform/internal/jobs"
+	"github.com/skraus2/email-platform/internal/metrics"
 	"github.com/skraus2/email-platform/internal/store"
 	"github.com/skraus2/email-platform/internal/testaws"
 )
@@ -304,5 +306,52 @@ func TestDailyLimitRejectsInvalid(t *testing.T) {
 	}
 	if err := d.LimitDailyHandoffs("", 10); err == nil {
 		t.Error("empty provider accepted")
+	}
+}
+
+// A resend of an email left "sending" whose earlier send SES had accepted:
+// the worker's record of the resend counts the earlier message id as a
+// confirmed duplicate once the record committed.
+func TestResendCountsConfirmedDuplicate(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	pool, projectID := setup(t)
+	e := queued(t, pool, projectID)
+	if _, err := pool.Exec(ctx, "UPDATE emails SET status = 'sending', attempts = 1 WHERE id = $1", e.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO email_events (project_id, email_id, origin, type, provider, provider_event_id, provider_message_id, occurred_at, details)
+		VALUES ($1, $2, 'ses', 'send', 'ses', 'send:msg-first', 'msg-first', now(), '{}')`, projectID, e.ID); err != nil {
+		t.Fatal(err)
+	}
+	stub := testaws.NewSESv2(t)
+	stub.Respond(func(testaws.SendEmail) testaws.Response { return testaws.Response{MessageID: "msg-second"} })
+	var logs bytes.Buffer
+	d := sesDispatcher(t, pool, stub, 5*time.Second, &logs)
+	reg := prometheus.NewRegistry()
+	d.Events().ObserveDuplicates(metrics.NewDuplicates(reg))
+
+	if err := d.SendEmail(ctx, args(e), attempt(2)); err != nil {
+		t.Fatal(err)
+	}
+	if s := state(t, pool, e.ID); s.status != "submitted" {
+		t.Fatalf("state = %+v", s)
+	}
+	families, err := reg.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	confirmed := -1.0
+	for _, m := range families[0].GetMetric() {
+		if m.GetLabel()[0].GetValue() == "confirmed" {
+			confirmed = m.GetCounter().GetValue()
+		}
+	}
+	if confirmed != 1 {
+		t.Fatalf("confirmed duplicates = %v, want 1", confirmed)
+	}
+	if !strings.Contains(logs.String(), "confirmed_duplicate_send") || !strings.Contains(logs.String(), e.ID.String()) {
+		t.Fatalf("no duplicate warning naming the email:\n%s", logs.String())
 	}
 }

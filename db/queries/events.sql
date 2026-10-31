@@ -55,3 +55,19 @@ DELETE FROM email_events WHERE id IN (
       AND NOT EXISTS (SELECT 1 FROM webhook_deliveries wd
                       WHERE wd.event_id = ev.id AND wd.project_id = ev.project_id AND wd.status = 'pending')
     LIMIT sqlc.arg(batch_size));
+
+-- name: CountOtherProviderMessageIDs :one
+-- Distinct provider message ids stored for the email other than the one it
+-- was dispatched with: each is another accepted copy (a duplicate send).
+SELECT count(DISTINCT provider_message_id) FROM email_events
+WHERE project_id = $1 AND email_id = $2 AND origin = sqlc.arg(provider)
+  AND provider_message_id IS NOT NULL AND provider_message_id <> sqlc.arg(provider_id);
+
+-- name: ProviderMessageIDSeenBefore :one
+-- Whether an event of the provider for the email other than except_id
+-- carries the message id.
+SELECT EXISTS (
+    SELECT 1 FROM email_events
+    WHERE project_id = $1 AND email_id = $2 AND origin = sqlc.arg(provider)
+      AND provider_message_id = sqlc.arg(provider_message_id) AND id <> sqlc.arg(except_id)
+);

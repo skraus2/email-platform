@@ -96,6 +96,7 @@ func run() error {
 	dispatcher := emails.NewDispatcher(pool, provider, logger, cfg.ProviderTimeout, cfg.BodyMaxAge)
 	dispatcher.Observe(metrics.NewDispatch(registry, emails.FailureCodes), cfg.MailProvider)
 	dispatcher.Events().Observe(metrics.NewProviderEvents(registry, events.ProviderEventTypes(), events.IngestOutcomes()))
+	dispatcher.Events().ObserveDuplicates(metrics.NewDuplicates(registry))
 	if err := dispatcher.LimitProviderRate(cfg.ProviderRatePerSecond); err != nil {
 		return err
 	}

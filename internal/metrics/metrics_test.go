@@ -198,3 +198,22 @@ func TestEventQueueGaugeStartsAtProcessStart(t *testing.T) {
 		t.Fatalf("after drain: got %q, want %q", got, want)
 	}
 }
+
+func TestDuplicatesCounter(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := metrics.NewDuplicates(reg)
+	want := []string{"email_platform_duplicate_sends_total{kind=confirmed} 0", "email_platform_duplicate_sends_total{kind=possible} 0"}
+	if got := series(t, reg, "email_platform_duplicate"); !slices.Equal(got, want) {
+		t.Fatalf("at start: got %q, want %q", got, want)
+	}
+	var nilM *metrics.Duplicates
+	nilM.Possible()
+	nilM.Confirmed(1) // no panic
+	m.Possible()
+	m.Confirmed(2)
+	m.Confirmed(0)
+	want = []string{"email_platform_duplicate_sends_total{kind=confirmed} 2", "email_platform_duplicate_sends_total{kind=possible} 1"}
+	if got := series(t, reg, "email_platform_duplicate"); !slices.Equal(got, want) {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
