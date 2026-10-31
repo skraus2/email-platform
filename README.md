@@ -102,12 +102,23 @@ read -rs PW && printf '%s\n' "$PW" | make admin ARGS="user create -username alic
 make run-dashboard # http://127.0.0.1:3000
 ```
 
+## Client SDK (TypeScript)
+
+`packages/sdk-typescript` is a server-side client for the `/v1` API: typed
+requests and responses generated from the contract, retries that never
+duplicate an email, iterators over paginated lists, and webhook signature
+verification. No runtime dependencies; Node 24. It is released as a tarball
+on the GitHub releases page (tags `packages/sdk-typescript/vX.Y.Z`), not on
+a registry. Usage, errors, retries and a webhook handler:
+[packages/sdk-typescript/README.md](packages/sdk-typescript/README.md).
+
 ## Tests and checks
 
 ```bash
 make check             # formatting, linters, unit tests, build (no Docker)
 make test-integration  # integration tests, a throwaway database per test (needs make up)
 make smoke             # real binaries end to end (needs make up migrate)
+make test-sdk-integration  # the TypeScript client against real binaries (needs make up migrate)
 make test-e2e          # API + worker + dashboard with Playwright
 make deploy-check      # the production Compose stack locally, with TLS everywhere
 make restore-test      # backup and restore drill
