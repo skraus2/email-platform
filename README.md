@@ -138,8 +138,12 @@ Manager only) and the dashboard is never published (SSM port forward).
 
 ## Known limitations
 
-- Exactly-once delivery is impossible: an interrupted send may be retried
-  and duplicated; such retries are logged.
+- Exactly-once delivery is impossible (SES has no idempotency token). Before
+  resending an email whose earlier attempt was interrupted, the worker looks
+  for an SES event showing the email was already accepted and then records
+  it instead of sending again; without one it waits 5 minutes (up to an hour
+  while SES events are not arriving) before it resends. Duplicates that
+  still happen are counted and raise an alert.
 - Sender verification in the platform is an operator assertion; SES
   enforces the real one.
 - Rate limits are per project and per worker process; projects share the
