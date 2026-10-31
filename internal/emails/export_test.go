@@ -28,3 +28,7 @@ func (s *Service) HoldRenderSlot() func() {
 	s.renderSlots <- struct{}{}
 	return func() { <-s.renderSlots }
 }
+
+// SetAfterReconcileRead makes the dispatcher call f after it read the proof
+// of an earlier attempt, before it acts on it.
+func SetAfterReconcileRead(d *Dispatcher, f func()) { d.afterReconcileRead = f }

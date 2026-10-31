@@ -567,3 +567,57 @@ func TestWorkerRunsBroadcastQueue(t *testing.T) {
 		t.Fatalf("job queue=%s state=%s errors=%d", queue, state, errs)
 	}
 }
+
+// A send job that snoozes on its final attempt (waiting for SES events
+// before a resend) runs again on that same attempt instead of failing.
+func TestSendEmailSnoozeOnFinalAttempt(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	pool := testdb.NewMigrated(t)
+	var mu sync.Mutex
+	var attempts []jobs.Attempt
+	done := make(chan struct{})
+	h := newRecorder().handlers()
+	h.SendEmail = func(_ context.Context, _ jobs.SendEmailArgs, a jobs.Attempt) error {
+		mu.Lock()
+		defer mu.Unlock()
+		attempts = append(attempts, a)
+		if len(attempts) == 1 {
+			return jobs.Snooze(100 * time.Millisecond)
+		}
+		close(done)
+		return nil
+	}
+	w, err := jobs.NewWorker(jobs.WorkerConfig{Pool: pool, Logger: quiet, Handlers: h, Concurrency: 1, Retry: testRetry})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = w.Stop(5 * time.Second) })
+	enq, err := jobs.NewEnqueuer(pool, quiet, 1) // one attempt: the first run is the final one
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := enq.EnqueueSendEmail(ctx, tx, jobs.SendEmailArgs{EmailID: uuid.New(), ProjectID: uuid.New()}, jobs.SendOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-done:
+	case <-time.After(20 * time.Second):
+		t.Fatal("snoozed final attempt did not run again")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !attempts[0].Final() || !attempts[1].Final() || attempts[1].Number != attempts[0].Number {
+		t.Fatalf("attempts = %+v, want the same final attempt twice", attempts)
+	}
+}

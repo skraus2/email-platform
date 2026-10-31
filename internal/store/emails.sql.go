@@ -877,6 +877,40 @@ func (q *Queries) MarkSending(ctx context.Context, arg MarkSendingParams) (int64
 	return result.RowsAffected(), nil
 }
 
+const reconcileEvidence = `-- name: ReconcileEvidence :one
+SELECT (SELECT ev.provider_message_id FROM email_events ev
+        WHERE ev.project_id = e.project_id AND ev.email_id = e.id AND ev.origin = $1
+          AND ev.provider_message_id IS NOT NULL
+        ORDER BY ev.occurred_at, ev.id
+        LIMIT 1) AS message_id,
+       extract(epoch FROM now() - e.updated_at)::float8 AS age_seconds
+FROM emails e
+WHERE e.id = $2 AND e.project_id = $3
+`
+
+type ReconcileEvidenceParams struct {
+	Provider  string
+	ID        uuid.UUID
+	ProjectID uuid.UUID
+}
+
+type ReconcileEvidenceRow struct {
+	MessageID  *string
+	AgeSeconds float64
+}
+
+// For an email an earlier attempt left sending: the message id of its
+// earliest stored event of the provider (NULL: none, so no proof the
+// provider accepted it), and the seconds since that attempt (database
+// clock; only the claim and the attempt error write updated_at while an
+// email is sending).
+func (q *Queries) ReconcileEvidence(ctx context.Context, arg ReconcileEvidenceParams) (ReconcileEvidenceRow, error) {
+	row := q.db.QueryRow(ctx, reconcileEvidence, arg.Provider, arg.ID, arg.ProjectID)
+	var i ReconcileEvidenceRow
+	err := row.Scan(&i.MessageID, &i.AgeSeconds)
+	return i, err
+}
+
 const recordAttemptError = `-- name: RecordAttemptError :exec
 UPDATE emails SET last_error = $3, error_code = $4, updated_at = now()
 WHERE id = $1 AND project_id = $2 AND status = 'sending'

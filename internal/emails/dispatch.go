@@ -26,7 +26,9 @@ import (
 // Exactly-once delivery is impossible with an external provider: if the
 // provider accepted a message but the worker died before recording it, the
 // retry sends it again. Such attempts are detectable (the email is already
-// "sending" when an attempt starts) and are logged, not hidden.
+// "sending" when an attempt starts) and are logged and counted, not hidden.
+// With SES the retry first looks for proof that SES accepted the email
+// (Reconcile), which narrows that window but cannot close it.
 type Dispatcher struct {
 	limiter    *bucket // nil: no provider rate limit
 	daily      dailyCap
@@ -40,14 +42,29 @@ type Dispatcher struct {
 	// compiled caches template versions broadcast emails are rendered from.
 	compiled *templates.Cache
 	metrics  *metrics.Dispatch // nil: no metrics
+	// duplicates counts possible duplicate sends (nil: not counted).
+	duplicates *metrics.Duplicates
 	// providerName labels provider call durations.
 	providerName string
+	// reconcile is set for SES: how long to wait for proof of an earlier
+	// attempt before sending again (nil: send again at once).
+	reconcile *ReconcileConfig
+	// afterReconcileRead runs after the proof was read (tests only).
+	afterReconcileRead func()
 }
 
 // Observe sets where dispatch outcomes are counted; provider names the
 // configured provider. Set it before the dispatcher is used.
 func (d *Dispatcher) Observe(m *metrics.Dispatch, provider string) {
 	d.metrics, d.providerName = m, provider
+}
+
+// ObserveDuplicates sets where possible duplicate sends (here) and confirmed
+// ones (by the event recorder) are counted. Set it before the dispatcher is
+// used.
+func (d *Dispatcher) ObserveDuplicates(m *metrics.Duplicates) {
+	d.duplicates = m
+	d.events.ObserveDuplicates(m)
 }
 
 // NewDispatcher builds a Dispatcher. timeout bounds one provider call;
@@ -175,6 +192,13 @@ func (d *Dispatcher) SendEmail(ctx context.Context, args jobs.SendEmailArgs, at 
 		d.metrics.Outcome(metrics.OutcomeSkipped)
 		return nil // already terminal: a retry after the success was recorded
 	}
+	if e.Status == "sending" && d.reconcile != nil {
+		// Before any refusal: if SES accepted it, it is out, and the record
+		// must say so.
+		if done, err := d.reconcileSending(ctx, log, key, at, e.Recipient); done {
+			return err
+		}
+	}
 	if e.ProjectStatus != "active" {
 		return d.fail(ctx, log, key, CodeProjectDisabled, CodeProjectDisabled)
 	}
@@ -287,6 +311,7 @@ func (d *Dispatcher) SendEmail(ctx context.Context, args jobs.SendEmailArgs, at 
 		// A previous attempt was interrupted after possibly reaching the
 		// provider (worker crash, shutdown, timeout). This send may duplicate.
 		log.WarnContext(ctx, "possible_duplicate_send")
+		d.duplicates.Possible()
 	}
 
 	sendCtx, cancel := context.WithTimeout(ctx, d.timeout)

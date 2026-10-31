@@ -228,3 +228,18 @@ SELECT count(*) FILTER (WHERE status = 'queued' AND coalesce(scheduled_at, creat
        count(*) FILTER (WHERE status = 'sending')::bigint AS sending
 FROM emails
 WHERE status IN ('queued', 'sending');
+
+-- name: ReconcileEvidence :one
+-- For an email an earlier attempt left sending: the message id of its
+-- earliest stored event of the provider (NULL: none, so no proof the
+-- provider accepted it), and the seconds since that attempt (database
+-- clock; only the claim and the attempt error write updated_at while an
+-- email is sending).
+SELECT (SELECT ev.provider_message_id FROM email_events ev
+        WHERE ev.project_id = e.project_id AND ev.email_id = e.id AND ev.origin = sqlc.arg(provider)
+          AND ev.provider_message_id IS NOT NULL
+        ORDER BY ev.occurred_at, ev.id
+        LIMIT 1) AS message_id,
+       extract(epoch FROM now() - e.updated_at)::float8 AS age_seconds
+FROM emails e
+WHERE e.id = sqlc.arg(id) AND e.project_id = sqlc.arg(project_id);

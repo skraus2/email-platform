@@ -22,10 +22,15 @@ var dispatchOutcomes = []string{OutcomeHandedOff, OutcomeFailed, OutcomeCanceled
 // Dispatch counts send_email outcomes, failures by code and provider call
 // durations. A nil *Dispatch records nothing.
 type Dispatch struct {
-	outcomes *prometheus.CounterVec
-	failures *prometheus.CounterVec
-	provider *prometheus.HistogramVec
+	outcomes   *prometheus.CounterVec
+	failures   *prometheus.CounterVec
+	provider   *prometheus.HistogramVec
+	reconciled *prometheus.CounterVec
 }
+
+// ReconcileResults are the results of a job run that found an email an
+// earlier attempt left sending (with SES).
+var ReconcileResults = []string{"found", "waiting", "pipeline_unhealthy", "resent"}
 
 // NewDispatch registers the dispatch metrics; errorCodes is the closed set
 // of failure codes, all exported at zero from the start.
@@ -41,8 +46,15 @@ func NewDispatch(reg prometheus.Registerer, errorCodes []string) *Dispatch {
 			Namespace: namespace, Name: "provider_send_duration_seconds", Help: "Duration of provider send calls.",
 			Buckets: []float64{0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30},
 		}, []string{"provider", "result"}),
+		reconciled: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: namespace, Name: "dispatch_reconciliations_total",
+			Help: "send_email job runs that found an email an earlier attempt left sending, by result (SES only); resent = no proof found, the email goes on to the usual checks and send.",
+		}, []string{"result"}),
 	}
-	reg.MustRegister(m.outcomes, m.failures, m.provider)
+	reg.MustRegister(m.outcomes, m.failures, m.provider, m.reconciled)
+	for _, r := range ReconcileResults {
+		m.reconciled.WithLabelValues(r)
+	}
 	for _, o := range dispatchOutcomes {
 		m.outcomes.WithLabelValues(o)
 	}
@@ -64,6 +76,13 @@ func (m *Dispatch) Failed(code string) {
 	if m != nil {
 		m.outcomes.WithLabelValues(OutcomeFailed).Inc()
 		m.failures.WithLabelValues(code).Inc()
+	}
+}
+
+// Reconciled counts one job run that looked for proof of an earlier attempt.
+func (m *Dispatch) Reconciled(result string) {
+	if m != nil {
+		m.reconciled.WithLabelValues(result).Inc()
 	}
 }
 
