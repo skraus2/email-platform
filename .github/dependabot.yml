@@ -27,6 +27,7 @@ updates:
       - "/tools"
       - "/tools/actionlint"
       - "/tools/govulncheck"
+      - "/tools/oapi-codegen"
       - "/tools/sqlc"
     schedule: { interval: weekly, day: monday }
     cooldown: { default-days: 7 }

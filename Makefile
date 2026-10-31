@@ -20,6 +20,12 @@ ALERTMANAGER_IMAGE := prom/alertmanager:v0.34.1@sha256:e9733bafb1bdef9b00e25a21f
 GOLANGCI_LINT := go tool -modfile=tools/go.mod golangci-lint
 PNPM          := pnpm
 
+# Directories formatted with gofmt; the Go SDK and its generator are modules
+# of their own, which ./... in the root module does not reach.
+GOFMT_DIRS     := cmd internal db packages/sdk-go tools/oapi-codegen
+SDK_GO_MODULES := packages/sdk-go tools/oapi-codegen
+SDK_GO_GEN     := go -C tools/oapi-codegen run . -contract $(CURDIR)/api/openapi.yaml -overlay $(CURDIR)/packages/sdk-go/overlay.yaml -out $(CURDIR)/packages/sdk-go
+
 .PHONY: help
 help: ## List targets
 	@grep -hE '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-18s %s\n", $$1, $$2}'
@@ -62,16 +68,16 @@ run-dashboard: ## Run the Next.js dashboard dev server
 
 .PHONY: fmt
 fmt: ## Format Go and TypeScript sources
-	gofmt -w cmd internal db
+	gofmt -w $(GOFMT_DIRS)
 	$(PNPM) run format
 
 .PHONY: fmt-check
 fmt-check: ## Fail if any file is not formatted
-	@out=$$(gofmt -l cmd internal db); if [ -n "$$out" ]; then echo "gofmt needed:"; echo "$$out"; exit 1; fi
+	@out=$$(gofmt -l $(GOFMT_DIRS)); if [ -n "$$out" ]; then echo "gofmt needed:"; echo "$$out"; exit 1; fi
 	$(PNPM) run format:check
 
 .PHONY: lint
-lint: lint-go lint-web lint-sdk-ts lint-ci sqlc-check lint-awslive lint-pins ## Run all linters
+lint: lint-go lint-web lint-sdk-ts lint-sdk-go lint-ci sqlc-check lint-awslive lint-pins ## Run all linters
 
 .PHONY: sqlc
 sqlc: ## Regenerate internal/store from db/queries + db/migrations
@@ -118,9 +124,24 @@ lint-sdk-ts: ## TypeScript SDK: ESLint, typecheck, generated types up to date an
 	$(PNPM) --filter @email-platform/sdk generate:check
 	$(PNPM) --filter @email-platform/sdk check:types-only
 
+.PHONY: sdk-go-generate
+sdk-go-generate: ## Regenerate the Go SDK's types and operation table from api/openapi.yaml
+	$(SDK_GO_GEN)
+
+.PHONY: lint-sdk-go
+lint-sdk-go: ## Go SDK and its generator: generated files up to date and declarations only (checked before anything compiles them), go vet, golangci-lint
+	$(SDK_GO_GEN) -check
+	@bin=$$(go tool -modfile=tools/go.mod -n golangci-lint) || exit 1; \
+	for m in $(SDK_GO_MODULES); do \
+		echo "lint-sdk-go: $$m"; \
+		go -C $$m vet ./... && (cd $$m && "$$bin" run ./...) || exit 1; \
+	done
+
 .PHONY: test
 test: ## Go, dashboard, SDK and deploy script unit tests (no external dependencies)
 	go test -race ./...
+	go -C tools/oapi-codegen test -race ./...
+	go -C packages/sdk-go test -race ./...
 	$(PNPM) --filter dashboard test
 	$(PNPM) --filter @email-platform/sdk test
 	./deploy/bin/render-env_test.sh
@@ -146,6 +167,7 @@ vulncheck: ## Known vulnerabilities: govulncheck (reachable Go code, incl. the c
 	@rc=0; bin=$$(go tool -modfile=tools/govulncheck/go.mod -n govulncheck) || exit 1; \
 	GOOS=linux "$$bin" ./... || rc=1; \
 	GOOS=linux "$$bin" -C deploy/caddy -tags nobadger,nomysql,nopgx ./... || rc=1; \
+	"$$bin" -C packages/sdk-go ./... || rc=1; \
 	$(PNPM) audit --prod --audit-level high || rc=1; \
 	exit $$rc
 
@@ -164,6 +186,7 @@ imagecheck: ## Known vulnerabilities in the production container images (grype; 
 .PHONY: build
 build: ## Build Go binaries into ./bin, the dashboard and the TypeScript SDK
 	go build -trimpath -o bin/ ./cmd/...
+	go -C packages/sdk-go build ./...
 	$(PNPM) --filter dashboard build
 	$(PNPM) --filter @email-platform/sdk build
 

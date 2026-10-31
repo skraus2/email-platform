@@ -1,0 +1,27 @@
+overlay: 1.0.0
+info: { title: go types, version: 1.0.0 }
+actions:
+  - target: $.components.schemas.CreateEmailRequest.properties.variables.additionalProperties
+    update: { x-go-type: any }
+  - target: $.components.schemas.CreateBroadcastRequest.properties.variables.additionalProperties
+    update: { x-go-type: any }
+  - target: $.components.schemas.SendStep.properties.variables.additionalProperties
+    update: { x-go-type: any }
+  - target: $.components.schemas.ContactAttributes.additionalProperties
+    update: { x-go-type: any }
+  - target: $.components.schemas.AttributeConditionStep.properties.value
+    update: { x-go-type: any }
+  - target: $.components.schemas.CreateEmailRequest.properties.template_version
+    update: { x-go-type: json.RawMessage }
+  - target: $.components.schemas.CreateBroadcastRequest.properties.template_version
+    update: { x-go-type: json.RawMessage }
+  - target: $.components.schemas.SendStep.properties.template_version
+    update: { x-go-type: json.RawMessage }
+  - target: $.components.schemas.AutomationStep
+    update: { x-go-type: json.RawMessage }
+  - target: $.components.schemas.WebhookEvent.properties.type
+    update: { x-go-type: WebhookEventType }
+  # A null in a nullable enum would become the string constant "<nil>";
+  # null stays representable as a nil *AutomationRunReason.
+  - target: $.components.schemas.AutomationRunReason.enum[?(@ == null)]
+    remove: true

@@ -58,12 +58,29 @@ jobs:
           package-manager-cache: false
       - name: gofmt
         run: |
-          out=$(gofmt -l cmd internal db)
+          out=$(gofmt -l cmd internal db packages/sdk-go tools/oapi-codegen)
           if [ -n "$out" ]; then echo "gofmt needed:"; echo "$out"; exit 1; fi
       - name: golangci-lint
         uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
           version: v2.15.0 # keep in sync with tools/go.mod
+      # Before anything compiles the SDK: the check also refuses generated
+      # code in any shape but the generator's.
+      - name: Go SDK generated files up to date with the contract
+        run: >-
+          go -C tools/oapi-codegen run . -check
+          -contract "$PWD/api/openapi.yaml"
+          -overlay "$PWD/packages/sdk-go/overlay.yaml"
+          -out "$PWD/packages/sdk-go"
+      # Own modules, which ./... does not reach; golangci-lint is built from
+      # tools/go.mod so its version cannot drift from the local gate.
+      - name: Go SDK and its generator (go vet, golangci-lint)
+        run: |
+          bin=$(go tool -modfile=tools/go.mod -n golangci-lint)
+          for m in packages/sdk-go tools/oapi-codegen; do
+            go -C "$m" vet ./...
+            (cd "$m" && "$bin" run ./...)
+          done
       - name: sqlc generated code is up to date
         run: go tool -modfile=tools/sqlc/go.mod sqlc diff
       - name: actionlint
@@ -73,7 +90,10 @@ jobs:
       - name: Pinned versions agree across files
         run: ./scripts/check-pins.sh
       - name: Unit tests
-        run: go test -race ./...
+        run: |
+          go test -race ./...
+          go -C tools/oapi-codegen test -race ./...
+          go -C packages/sdk-go test -race ./...
       - name: Migrations
         run: go run ./cmd/migrate up
       - name: Integration tests
@@ -87,7 +107,9 @@ jobs:
         env:
           PG_EXEC: docker exec -i ${{ job.services.postgres.id }}
       - name: Build
-        run: go build -trimpath -o bin/ ./cmd/...
+        run: |
+          go build -trimpath -o bin/ ./cmd/...
+          go -C packages/sdk-go build ./...
 
   alerts:
     runs-on: ubuntu-24.04
