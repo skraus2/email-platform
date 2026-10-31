@@ -32,3 +32,7 @@ func (s *Service) HoldRenderSlot() func() {
 // SetAfterReconcileRead makes the dispatcher call f after it read the proof
 // of an earlier attempt, before it acts on it.
 func SetAfterReconcileRead(d *Dispatcher, f func()) { d.afterReconcileRead = f }
+
+// SetReconcile sets the reconciliation without the production minimums, so
+// tests can wait seconds instead of minutes.
+func SetReconcile(d *Dispatcher, c ReconcileConfig) { d.reconcile = &c }

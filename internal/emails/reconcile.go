@@ -49,7 +49,8 @@ const (
 )
 
 // unhealthyRecheck is how often a waiting email looks again while the event
-// queue is not healthy; reconcileJitter spreads those wake-ups.
+// queue is not healthy; up to a tenth of a wait (at most reconcileJitter) is
+// added to spread the wake-ups.
 const (
 	unhealthyRecheck = 5 * time.Minute
 	reconcileJitter  = 30 * time.Second
@@ -110,7 +111,7 @@ func (d *Dispatcher) reconcileSending(ctx context.Context, log *slog.Logger, key
 	}
 	log.InfoContext(ctx, "waiting for SES events before sending again", slog.String("result", result), slog.Duration("wait", wait))
 	d.metrics.Outcome(metrics.OutcomeSnoozed)
-	return true, jobs.Snooze(wait + rand.N(reconcileJitter)) //nolint:gosec // scheduling jitter, not security
+	return true, jobs.Snooze(wait + rand.N(min(wait/10, reconcileJitter)+time.Millisecond)) //nolint:gosec // scheduling jitter, not security
 }
 
 // providerSES is the provider name SES hand-offs are stored with.
