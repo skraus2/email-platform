@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Email Platform API
-  version: 0.8.0
+  version: 0.8.1
   description: |
     Internal email sending API. Every request is authenticated with a
     project API key and only ever sees data of that project.
@@ -43,6 +43,12 @@ info:
     `contacts:write`, `broadcasts:read`, `broadcasts:write`,
     `automations:read`, `automations:write`, `events:write`. A key only has
     the scopes it was created with.
+
+    Every response the API server produces carries an `X-Request-Id`
+    header that identifies the request in the server logs (see
+    `components.headers.RequestId`); quote it when reporting a problem.
+    Answers from a proxy in front of the server (e.g. `502`, `504`) and
+    connection-level errors may lack it.
 servers:
   - url: http://127.0.0.1:8080
     description: Local development
@@ -2918,24 +2924,36 @@ components:
   responses:
     BadRequest:
       description: "Malformed request: `invalid_json` (also for unknown, case-variant or duplicate field names — names are exact and case-sensitive), `invalid_idempotency_key`, `invalid_cursor`, `invalid_limit` or `invalid_filter`."
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/RequestId"
       content:
         application/json:
           schema:
             $ref: "#/components/schemas/Error"
     Unauthorized:
       description: "`unauthorized`: missing, malformed, unknown or revoked key, or disabled project."
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/RequestId"
       content:
         application/json:
           schema:
             $ref: "#/components/schemas/Error"
     Forbidden:
       description: "`forbidden`: the key lacks the required scope."
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/RequestId"
       content:
         application/json:
           schema:
             $ref: "#/components/schemas/Error"
     Conflict:
       description: "`idempotency_key_reused` (the key was already used with a different payload), `slug_taken` (the project already has a template with this slug), `contact_exists`, `audience_exists`, `email_not_cancelable`, `broadcast_not_draft`, `broadcast_not_cancelable`, `automation_archived` or `run_not_cancelable`."
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/RequestId"
       content:
         application/json:
           schema:
@@ -2943,6 +2961,8 @@ components:
     TooManyRequests:
       description: "`rate_limited`: the project's send rate limit (or, for template writes, its template write limit; for broadcast creates, its hourly broadcast limit) is exhausted; retry after `Retry-After` seconds."
       headers:
+        X-Request-Id:
+          $ref: "#/components/headers/RequestId"
         Retry-After:
           description: Seconds until the current rate-limit window ends (1–60).
           schema:
@@ -2955,24 +2975,36 @@ components:
             $ref: "#/components/schemas/Error"
     NotFound:
       description: "`not_found`."
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/RequestId"
       content:
         application/json:
           schema:
             $ref: "#/components/schemas/Error"
     PayloadTooLarge:
       description: "`payload_too_large`: request body larger than 1 MiB (3 MiB for publishing a template version)."
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/RequestId"
       content:
         application/json:
           schema:
             $ref: "#/components/schemas/Error"
     UnsupportedMediaType:
       description: "`unsupported_media_type`: Content-Type is not application/json."
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/RequestId"
       content:
         application/json:
           schema:
             $ref: "#/components/schemas/Error"
     UnprocessableEntity:
       description: "`validation_failed` (message names the field), `recipient_suppressed` (the recipient is on the project's suppression list), `sender_not_verified` (`from` is not a verified sender address or domain of the project), `template_not_found`, `variables_invalid`, `render_failed`, `template_invalid`, `template_limit_reached`, `version_limit_reached`, `template_storage_limit_reached`, `invalid_url`, `endpoint_limit_reached`, `contact_limit_reached`, `audience_limit_reached`, `audience_full`, `audience_not_found`, `broadcast_limit_reached`, `template_missing_unsubscribe`, `schedule_limit_reached`, `automation_limit_reached` or `contact_not_found`. Messages name fields or variables, never their values."
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/RequestId"
       content:
         application/json:
           schema:
@@ -2980,6 +3012,8 @@ components:
     ServiceUnavailable:
       description: "`service_unavailable`: a dependency (e.g. the database) is temporarily unavailable; retry later. `webhook_registration_disabled`: webhook registration through the API is not enabled in this deployment (no `Retry-After`)."
       headers:
+        X-Request-Id:
+          $ref: "#/components/headers/RequestId"
         Retry-After:
           description: Seconds to wait before retrying.
           schema:
@@ -2991,7 +3025,22 @@ components:
             $ref: "#/components/schemas/Error"
     InternalError:
       description: "`internal_error`: unexpected server error; details are logged, never returned."
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/RequestId"
       content:
         application/json:
           schema:
             $ref: "#/components/schemas/Error"
+  headers:
+    RequestId:
+      description: |
+        Identifies the request in the server logs; quote it when reporting
+        a problem. Sent on every response the API server produces, success
+        or error (declared here on the shared error responses). A
+        caller-supplied `X-Request-Id` request header of 1–64 characters
+        from `[A-Za-z0-9_-]` is echoed; otherwise the server generates a
+        unique one. Only generated ids are guaranteed unique.
+      schema:
+        type: string
+        pattern: "^[A-Za-z0-9_-]{1,64}$"

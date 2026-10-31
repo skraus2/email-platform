@@ -172,6 +172,29 @@ func TestRequestID(t *testing.T) {
 	}
 }
 
+// The contract promises X-Request-Id on every /v1 response, including errors
+// produced before a handler runs.
+func TestRequestIDOnV1ErrorResponses(t *testing.T) {
+	s, _ := newTestServer(t)
+	cases := []struct {
+		method, target string
+		want           int
+	}{
+		{http.MethodGet, "/v1/emails", http.StatusUnauthorized},
+		{http.MethodDelete, "/v1/usage", http.StatusMethodNotAllowed},
+		{http.MethodGet, "/v1/unknown", http.StatusNotFound},
+	}
+	for _, c := range cases {
+		resp := do(t, s, c.method, c.target, nil)
+		if resp.Code != c.want {
+			t.Errorf("%s %s = %d, want %d", c.method, c.target, resp.Code, c.want)
+		}
+		if id := resp.Header().Get(requestIDHeader); !validRequestID(id) {
+			t.Errorf("%s %s: X-Request-Id = %q, want a generated id", c.method, c.target, id)
+		}
+	}
+}
+
 func TestRequestLogOmitsQueryString(t *testing.T) {
 	s, logs := newTestServer(t)
 	do(t, s, http.MethodGet, "/healthz?token=s3cret", nil)

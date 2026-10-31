@@ -73,6 +73,10 @@ func (s *stack) sendFull(t *testing.T, token string, r request) (int, string, st
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Every response, success or error, carries a request id.
+	if resp.Header.Get("X-Request-Id") == "" {
+		t.Fatalf("%s %s: no X-Request-Id (status %d)", r.method, r.path, resp.StatusCode)
+	}
 	resp.Header.Del("Date")
 	resp.Header.Del("X-Request-Id")
 	var hdr strings.Builder
