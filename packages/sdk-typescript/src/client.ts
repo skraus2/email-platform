@@ -1,6 +1,7 @@
-// The client object apps construct. The API key stays in a private field
-// and in the closure of the request function; nothing reachable from the
-// object as data holds it, so printing or serialising the client is safe.
+// The client object apps construct. The API key lives only in the closure
+// of the request function, which the resources keep out of reach; nothing
+// reachable from the object as data holds it, so printing or serialising
+// the client is safe.
 
 import { randomUUID } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -10,8 +11,20 @@ import {
   checkTimeout,
   createSender,
   type Runtime,
-  type Send,
 } from "./core.ts";
+import {
+  Audiences,
+  AutomationRuns,
+  Automations,
+  Broadcasts,
+  ContactEvents,
+  Contacts,
+  Emails,
+  Templates,
+  Unsubscribes,
+  Usage,
+  WebhookEndpoints,
+} from "./resources.ts";
 import { parseBaseUrl } from "./url.ts";
 
 export type EmailPlatformOptions = {
@@ -32,23 +45,23 @@ const defaultMaxRetries = 2;
 const apiKeyPattern = /^[\x21-\x7e]+$/;
 const inspectSymbol = Symbol.for("nodejs.util.inspect.custom");
 
-// Request functions per client, reachable only through `senderOf`.
-const senders = new WeakMap<EmailPlatform, Send>();
-
-/** The request function of a client, for the resource methods. */
-export function senderOf(client: EmailPlatform): Send {
-  const send = senders.get(client);
-  if (send === undefined) {
-    throw new TypeError("not an EmailPlatform client");
-  }
-  return send;
-}
-
 /** Client for the Email Platform `/v1` API. Server-side only. */
 export class EmailPlatform {
   readonly #baseUrl: string;
   readonly #timeout: number;
   readonly #maxRetries: number;
+
+  readonly emails: Emails;
+  readonly contacts: Contacts;
+  readonly audiences: Audiences;
+  readonly unsubscribes: Unsubscribes;
+  readonly broadcasts: Broadcasts;
+  readonly automations: Automations;
+  readonly automationRuns: AutomationRuns;
+  readonly contactEvents: ContactEvents;
+  readonly usage: Usage;
+  readonly templates: Templates;
+  readonly webhookEndpoints: WebhookEndpoints;
 
   constructor(options: EmailPlatformOptions) {
     if (typeof options !== "object" || (options as unknown) === null) {
@@ -76,13 +89,21 @@ export class EmailPlatform {
     this.#baseUrl = `${base.origin}${base.prefix}`;
     this.#timeout = timeout;
     this.#maxRetries = maxRetries;
-    senders.set(
-      this,
-      createSender(
-        { apiKey, base, timeout, maxRetries },
-        realRuntime(fetch ?? ((input, init) => globalThis.fetch(input, init))),
-      ),
+    const send = createSender(
+      { apiKey, base, timeout, maxRetries },
+      realRuntime(fetch ?? ((input, init) => globalThis.fetch(input, init))),
     );
+    this.emails = new Emails(send);
+    this.contacts = new Contacts(send);
+    this.audiences = new Audiences(send);
+    this.unsubscribes = new Unsubscribes(send);
+    this.broadcasts = new Broadcasts(send);
+    this.automations = new Automations(send);
+    this.automationRuns = new AutomationRuns(send);
+    this.contactEvents = new ContactEvents(send);
+    this.usage = new Usage(send);
+    this.templates = new Templates(send);
+    this.webhookEndpoints = new WebhookEndpoints(send);
   }
 
   toJSON(): Record<string, unknown> {

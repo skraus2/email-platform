@@ -57,6 +57,18 @@ test("the client imports node:crypto at the top level, so browser bundles fail",
   assert.match(client, /^import \{[^}]*\} from "node:crypto";$/m);
 });
 
+test("the entry exports the client, its errors and the page iterator only", async () => {
+  const entry = (await import("./index.ts")) as Record<string, unknown>;
+  // The request function, its accessor and the operation table stay
+  // internal; everything else is types.
+  assert.deepEqual(Object.keys(entry).sort(), [
+    "ApiError",
+    "EmailPlatform",
+    "TransportError",
+    "paginate",
+  ]);
+});
+
 test("the SDK's own code may not log", async () => {
   const { ESLint } = await import("eslint");
   const eslint = new ESLint({

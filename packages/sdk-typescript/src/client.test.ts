@@ -2,11 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { inspect } from "node:util";
 
-import {
-  EmailPlatform,
-  senderOf,
-  type EmailPlatformOptions,
-} from "./client.ts";
+import { EmailPlatform, type EmailPlatformOptions } from "./client.ts";
 import { ApiError, TransportError } from "./errors.ts";
 
 const apiKey = "ep_live_secret-key-456";
@@ -37,10 +33,7 @@ test("defaults: 30 s timeout, 2 retries", async () => {
     maxRetries: 2,
     apiKey: "[redacted]",
   });
-  await assert.rejects(
-    senderOf(client)("getEmail", { path: { id: "e1" } }),
-    ApiError,
-  );
+  await assert.rejects(client.emails.get("e1"), ApiError);
   assert.equal(attempts, 1);
 });
 
@@ -49,8 +42,8 @@ test("the injected fetch is used and receives the key", async () => {
     () => new Response('{"id":"e1"}', { status: 200 }),
   );
   const client = new EmailPlatform({ apiKey, baseUrl: `${baseUrl}/`, fetch });
-  const result = await senderOf(client)("getEmail", { path: { id: "e1" } });
-  assert.deepEqual(result.data, { id: "e1" });
+  const result = await client.emails.get("e1");
+  assert.deepEqual(result, { id: "e1" });
   const [call] = calls;
   assert.equal(call?.url, `${baseUrl}/v1/emails/e1`);
   assert.equal(
@@ -119,10 +112,7 @@ test("maxRetries above 5 is clamped", async () => {
   });
   assert.equal((client.toJSON() as { maxRetries: number }).maxRetries, 5);
   // The 1 s wait plus jitter fits the 1.5 s deadline at most once.
-  await assert.rejects(
-    senderOf(client)("getEmail", { path: { id: "e1" } }),
-    ApiError,
-  );
+  await assert.rejects(client.emails.get("e1"), ApiError);
   assert.ok(attempts >= 1 && attempts <= 2);
 });
 
@@ -138,9 +128,7 @@ test("the default runtime aborts at the deadline with reason timeout", async () 
         });
       }),
   });
-  const err = await senderOf(client)("getEmail", { path: { id: "e1" } }).catch(
-    (e: unknown) => e,
-  );
+  const err = await client.emails.get("e1").catch((e: unknown) => e);
   assert.ok(err instanceof TransportError);
   assert.equal(err.reason, "timeout");
 });
@@ -159,9 +147,82 @@ test("printing or serialising the client never shows the key", () => {
     assert.ok(!text.includes(apiKey), text);
   }
   assert.equal(String(client), "EmailPlatform(https://api.example.com/prefix)");
-  assert.deepEqual(Object.keys(client), []);
-  assert.deepEqual(Object.getOwnPropertyNames(client), []);
+  assert.deepEqual(Object.keys(client), resourceNames);
+  assert.deepEqual(Object.getOwnPropertyNames(client), resourceNames);
   assert.deepEqual(Object.getOwnPropertySymbols(client), []);
+});
+
+const resourceNames = [
+  "emails",
+  "contacts",
+  "audiences",
+  "unsubscribes",
+  "broadcasts",
+  "automations",
+  "automationRuns",
+  "contactEvents",
+  "usage",
+  "templates",
+  "webhookEndpoints",
+];
+
+// Every value reachable through own properties (string and symbol keys,
+// enumerable or not, getters not invoked) and prototypes, stopping at the
+// built-in prototypes.
+function reachable(root: object): unknown[] {
+  const builtIns = new Set<unknown>([Object.prototype, Function.prototype]);
+  const seen = new Set<unknown>();
+  const values: unknown[] = [];
+  const visit = (value: unknown) => {
+    values.push(value);
+    if (
+      (typeof value !== "object" && typeof value !== "function") ||
+      value === null ||
+      builtIns.has(value) ||
+      seen.has(value)
+    ) {
+      return;
+    }
+    seen.add(value);
+    for (const key of Reflect.ownKeys(value)) {
+      const descriptor = Reflect.getOwnPropertyDescriptor(value, key);
+      if (descriptor !== undefined && "value" in descriptor) {
+        visit(descriptor.value);
+      }
+    }
+    visit(Reflect.getPrototypeOf(value));
+  };
+  visit(root);
+  return values;
+}
+
+test("no property of the client or its resources leads to the key", () => {
+  const client = new EmailPlatform({ apiKey, baseUrl });
+  const values = reachable(client);
+  // The resources and their methods are part of the walk.
+  assert.ok(values.includes(client.emails));
+  assert.ok(values.includes(Reflect.get(client.emails, "send")));
+  for (const value of values) {
+    if (typeof value === "string") {
+      assert.ok(!value.includes(apiKey), value);
+    }
+    if (typeof value === "object" && value !== null) {
+      assert.ok(!("apiKey" in value), "settings object");
+    }
+  }
+  for (const name of resourceNames) {
+    const resource = (client as unknown as Record<string, object>)[name];
+    assert.ok(resource !== undefined, name);
+    assert.deepEqual(Reflect.ownKeys(resource), [], name);
+    for (const text of [
+      inspect(resource, { showHidden: true, depth: Infinity }),
+      JSON.stringify(resource),
+    ]) {
+      assert.ok(!text.includes(apiKey), `${name}: ${text}`);
+    }
+  }
+  const text = inspect(client, { showHidden: true, depth: Infinity });
+  assert.ok(!text.includes(apiKey), text);
 });
 
 test("errors from a client call never show the key, the query or the body", async () => {
@@ -177,9 +238,9 @@ test("errors from a client call never show the key, the query or the body", asyn
       ),
   );
   const client = new EmailPlatform({ apiKey, baseUrl, fetch });
-  const err = await senderOf(client)("listEmails", {
-    query: { recipient: "user@example.com" },
-  }).catch((e: unknown) => e);
+  const err = await client.emails
+    .list({ recipient: "user@example.com" })
+    .catch((e: unknown) => e);
   assert.ok(err instanceof ApiError);
   for (const text of [
     err.message,
