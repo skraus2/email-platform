@@ -47,6 +47,11 @@ export default defineConfig([
     },
   },
   {
+    // The client never logs: apps decide what reaches their logs.
+    files: ["src/**/*.ts"],
+    rules: { "no-console": "error" },
+  },
+  {
     files: ["**/*.{js,mjs,cjs}"],
     extends: [tseslint.configs.disableTypeChecked],
   },

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 
 type Manifest = {
   dependencies?: Record<string, string>;
@@ -29,4 +30,40 @@ test("installing the package runs no scripts", () => {
   ]) {
     assert.equal(manifest.scripts?.[hook], undefined, hook);
   }
+});
+
+type Exports = { ".": Record<string, string> };
+
+test("browsers get a module that refuses to load, before the default entry", async () => {
+  const exports = (manifest as Manifest & { exports: Exports }).exports;
+  assert.deepEqual(Object.keys(exports["."]), ["types", "browser", "default"]);
+  assert.equal(exports["."]["browser"], "./dist/browser.js");
+  await assert.rejects(import("./browser.ts"), {
+    name: "Error",
+    message: /server-side only/,
+  });
+});
+
+test("the client imports node:crypto at the top level, so browser bundles fail", async () => {
+  const index = await readFile(new URL("./index.ts", import.meta.url), "utf8");
+  assert.match(
+    index,
+    /^export \{[^}]*\bEmailPlatform\b[^}]*\} from "\.\/client\.ts";$/m,
+  );
+  const client = await readFile(
+    new URL("./client.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(client, /^import \{[^}]*\} from "node:crypto";$/m);
+});
+
+test("the SDK's own code may not log", async () => {
+  const { ESLint } = await import("eslint");
+  const eslint = new ESLint({
+    cwd: fileURLToPath(new URL("..", import.meta.url)),
+  });
+  const config = (await eslint.calculateConfigForFile("src/client.ts")) as {
+    rules: Record<string, unknown[]>;
+  };
+  assert.equal(config.rules["no-console"]?.[0], 2);
 });
