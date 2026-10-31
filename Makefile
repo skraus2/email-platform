@@ -171,11 +171,15 @@ build: ## Build Go binaries into ./bin, the dashboard and the TypeScript SDK
 check: fmt-check lint test build ## Fast full gate (no Docker needed)
 
 .PHONY: ci
-ci: check vulncheck imagecheck eolcheck test-alerts test-integration smoke restore-test deploy-check test-e2e ## Local superset of CI gates (needs `make up migrate`)
+ci: check vulncheck imagecheck eolcheck test-alerts test-integration smoke test-sdk-integration restore-test deploy-check test-e2e ## Local superset of CI gates (needs `make up migrate`)
 
 .PHONY: smoke
 smoke: ## Real API + worker: health, send, idempotency, 422/429, log leaks, SIGTERM
 	./scripts/smoke.sh
+
+.PHONY: test-sdk-integration
+test-sdk-integration: ## TypeScript client against real API + worker: send, get, events, list, errors, a verified webhook (needs `make up migrate`, Node)
+	./scripts/sdk-integration.sh
 
 .PHONY: test-alerts
 test-alerts: ## Alert rules and routing: promtool check + rule unit tests, amtool check-config (Docker)

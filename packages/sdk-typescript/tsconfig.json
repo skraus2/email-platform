@@ -23,5 +23,10 @@
     "skipLibCheck": true,
     "noEmit": true
   },
-  "include": ["src/**/*.ts", "scripts/**/*.mts", "eslint.config.mjs"]
+  "include": [
+    "src/**/*.ts",
+    "integration/**/*.ts",
+    "scripts/**/*.mts",
+    "eslint.config.mjs"
+  ]
 }
