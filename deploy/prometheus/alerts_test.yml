@@ -591,3 +591,70 @@ tests:
       - eval_time: 65m
         alertname: EmailPlatformBulkQueueStalled
         exp_alerts: []
+  # DuplicateSend: one confirmed duplicate fires at once
+  - interval: 1m
+    input_series:
+      - series: 'email_platform_duplicate_sends_total{job="email-platform-worker",instance="w1",kind="confirmed"}'
+        values: "0 0 0 1 1 1 1"
+      - series: 'email_platform_duplicate_sends_total{job="email-platform-worker",instance="w1",kind="possible"}'
+        values: "0 0 1 1 1 1 1"
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: EmailPlatformDuplicateSend
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: EmailPlatformDuplicateSend
+        exp_alerts:
+          - exp_labels:
+              severity: "warning"
+            exp_annotations:
+              summary: "SES reported a second accepted copy of an email in the last hour."
+              runbook: duplicate-send
+  # DuplicateSend: possible duplicates alone stay silent
+  - interval: 1m
+    input_series:
+      - series: 'email_platform_duplicate_sends_total{job="email-platform-worker",instance="w1",kind="confirmed"}'
+        values: "0x30"
+      - series: 'email_platform_duplicate_sends_total{job="email-platform-worker",instance="w1",kind="possible"}'
+        values: "0+1x30"
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: EmailPlatformDuplicateSend
+        exp_alerts: []
+  # EventQueueStale: a poller that never drains since its start (gauge = start)
+  - interval: 1m
+    input_series:
+      - series: 'email_platform_ses_queue_drained_timestamp_seconds{job="email-platform-worker",instance="w1"}'
+        values: "0x30"
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: EmailPlatformEventQueueStale
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: EmailPlatformEventQueueStale
+        exp_alerts:
+          - exp_labels:
+              job: "email-platform-worker"
+              instance: "w1"
+              severity: "warning"
+            exp_annotations:
+              summary: "w1 has not recorded a drained SES event queue for 10 minutes."
+              runbook: event-queue-stale
+  # EventQueueStale: draining every minute stays silent; only the stale one of two fires
+  - interval: 1m
+    input_series:
+      - series: 'email_platform_ses_queue_drained_timestamp_seconds{job="email-platform-worker",instance="w1"}'
+        values: "0+60x30"
+      - series: 'email_platform_ses_queue_drained_timestamp_seconds{job="email-platform-worker",instance="w2"}'
+        values: "0+60x5 300x25"
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: EmailPlatformEventQueueStale
+        exp_alerts:
+          - exp_labels:
+              job: "email-platform-worker"
+              instance: "w2"
+              severity: "warning"
+            exp_annotations:
+              summary: "w2 has not recorded a drained SES event queue for 10 minutes."
+              runbook: event-queue-stale

@@ -165,3 +165,20 @@ groups:
         annotations:
           summary: "Daily usage has not been rolled up for 30 minutes."
           runbook: usage-rollup-stale
+      - alert: EmailPlatformDuplicateSend
+        expr: |
+          sum(increase(email_platform_duplicate_sends_total{kind="confirmed"}[1h])) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "SES reported a second accepted copy of an email in the last hour."
+          runbook: duplicate-send
+      - alert: EmailPlatformEventQueueStale
+        expr: |
+          time() - email_platform_ses_queue_drained_timestamp_seconds > 600
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.instance }} has not recorded a drained SES event queue for 10 minutes."
+          runbook: event-queue-stale
