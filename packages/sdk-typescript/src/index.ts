@@ -6,6 +6,15 @@ export {
   type TransportErrorReason,
 } from "./errors.ts";
 export { paginate, type Page } from "./pagination.ts";
+export {
+  verifyWebhook,
+  WebhookVerificationError,
+  type VerifiedWebhook,
+  type VerifyWebhookOptions,
+  type WebhookEvent,
+  type WebhookHeaders,
+  type WebhookVerificationReason,
+} from "./webhook.ts";
 export type {
   Audiences,
   AutomationRuns,

@@ -57,7 +57,15 @@ test("the client imports node:crypto at the top level, so browser bundles fail",
   assert.match(client, /^import \{[^}]*\} from "node:crypto";$/m);
 });
 
-test("the entry exports the client, its errors and the page iterator only", async () => {
+test("the webhook verifier imports node:crypto at the top level", async () => {
+  const webhook = await readFile(
+    new URL("./webhook.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(webhook, /^import \{[^}]*\} from "node:crypto";$/m);
+});
+
+test("the entry exports the client, its errors, the page iterator and the webhook verifier only", async () => {
   const entry = (await import("./index.ts")) as Record<string, unknown>;
   // The request function, its accessor and the operation table stay
   // internal; everything else is types.
@@ -65,7 +73,9 @@ test("the entry exports the client, its errors and the page iterator only", asyn
     "ApiError",
     "EmailPlatform",
     "TransportError",
+    "WebhookVerificationError",
     "paginate",
+    "verifyWebhook",
   ]);
 });
 
