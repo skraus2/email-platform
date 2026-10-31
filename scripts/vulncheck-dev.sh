@@ -32,7 +32,7 @@ for modfile in tools/go.mod tools/*/go.mod; do
 done
 
 # Production dependencies are gated by `make vulncheck`; this lists the rest.
-echo "vulncheck-dev: dashboard development dependencies"
+echo "vulncheck-dev: workspace development dependencies (dashboard, SDK)"
 # The exit code mixes findings and failures; the JSON report tells them apart.
 audit="$("$PNPM" audit --dev --json || true)"
 jq -e '.metadata.vulnerabilities | [.critical, .high, .moderate, .low] | all(type == "number")' <<<"$audit" >/dev/null ||

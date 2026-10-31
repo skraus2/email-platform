@@ -124,6 +124,14 @@ jobs:
       - run: pnpm --filter dashboard lint
       - run: pnpm --filter dashboard typecheck
       - run: pnpm --filter dashboard build
+      - run: pnpm --filter @email-platform/sdk test
+      - run: pnpm --filter @email-platform/sdk lint
+      - run: pnpm --filter @email-platform/sdk typecheck
+      - name: SDK types up to date with the contract and types only
+        run: |
+          pnpm --filter @email-platform/sdk generate:check
+          pnpm --filter @email-platform/sdk check:types-only
+      - run: pnpm --filter @email-platform/sdk build
 
   e2e:
     runs-on: ubuntu-24.04

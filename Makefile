@@ -71,7 +71,7 @@ fmt-check: ## Fail if any file is not formatted
 	$(PNPM) run format:check
 
 .PHONY: lint
-lint: lint-go lint-web lint-ci sqlc-check lint-awslive lint-pins ## Run all linters
+lint: lint-go lint-web lint-sdk-ts lint-ci sqlc-check lint-awslive lint-pins ## Run all linters
 
 .PHONY: sqlc
 sqlc: ## Regenerate internal/store from db/queries + db/migrations
@@ -107,10 +107,22 @@ lint-web: ## ESLint + TypeScript typecheck for the dashboard
 	$(PNPM) --filter dashboard lint
 	$(PNPM) --filter dashboard typecheck
 
+.PHONY: sdk-ts-generate
+sdk-ts-generate: ## Regenerate the TypeScript SDK's types from api/openapi.yaml
+	$(PNPM) --filter @email-platform/sdk generate
+
+.PHONY: lint-sdk-ts
+lint-sdk-ts: ## TypeScript SDK: ESLint, typecheck, generated types up to date and types only
+	$(PNPM) --filter @email-platform/sdk lint
+	$(PNPM) --filter @email-platform/sdk typecheck
+	$(PNPM) --filter @email-platform/sdk generate:check
+	$(PNPM) --filter @email-platform/sdk check:types-only
+
 .PHONY: test
-test: ## Go, dashboard and deploy script unit tests (no external dependencies)
+test: ## Go, dashboard, SDK and deploy script unit tests (no external dependencies)
 	go test -race ./...
 	$(PNPM) --filter dashboard test
+	$(PNPM) --filter @email-platform/sdk test
 	./deploy/bin/render-env_test.sh
 	bash deploy/aws/scripts_test.sh
 	./scripts/imagecheck-eval_test.sh
@@ -150,9 +162,10 @@ imagecheck: ## Known vulnerabilities in the production container images (grype; 
 	./scripts/imagecheck.sh
 
 .PHONY: build
-build: ## Build Go binaries into ./bin and the dashboard
+build: ## Build Go binaries into ./bin, the dashboard and the TypeScript SDK
 	go build -trimpath -o bin/ ./cmd/...
 	$(PNPM) --filter dashboard build
+	$(PNPM) --filter @email-platform/sdk build
 
 .PHONY: check
 check: fmt-check lint test build ## Fast full gate (no Docker needed)

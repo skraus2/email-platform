@@ -1,5 +1,6 @@
 packages:
   - apps/*
+  - packages/*
 
 # Supply-chain hygiene: do not install package versions younger than 24h.
 minimumReleaseAge: 1440
@@ -9,3 +10,9 @@ minimumReleaseAge: 1440
 ignoredBuiltDependencies:
   - sharp
   - unrs-resolver
+
+# openapi-typescript (SDK type generator, dev-only) declares typescript@^5;
+# it only emits text and works with the TypeScript version used here.
+peerDependencyRules:
+  allowedVersions:
+    openapi-typescript>typescript: "6"

@@ -21,6 +21,7 @@ coverage.out
 
 # Node / Next.js
 node_modules/
+packages/sdk-typescript/dist/
 .next/
 out/
 *.tsbuildinfo
