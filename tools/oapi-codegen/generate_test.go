@@ -447,10 +447,67 @@ func TestOperationsAreTheContractsPathOperations(t *testing.T) {
 		for i := range fields {
 			fields[i] = strings.Trim(fields[i], `"`)
 		}
-		got = append(got, strings.Join(fields, " "))
+		got = append(got, strings.Join(fields[:3], " "))
 	}
 	slices.Sort(got)
 	if !slices.Equal(got, want) {
 		t.Fatalf("operations table:\n%v\nwant:\n%v", got, want)
+	}
+}
+
+func TestOperationTypes(t *testing.T) {
+	files, err := generate(contractPath, overlayPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	table := string(files[operationsFile])
+	for _, row := range []string{
+		`{"createEmail", "POST", "/v1/emails", "CreateEmailRequest", "required", "", "CreateEmailResponse"},`,
+		`{"listEmails", "GET", "/v1/emails", "", "", "ListEmailsParams", "EmailList"},`,
+		`{"scheduleBroadcast", "POST", "/v1/broadcasts/{id}/schedule", "ScheduleBroadcastRequest", "optional", "", "Broadcast"},`,
+		`{"deleteContact", "DELETE", "/v1/contacts/{id}", "", "", "", ""},`,
+		`{"getUsage", "GET", "/v1/usage", "", "", "GetUsageParams", "Usage"},`,
+		`{"reportUnsubscribe", "POST", "/v1/unsubscribes", "UnsubscribeRequest", "required", "", "UnsubscribeResult"},`,
+	} {
+		if !strings.Contains(table, row) {
+			t.Errorf("table lacks %s", row)
+		}
+	}
+	// Header-only parameters (Idempotency-Key) are not query parameters.
+	if strings.Contains(table, "CreateEmailParams") || strings.Contains(table, "CreateContactEventParams") {
+		t.Error("header parameters listed as query parameters")
+	}
+}
+
+func TestOperationTypesMustBeNamed(t *testing.T) {
+	dir := t.TempDir()
+	overlay := writeFile(t, dir, "overlay.yaml", emptyOverlay)
+	cases := map[string]string{
+		"inline request body": `  /x:
+    post:
+      operationId: x
+      requestBody: {required: true, content: {application/json: {schema: {type: object}}}}
+      responses: {"204": {description: ok}}
+`,
+		"inline result": `  /x:
+    get:
+      operationId: x
+      responses: {"200": {description: ok, content: {application/json: {schema: {type: object}}}}}
+`,
+		"two success responses": `  /x:
+    get:
+      operationId: x
+      responses:
+        "200": {description: ok, content: {application/json: {schema: {$ref: "#/components/schemas/B"}}}}
+        "202": {description: ok}
+`,
+	}
+	for name, path := range cases {
+		t.Run(name, func(t *testing.T) {
+			contract := writeFile(t, dir, "openapi.yaml", strings.Replace(miniContract, "paths: {}\n", "paths:\n"+path, 1))
+			if _, err := generate(contract, overlay); err == nil || !strings.Contains(err.Error(), "x: ") {
+				t.Fatalf("generate = %v, want the operation refused", err)
+			}
+		})
 	}
 }

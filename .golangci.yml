@@ -127,6 +127,10 @@ linters:
             contextcheck,
             unparam,
           ]
+      - path: packages/sdk-go/.*_test\.go
+        # Stub transports hand out response bodies that the client under
+        # test closes (TestEveryBodyIsClosed checks that it does).
+        linters: [bodyclose]
 
 formatters:
   enable:

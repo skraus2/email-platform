@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"go/ast"
 	"go/format"
@@ -12,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/getkin/kin-openapi/openapi3"
+	"github.com/oapi-codegen/oapi-codegen/v2/pkg/codegen"
 )
 
 // Imports each generated file may use.
@@ -21,20 +23,26 @@ var allowedImports = map[string][]string{
 }
 
 // generateOperations returns the table of every operation in the contract's
-// paths (the webhook is not one), sorted by path and method, which the SDK's
-// tests check the client against.
+// paths (the webhook is not one), sorted by path and method, with the Go
+// types of its request body, query parameters and success result, which the
+// SDK's tests check the client against. It runs before codegen.Generate,
+// which rewrites operation ids in place.
 func generateOperations(doc *openapi3.T) ([]byte, error) {
-	type op struct{ id, method, path string }
-	var ops []op
+	var ops []operation
 	for _, path := range doc.Paths.InMatchingOrder() {
-		for method, o := range doc.Paths.Value(path).Operations() {
+		item := doc.Paths.Value(path)
+		for method, o := range item.Operations() {
 			if o.OperationID == "" {
 				return nil, fmt.Errorf("%s %s has no operationId", method, path)
 			}
-			ops = append(ops, op{o.OperationID, method, path})
+			op, err := describeOperation(o, item.Parameters, method, path)
+			if err != nil {
+				return nil, fmt.Errorf("%s: %w", o.OperationID, err)
+			}
+			ops = append(ops, op)
 		}
 	}
-	slices.SortFunc(ops, func(a, b op) int {
+	slices.SortFunc(ops, func(a, b operation) int {
 		if c := strings.Compare(a.path, b.path); c != 0 {
 			return c
 		}
@@ -43,8 +51,13 @@ func generateOperations(doc *openapi3.T) ([]byte, error) {
 	var b bytes.Buffer
 	b.WriteString(header("tools/oapi-codegen"))
 	b.WriteString("package " + packageName + "\n\n")
-	b.WriteString("// operation is one API operation: its operationId, HTTP method and path template.\n")
-	b.WriteString("type operation struct{ id, method, path string }\n\n")
+	b.WriteString(`// operation is one API operation: its operationId, HTTP method and path
+// template, and the Go types of its JSON request body (bodyMode "required",
+// "optional" or "" for none), query parameters and success result ("" when
+// the success response has no body).
+type operation struct{ id, method, path, body, bodyMode, params, result string }
+
+`)
 	b.WriteString("// operations lists every operation of the API contract.\n")
 	b.WriteString("var operations = [...]operation{\n")
 	seen := map[string]bool{}
@@ -53,7 +66,11 @@ func generateOperations(doc *openapi3.T) ([]byte, error) {
 			return nil, fmt.Errorf("operationId %q is used twice", o.id)
 		}
 		seen[o.id] = true
-		fmt.Fprintf(&b, "\t{%s, %s, %s},\n", strconv.Quote(o.id), strconv.Quote(o.method), strconv.Quote(o.path))
+		fields := []string{o.id, o.method, o.path, o.body, o.bodyMode, o.params, o.result}
+		for i, f := range fields {
+			fields[i] = strconv.Quote(f)
+		}
+		fmt.Fprintf(&b, "\t{%s},\n", strings.Join(fields, ", "))
 	}
 	b.WriteString("}\n")
 	src, err := format.Source(b.Bytes())
@@ -61,6 +78,63 @@ func generateOperations(doc *openapi3.T) ([]byte, error) {
 		return nil, fmt.Errorf("format operations: %w", err)
 	}
 	return src, nil
+}
+
+type operation struct{ id, method, path, body, bodyMode, params, result string }
+
+// describeOperation names the generated Go types an operation uses. Bodies
+// and results must be named schemas: inline ones get no generated type.
+func describeOperation(o *openapi3.Operation, shared openapi3.Parameters, method, path string) (operation, error) {
+	op := operation{id: o.OperationID, method: method, path: path}
+	if rb := o.RequestBody; rb != nil {
+		name, err := jsonSchemaType(rb.Value.Content)
+		if err != nil {
+			return op, fmt.Errorf("request body: %w", err)
+		}
+		op.body = name
+		op.bodyMode = "optional"
+		if rb.Value.Required {
+			op.bodyMode = "required"
+		}
+	}
+	for _, p := range slices.Concat(shared, o.Parameters) {
+		if p.Value.In == openapi3.ParameterInQuery {
+			op.params = codegen.SchemaNameToTypeName(o.OperationID) + "Params"
+			break
+		}
+	}
+	var successes []string
+	for code, r := range o.Responses.Map() {
+		if len(code) != 3 || code[0] != '2' {
+			continue
+		}
+		successes = append(successes, code)
+		if len(r.Value.Content) == 0 {
+			continue
+		}
+		name, err := jsonSchemaType(r.Value.Content)
+		if err != nil {
+			return op, fmt.Errorf("response %s: %w", code, err)
+		}
+		op.result = name
+	}
+	if len(successes) != 1 {
+		return op, fmt.Errorf("want exactly one success response, have %v", successes)
+	}
+	return op, nil
+}
+
+func jsonSchemaType(content openapi3.Content) (string, error) {
+	media, ok := content["application/json"]
+	if !ok || len(content) != 1 || media.Schema == nil {
+		return "", errors.New("want exactly one application/json schema")
+	}
+	ref := media.Schema.Ref
+	name, ok := strings.CutPrefix(ref, "#/components/schemas/")
+	if !ok || name == "" || strings.Contains(name, "/") {
+		return "", errors.New("want a $ref to a component schema")
+	}
+	return codegen.SchemaNameToTypeName(name), nil
 }
 
 // checkGenerated accepts generated source only in the shapes the generator
