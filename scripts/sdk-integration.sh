@@ -30,6 +30,13 @@ trap cleanup EXIT
 "$NODE" -e 'const [major] = process.versions.node.split(".").map(Number); if (major < 24) { console.error(`Node ${process.versions.node} is too old; the client needs the version in .nvmrc`); process.exit(1); }'
 go build -o "$TMP/" ./cmd/api ./cmd/worker ./cmd/admin
 
+# Needles from a file: secrets must not appear in grep's command line. The
+# KEK and the database password are in it before any process can log them.
+umask 077
+tr ',' '\n' <<<"$WEBHOOK_KEKS" | sed 's/^[^:]*://' >"$TMP/needles"
+db_password=$(sed -nE 's#^[^:]+://[^:@/]+:([^@]+)@.*#\1#p' <<<"$DATABASE_URL")
+[[ -n "$db_password" ]] && printf '%s@\n' "$db_password" >>"$TMP/needles"
+
 HTTP_ADDR="$ADDR" ADMIN_HTTP_ADDR=off LOG_FORMAT=json "$TMP/api" >"$TMP/api.log" 2>&1 &
 API_PID=$!
 LOG_FORMAT=json "$TMP/worker" >"$TMP/worker.log" 2>&1 &
@@ -58,10 +65,7 @@ run="$(date +%s)-$RANDOM"
 project=$("$TMP/admin" project create -name "sdk-it-$run" | cut -f1) || fail "admin project create"
 key=$("$TMP/admin" key create -project "$project" 2>"$TMP/admin.err") || fail "admin key create: $(cat "$TMP/admin.err")"
 [[ "$key" == ep_* ]] || fail "admin did not issue a key"
-# Needles from a file: secrets must not appear in grep's command line.
-umask 077
-printf '%s\n' "$key" "sdk-it-$run@example.test" "sdk integration body" "sdk-it-$run:" >"$TMP/needles"
-tr ',' '\n' <<<"$WEBHOOK_KEKS" | sed 's/^[^:]*://' >>"$TMP/needles"
+printf '%s\n' "$key" "sdk-it-$run@example.test" "sdk integration body" "sdk-it-$run:" >>"$TMP/needles"
 
 "$TMP/admin" webhook create -project "$project" -url "http://$RECV_ADDR/hooks" >"$TMP/webhook.out" 2>"$TMP/admin.err" ||
   fail "admin webhook create: $(cat "$TMP/admin.err")"
@@ -87,10 +91,7 @@ echo "SIGTERM -> api and worker shut down cleanly"
 
 # After shutdown, so that lines written while stopping are checked too.
 if grep -qiFf "$TMP/needles" "$TMP/api.log" "$TMP/worker.log"; then
-  echo "SDK INTEGRATION FAIL: logs contain a key, webhook secret, KEK, idempotency key, recipient or body" >&2; exit 1
+  echo "SDK INTEGRATION FAIL: logs contain a key, webhook secret, KEK, database password, idempotency key, recipient or body" >&2; exit 1
 fi
-echo "logs contain no API key, webhook secret or KEK, idempotency key, recipient or body"
-if grep -q 'email_platform:email_platform@' "$TMP/api.log" "$TMP/worker.log"; then
-  fail "database password appeared in logs"
-fi
+echo "logs contain no API key, webhook secret, KEK, database password, idempotency key, recipient or body"
 echo "SDK INTEGRATION OK"

@@ -174,10 +174,13 @@ test("the client against the real API and worker", async (t) => {
     async () => {
       const delivery = await eventually("the email.captured webhook", () =>
         deliveries.find((d) => {
-          const event = JSON.parse(d.body.toString("utf8")) as {
-            type?: unknown;
-            data?: { email_id?: unknown };
-          };
+          // Only to find the delivery; whether it verified is asserted below.
+          let event: { type?: unknown; data?: { email_id?: unknown } };
+          try {
+            event = JSON.parse(d.body.toString("utf8")) as typeof event;
+          } catch {
+            return false;
+          }
           return event.type === "email.captured" && event.data?.email_id === id;
         }),
       );
