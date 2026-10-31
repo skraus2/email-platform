@@ -3,6 +3,7 @@ package config
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 // sesEnv is a complete, valid SES opt-in on top of the development defaults.
@@ -35,8 +36,9 @@ func TestLoadSESOptIn(t *testing.T) {
 	}
 	want := SES{
 		Region: "eu-central-1", ConfigurationSet: "platform-events",
-		EventsQueueURL: "https://sqs.eu-central-1.amazonaws.com/123456789012/ses-events",
-		EventsTopicARN: "arn:aws:sns:eu-central-1:123456789012:ses-events",
+		EventsQueueURL:  "https://sqs.eu-central-1.amazonaws.com/123456789012/ses-events",
+		EventsTopicARN:  "arn:aws:sns:eu-central-1:123456789012:ses-events",
+		ReconcileWindow: 5 * time.Minute, ReconcileMaxWait: time.Hour, EventQueueHealthyWithin: 2 * time.Minute,
 	}
 	if cfg.MailProvider != "ses" || cfg.SES != want {
 		t.Fatalf("config = %q %+v, want %+v", cfg.MailProvider, cfg.SES, want)
@@ -133,6 +135,7 @@ func TestLoadRejectsSESSettingsWithoutOptIn(t *testing.T) {
 	// file, a half-finished switch); fail loudly instead of ignoring it.
 	for _, key := range []string{
 		"SES_ENABLED", "SES_CONFIGURATION_SET", "SES_EVENTS_QUEUE_URL", "SES_EVENTS_TOPIC_ARN", "SES_ENDPOINT", "SQS_ENDPOINT",
+		"RECONCILE_WINDOW", "RECONCILE_MAX_WAIT", "EVENT_QUEUE_HEALTHY_WITHIN",
 	} {
 		t.Run(key, func(t *testing.T) {
 			m := sesEnv(nil)
@@ -142,8 +145,11 @@ func TestLoadRejectsSESSettingsWithoutOptIn(t *testing.T) {
 					delete(m, k)
 				}
 			}
-			if key == "SES_ENDPOINT" || key == "SQS_ENDPOINT" {
+			switch key {
+			case "SES_ENDPOINT", "SQS_ENDPOINT":
 				m[key] = "http://127.0.0.1:4566"
+			case "RECONCILE_WINDOW", "RECONCILE_MAX_WAIT", "EVENT_QUEUE_HEALTHY_WITHIN":
+				m[key] = "5m"
 			}
 			_, err := Load(env(m))
 			if err == nil || !strings.Contains(err.Error(), key) {
@@ -177,5 +183,56 @@ func TestLoadProviderDailyLimit(t *testing.T) {
 		if _, err := Load(env(map[string]string{"DATABASE_URL": devURL, "PROVIDER_DAILY_LIMIT": bad})); err == nil || !strings.Contains(err.Error(), "PROVIDER_DAILY_LIMIT") {
 			t.Errorf("PROVIDER_DAILY_LIMIT=%s: err = %v", bad, err)
 		}
+	}
+}
+
+func TestLoadReconcileSettings(t *testing.T) {
+	cfg, err := Load(env(sesEnv(nil)))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.SES.ReconcileWindow != 5*time.Minute || cfg.SES.ReconcileMaxWait != time.Hour || cfg.SES.EventQueueHealthyWithin != 2*time.Minute {
+		t.Fatalf("defaults = %v %v %v; want 5m 1h 2m", cfg.SES.ReconcileWindow, cfg.SES.ReconcileMaxWait, cfg.SES.EventQueueHealthyWithin)
+	}
+	cfg, err = Load(env(sesEnv(map[string]string{
+		"RECONCILE_WINDOW": "1m", "RECONCILE_MAX_WAIT": "1m", "EVENT_QUEUE_HEALTHY_WITHIN": "90s",
+	})))
+	if err != nil {
+		t.Fatalf("Load overrides: %v", err)
+	}
+	if cfg.SES.ReconcileWindow != time.Minute || cfg.SES.ReconcileMaxWait != time.Minute || cfg.SES.EventQueueHealthyWithin != 90*time.Second {
+		t.Fatalf("overrides = %v %v %v", cfg.SES.ReconcileWindow, cfg.SES.ReconcileMaxWait, cfg.SES.EventQueueHealthyWithin)
+	}
+}
+
+func TestLoadRejectsInvalidReconcileSettings(t *testing.T) {
+	tests := []struct {
+		name  string
+		extra map[string]string
+		want  string
+	}{
+		{"window below 1m", map[string]string{"RECONCILE_WINDOW": "59s"}, "RECONCILE_WINDOW"},
+		{"window above 1h", map[string]string{"RECONCILE_WINDOW": "61m", "RECONCILE_MAX_WAIT": "2h"}, "RECONCILE_WINDOW"},
+		{"window not a duration", map[string]string{"RECONCILE_WINDOW": "5"}, "RECONCILE_WINDOW"},
+		{"max wait below window", map[string]string{"RECONCILE_WINDOW": "10m", "RECONCILE_MAX_WAIT": "9m"}, "RECONCILE_MAX_WAIT"},
+		{"max wait above 24h", map[string]string{"RECONCILE_MAX_WAIT": "25h"}, "RECONCILE_MAX_WAIT"},
+		{"healthy below 1m", map[string]string{"EVENT_QUEUE_HEALTHY_WITHIN": "30s"}, "EVENT_QUEUE_HEALTHY_WITHIN"},
+		{"healthy above 1h", map[string]string{"EVENT_QUEUE_HEALTHY_WITHIN": "2h"}, "EVENT_QUEUE_HEALTHY_WITHIN"},
+		// Every ambiguous attempt can be followed by a full wait: 7 × 24h
+		// does not fit into the default 168h content retention.
+		{"waits exceed body retention", map[string]string{"RECONCILE_MAX_WAIT": "24h"}, "RECONCILE_MAX_WAIT"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Load(env(sesEnv(tt.extra)))
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("err = %v, want mention of %s", err, tt.want)
+			}
+		})
+	}
+	// The waits follow all attempts but the first: 6 × 24h plus the retry
+	// schedule fits into 168h (7 × 24h would not).
+	if _, err := Load(env(sesEnv(map[string]string{"RECONCILE_MAX_WAIT": "24h", "SEND_MAX_ATTEMPTS": "7"}))); err != nil {
+		t.Fatalf("6 × 24h waits within 168h: %v", err)
 	}
 }

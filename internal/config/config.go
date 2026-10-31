@@ -152,6 +152,14 @@ type SES struct {
 	EventsTopicARN   string
 	Endpoint         string
 	SQSEndpoint      string
+
+	// Before an email an earlier attempt left "sending" is sent again, the
+	// worker waits ReconcileWindow after that attempt for an SES event
+	// proving SES accepted it, and up to ReconcileMaxWait while the event
+	// queue was not drained within EventQueueHealthyWithin.
+	ReconcileWindow         time.Duration
+	ReconcileMaxWait        time.Duration
+	EventQueueHealthyWithin time.Duration
 }
 
 // LookupFunc matches os.LookupEnv so tests can inject an environment.
@@ -356,8 +364,15 @@ func Load(lookup LookupFunc) (Config, error) {
 		// schedule must fit into the content retention.
 		policy := jobs.RetryPolicy{Base: cfg.RetryBaseDelay, Max: cfg.RetryMaxDelay}
 		schedule := policy.WorstCase(cfg.SendMaxAttempts) + time.Duration(cfg.SendMaxAttempts)*jobs.AttemptBudget(cfg.ProviderTimeout)
+		names := "SEND_MAX_ATTEMPTS, RETRY_*_DELAY and PROVIDER_TIMEOUT"
+		if sesMode {
+			// Every ambiguous attempt can be followed by a full wait for
+			// proof that SES accepted it.
+			schedule += time.Duration(cfg.SendMaxAttempts-1) * cfg.SES.ReconcileMaxWait
+			names = "SEND_MAX_ATTEMPTS, RETRY_*_DELAY, PROVIDER_TIMEOUT and RECONCILE_MAX_WAIT"
+		}
 		if schedule >= cfg.BodyMaxAge {
-			errs = append(errs, fmt.Errorf("retry schedule (up to %v with SEND_MAX_ATTEMPTS, RETRY_*_DELAY and PROVIDER_TIMEOUT) must be shorter than BODY_MAX_AGE", schedule))
+			errs = append(errs, fmt.Errorf("retry schedule (up to %v with %s) must be shorter than BODY_MAX_AGE", schedule, names))
 		}
 	}
 
@@ -370,6 +385,7 @@ func Load(lookup LookupFunc) (Config, error) {
 // sesSettings are the settings that only exist with the SES opt-in.
 var sesSettings = []string{
 	"SES_ENABLED", "SES_CONFIGURATION_SET", "SES_EVENTS_QUEUE_URL", "SES_EVENTS_TOPIC_ARN", "SES_ENDPOINT", "SQS_ENDPOINT",
+	"RECONCILE_WINDOW", "RECONCILE_MAX_WAIT", "EVENT_QUEUE_HEALTHY_WITHIN",
 }
 
 var (
@@ -425,6 +441,24 @@ func loadSES(get func(string, string) string, env string, errs []error) (SES, []
 	// local.
 	if env != EnvProduction && (c.Endpoint == "") != (c.SQSEndpoint == "") {
 		errs = append(errs, errors.New("SES_ENDPOINT and SQS_ENDPOINT must be set together (local stubs) or both left unset (AWS)"))
+	}
+	c.ReconcileWindow, errs = minDuration(get, "RECONCILE_WINDOW", "5m", time.Minute, "", errs)
+	if c.ReconcileWindow > time.Hour {
+		errs = append(errs, errors.New("RECONCILE_WINDOW must be at most 1h"))
+	}
+	c.ReconcileMaxWait, errs = minDuration(get, "RECONCILE_MAX_WAIT", "1h", time.Minute, "", errs)
+	if c.ReconcileMaxWait > 0 && c.ReconcileMaxWait < c.ReconcileWindow {
+		errs = append(errs, errors.New("RECONCILE_MAX_WAIT must not be shorter than RECONCILE_WINDOW"))
+	}
+	if c.ReconcileMaxWait > maxRetryDelay {
+		errs = append(errs, errors.New("RECONCILE_MAX_WAIT must be at most 24h"))
+	}
+	// The poller reports a drained queue at most every 30s after a long poll
+	// of up to 20s, so less than a minute could read a working queue as
+	// unhealthy.
+	c.EventQueueHealthyWithin, errs = minDuration(get, "EVENT_QUEUE_HEALTHY_WITHIN", "2m", time.Minute, "", errs)
+	if c.EventQueueHealthyWithin > time.Hour {
+		errs = append(errs, errors.New("EVENT_QUEUE_HEALTHY_WITHIN must be at most 1h"))
 	}
 	return c, errs
 }
