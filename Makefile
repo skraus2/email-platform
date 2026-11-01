@@ -150,6 +150,7 @@ test: ## Go, dashboard, SDK and deploy script unit tests (no external dependenci
 	./scripts/imagecheck-os_test.sh
 	./scripts/eolcheck-eval_test.sh
 	./scripts/check-pins_test.sh
+	bash scripts/release-sdk-typescript_test.sh
 
 .PHONY: test-integration
 test-integration: ## Go integration tests against Compose PostgreSQL (needs `make up`)
@@ -203,6 +204,10 @@ smoke: ## Real API + worker: health, send, idempotency, 422/429, log leaks, SIGT
 .PHONY: test-sdk-integration
 test-sdk-integration: ## TypeScript and Go clients against real API + worker: send, get, events, list, errors, a verified webhook (needs `make up migrate`, Node)
 	./scripts/sdk-integration.sh
+
+.PHONY: release-sdk-ts
+release-sdk-ts: ## TypeScript SDK release tarball + notes from the pushed tag in a clean worktree (VERSION=X.Y.Z, or DRY_RUN=1 to build HEAD; OUT=dir optional); publishes nothing
+	bash scripts/release-sdk-typescript.sh $(if $(filter 1,$(DRY_RUN)),--dry-run,"$(VERSION)") $(if $(OUT),"$(OUT)")
 
 .PHONY: test-alerts
 test-alerts: ## Alert rules and routing: promtool check + rule unit tests, amtool check-config (Docker)

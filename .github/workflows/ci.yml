@@ -124,6 +124,8 @@ jobs:
         run: ./deploy/bin/render-env_test.sh
       - name: Pin consistency check (fixtures)
         run: ./scripts/check-pins_test.sh
+      - name: SDK release script checks (throwaway repositories, stub pnpm)
+        run: bash scripts/release-sdk-typescript_test.sh
 
   deploy-check:
     runs-on: ubuntu-24.04
