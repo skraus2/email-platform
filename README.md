@@ -112,13 +112,23 @@ on the GitHub releases page (tags `packages/sdk-typescript/vX.Y.Z`), not on
 a registry. Usage, errors, retries and a webhook handler:
 [packages/sdk-typescript/README.md](packages/sdk-typescript/README.md).
 
+## Client SDK (Go)
+
+`packages/sdk-go` is the same client for Go: types generated from the
+contract, retries that never duplicate an email, iterators over paginated
+lists, and webhook signature verification (`packages/sdk-go/webhook`).
+Standard library only; Go 1.26 or later. Install with `go get
+github.com/skraus2/email-platform/packages/sdk-go@vX.Y.Z` (tags
+`packages/sdk-go/vX.Y.Z`). Usage, errors, retries and a webhook handler:
+[packages/sdk-go/README.md](packages/sdk-go/README.md).
+
 ## Tests and checks
 
 ```bash
 make check             # formatting, linters, unit tests, build (no Docker)
 make test-integration  # integration tests, a throwaway database per test (needs make up)
 make smoke             # real binaries end to end (needs make up migrate)
-make test-sdk-integration  # the TypeScript client against real binaries (needs make up migrate)
+make test-sdk-integration  # the TypeScript and Go clients against real binaries (needs make up migrate)
 make test-e2e          # API + worker + dashboard with Playwright
 make deploy-check      # the production Compose stack locally, with TLS everywhere
 make restore-test      # backup and restore drill
