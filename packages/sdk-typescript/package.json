@@ -28,7 +28,7 @@
     "test": "node --test 'src/**/*.test.ts' 'scripts/**/*.test.mts'"
   },
   "devDependencies": {
-    "@redocly/openapi-core": "1.34.22",
+    "@redocly/openapi-core": "2.71.0",
     "@types/node": "^24",
     "eslint": "^10",
     "openapi-typescript": "7.13.0",
