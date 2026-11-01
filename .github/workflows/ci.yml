@@ -100,7 +100,7 @@ jobs:
         run: go test -race -tags=integration -count=1 ./...
       - name: Smoke test (API + worker processes)
         run: ./scripts/smoke.sh
-      - name: TypeScript client against API + worker processes
+      - name: TypeScript and Go clients against API + worker processes
         run: ./scripts/sdk-integration.sh
       - name: Backup and restore drill
         run: ./scripts/restore-test.sh

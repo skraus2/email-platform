@@ -231,7 +231,8 @@ test("the client against the real API and worker", async (t) => {
         body: changed,
       });
       assert.equal(refused.status, 400);
-      assert.equal(deliveries.at(-1)?.status, 400);
+      // Found by its body: a platform delivery may be recorded after it.
+      assert.equal(deliveries.find((d) => d.body.equals(changed))?.status, 400);
     },
   );
 });

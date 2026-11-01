@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# TypeScript client against real processes: builds the binaries, starts API
-# and worker against the local Compose database and Mailpit, creates a
-# project, a key and a webhook endpoint through the admin CLI, and runs the
-# client's integration tests (send, replay, get, events, list across pages,
-# API errors, and a real webhook delivery verified by the client; the test
-# process is the webhook endpoint). Then sends SIGTERM, requires a clean
-# shutdown and checks that the logs carry no key, secret or recipient.
-# Needs `make up migrate` first, and Node (the version in .nvmrc).
+# TypeScript and Go clients against real processes: builds the binaries,
+# starts API and worker against the local Compose database and Mailpit,
+# creates a project, a key and a webhook endpoint through the admin CLI, and
+# runs each client's integration tests in turn (send, replay, get, events,
+# list across pages, API errors, and a real webhook delivery verified by the
+# client; the test process is the webhook endpoint). Then sends SIGTERM,
+# requires a clean shutdown and checks that the logs carry no key, secret or
+# recipient. Needs `make up migrate` first, and Node (the version in .nvmrc).
 set -euo pipefail
 
 : "${DATABASE_URL:?DATABASE_URL must be set (make sets a local default)}"
@@ -29,6 +29,9 @@ trap cleanup EXIT
 
 "$NODE" -e 'const [major] = process.versions.node.split(".").map(Number); if (major < 24) { console.error(`Node ${process.versions.node} is too old; the client needs the version in .nvmrc`); process.exit(1); }'
 go build -o "$TMP/" ./cmd/api ./cmd/worker ./cmd/admin
+# Built up front, so no compile time lies between the Node and the Go run
+# while the webhook port is unbound.
+go -C packages/sdk-go test -c -race -tags=integration -o "$TMP/sdk-go.test" .
 
 # Needles from a file: secrets must not appear in grep's command line. The
 # KEK and the database password are in it before any process can log them.
@@ -75,12 +78,21 @@ secret=$(sed -nE 's/^secret \(shown once, store it now\): (whsec_[A-Za-z0-9_-]+)
 printf '%s\n' "$secret" >>"$TMP/needles"
 echo "project, key and webhook endpoint for http://$RECV_ADDR/hooks -> created"
 
-# Credentials go through the environment of the test process, never argv;
-# it gets neither the database nor the key-encryption key.
-env -u WEBHOOK_KEKS -u DATABASE_URL -u TEST_DATABASE_URL \
-  EP_BASE_URL="http://$ADDR" EP_API_KEY="$key" EP_WEBHOOK_SECRET="$secret" EP_WEBHOOK_ADDR="$RECV_ADDR" EP_RUN="$run" \
-  "$NODE" --test --test-reporter=spec 'packages/sdk-typescript/integration/**/*.test.ts' ||
-  fail "client integration tests failed"
+# Credentials go through the environment of the test process, set by shell
+# builtins in a subshell, never on any command line; it gets neither the
+# database nor the key-encryption key.
+client() (
+  unset WEBHOOK_KEKS DATABASE_URL TEST_DATABASE_URL
+  export EP_BASE_URL="http://$ADDR" EP_API_KEY="$key" EP_WEBHOOK_SECRET="$secret" EP_WEBHOOK_ADDR="$RECV_ADDR" EP_RUN="$run"
+  exec "$@"
+)
+client "$NODE" --test --test-reporter=spec 'packages/sdk-typescript/integration/**/*.test.ts' ||
+  fail "TypeScript client integration tests failed"
+# The same endpoint and port: the Node receiver has closed, and deliveries
+# still pending from its run may be retried to this one, signed anew with
+# the same secret.
+client "$TMP/sdk-go.test" -test.run '^TestClientAgainstTheRealAPIAndWorker$' -test.count=1 -test.v ||
+  fail "Go client integration tests failed"
 
 kill -TERM "$API_PID" "$WORKER_PID"
 wait "$API_PID" || fail "api exited non-zero after SIGTERM"

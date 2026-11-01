@@ -201,7 +201,7 @@ smoke: ## Real API + worker: health, send, idempotency, 422/429, log leaks, SIGT
 	./scripts/smoke.sh
 
 .PHONY: test-sdk-integration
-test-sdk-integration: ## TypeScript client against real API + worker: send, get, events, list, errors, a verified webhook (needs `make up migrate`, Node)
+test-sdk-integration: ## TypeScript and Go clients against real API + worker: send, get, events, list, errors, a verified webhook (needs `make up migrate`, Node)
 	./scripts/sdk-integration.sh
 
 .PHONY: test-alerts
