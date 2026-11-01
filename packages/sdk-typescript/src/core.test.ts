@@ -263,6 +263,26 @@ test("an error code that is not snake_case falls back; a long message is cut", a
   assert.equal(cut.message.length, 1024);
 });
 
+test("control characters in the API's message become spaces", async () => {
+  const h = harness(
+    [
+      json(400, {
+        error: {
+          code: "bad",
+          message: "a\r\nFAKE log line\u0000\t\u007f\u0085 b",
+        },
+      }),
+    ],
+    { maxRetries: 0 },
+  );
+  const err = await h
+    .send("getEmail", { path: { id: "e1" } })
+    .catch((e: unknown) => e);
+  assert.ok(err instanceof ApiError);
+  // C0, DEL and C1 are replaced; U+2028 is a separator, not a control.
+  assert.equal(err.message, "a  FAKE log line     b");
+});
+
 test("an X-Request-Id that is not a server id is dropped", async () => {
   const h = harness([
     apiError(404, "not_found", { "X-Request-Id": "x".repeat(65) }),

@@ -421,7 +421,9 @@ function parseJson(bytes: Uint8Array): unknown {
 }
 
 // The API's error body. A code that is not the API's snake_case form means
-// the body came from somewhere else; long messages are cut.
+// the body came from somewhere else; long messages are cut. Control
+// characters become spaces, so a message cannot start a new line in a log
+// that prints it unquoted.
 function errorEnvelope(
   bytes: Uint8Array,
 ): { code: string; message: string } | undefined {
@@ -441,5 +443,8 @@ function errorEnvelope(
   ) {
     return undefined;
   }
-  return { code, message: message.slice(0, maxMessageLength) };
+  return {
+    code,
+    message: message.replace(/\p{Cc}/gu, " ").slice(0, maxMessageLength),
+  };
 }
