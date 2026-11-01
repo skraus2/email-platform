@@ -1,6 +1,6 @@
 {
   "name": "@email-platform/sdk",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "description": "Server-side client for the Email Platform /v1 API",
   "license": "Apache-2.0",
