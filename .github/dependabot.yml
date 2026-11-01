@@ -54,11 +54,15 @@ updates:
     cooldown: { default-days: 7 }
     # Node's type definitions follow the Node major the dashboard runs on.
     # TypeScript majors wait until typescript-eslint supports them (7.0 is
-    # refused by typescript-eslint as of 2026-10).
+    # refused by typescript-eslint as of 2026-10). The SDK generator's
+    # resolver guard patches the @redocly/openapi-core copy that
+    # openapi-typescript loads, so its major follows openapi-typescript's.
     ignore:
       - dependency-name: "@types/node"
         update-types: ["version-update:semver-major"]
       - dependency-name: typescript
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@redocly/openapi-core"
         update-types: ["version-update:semver-major"]
     groups:
       npm:
