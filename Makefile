@@ -77,7 +77,7 @@ fmt-check: ## Fail if any file is not formatted
 	$(PNPM) run format:check
 
 .PHONY: lint
-lint: lint-go lint-web lint-sdk-ts lint-sdk-go lint-ci sqlc-check lint-awslive lint-pins ## Run all linters
+lint: lint-go lint-web lint-sdk-ts lint-sdk-go lint-ci sqlc-check lint-awslive vet-awslive lint-pins ## Run all linters
 
 .PHONY: sqlc
 sqlc: ## Regenerate internal/store from db/queries + db/migrations

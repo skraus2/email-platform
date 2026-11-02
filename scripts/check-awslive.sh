@@ -41,7 +41,7 @@ done < <(search -l -E 'awslive|SES_LIVE_TEST' -- '*.go')
 # never spells "awslive" (a variable set outside the repo) is not detected;
 # SES_LIVE_TEST=1 and the complete SES configuration still guard a run.
 allowed=(
-	'Makefile:lint: lint-go lint-web lint-sdk-ts lint-sdk-go lint-ci sqlc-check lint-awslive lint-pins ## Run all linters'
+	'Makefile:lint: lint-go lint-web lint-sdk-ts lint-sdk-go lint-ci sqlc-check lint-awslive vet-awslive lint-pins ## Run all linters'
 	'Makefile:.PHONY: lint-awslive'
 	'Makefile:lint-awslive: ## Prove the live AWS tests are excluded from every gate'
 	'Makefile:	./scripts/check-awslive.sh'
@@ -49,6 +49,7 @@ allowed=(
 	'Makefile:vet-awslive: ## Type-check the live AWS tests (never runs them, no AWS access)'
 	'Makefile:	go vet -tags=awslive ./internal/awslive/'
 	'.github/workflows/ci.yml:        run: ./scripts/check-awslive.sh'
+	'.github/workflows/ci.yml:        run: make vet-awslive'
 )
 mentions=$(search -e awslive -- '*Makefile' '*.mk' '*.golangci*' '.github/' 'scripts/' '*Dockerfile*' \
 	'*compose*.y*ml' 'tools/' '*.env*' ':!scripts/check-awslive.sh')

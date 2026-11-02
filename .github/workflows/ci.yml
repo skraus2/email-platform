@@ -81,12 +81,15 @@ jobs:
             go -C "$m" vet ./...
             (cd "$m" && "$bin" run ./...)
           done
-      - name: sqlc generated code is up to date
-        run: go tool -modfile=tools/sqlc/go.mod sqlc diff
+      - name: sqlc generated code is up to date (no orphaned files)
+        run: make sqlc-check
       - name: actionlint
         run: go tool -modfile=tools/actionlint/go.mod actionlint
       - name: live AWS tests excluded from every gate
         run: ./scripts/check-awslive.sh
+      # Type-check only, so the live tests cannot rot between live runs.
+      - name: live AWS tests still compile (never run)
+        run: make vet-awslive
       - name: Pinned versions agree across files
         run: ./scripts/check-pins.sh
       - name: Unit tests
@@ -126,6 +129,14 @@ jobs:
         run: ./scripts/check-pins_test.sh
       - name: SDK release script checks (throwaway repositories, stub pnpm)
         run: bash scripts/release-sdk-typescript_test.sh
+      - name: AWS test-run scripts (stubbed aws CLI)
+        run: bash deploy/aws/scripts_test.sh
+      - name: Image scan evaluation (hand-written grype reports)
+        run: |
+          ./scripts/imagecheck-eval_test.sh
+          ./scripts/imagecheck-os_test.sh
+      - name: End-of-life evaluation (hand-written release data)
+        run: ./scripts/eolcheck-eval_test.sh
 
   deploy-check:
     runs-on: ubuntu-24.04
