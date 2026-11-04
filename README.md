@@ -107,7 +107,7 @@ make run-dashboard # http://127.0.0.1:3000
 `packages/sdk-typescript` is a server-side client for the `/v1` API: typed
 requests and responses generated from the contract, retries that never
 duplicate an email, iterators over paginated lists, and webhook signature
-verification. No runtime dependencies; Node 24. It is released as a tarball
+verification. No runtime dependencies; Node 26. It is released as a tarball
 on the GitHub releases page (tags `packages/sdk-typescript/vX.Y.Z`), not on
 a registry. Usage, errors, retries and a webhook handler:
 [packages/sdk-typescript/README.md](packages/sdk-typescript/README.md).

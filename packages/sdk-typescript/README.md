@@ -1,6 +1,6 @@
 # @email-platform/sdk
 
-Server-side TypeScript client for the Email Platform `/v1` API. Node 24,
+Server-side TypeScript client for the Email Platform `/v1` API. Node 26,
 ESM only, no runtime dependencies. Never use it in a browser: the API key
 and the webhook secret are server secrets (a browser bundle that imports
 the package fails on purpose).

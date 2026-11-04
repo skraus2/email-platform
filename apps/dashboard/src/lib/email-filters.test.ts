@@ -75,7 +75,7 @@ test("the to date is inclusive across month and year ends", () => {
     ["2026-10-31", "2026-11-01T00:00:00Z"],
     ["2026-12-31", "2027-01-01T00:00:00Z"],
     ["2028-02-28", "2028-02-29T00:00:00Z"],
-  ]) {
+  ] as const) {
     const { filters } = parseEmailFilters({ to });
     assert.equal(apiQuery(filters).get("created_before"), before, to);
   }

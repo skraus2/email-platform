@@ -5,7 +5,7 @@
 # It listens on 127.0.0.1:3000 by default (HOSTNAME/PORT) and reads the
 # operator API from ADMIN_API_URL at run time.
 
-FROM node:24.22.1-bookworm-slim@sha256:55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205 AS build
+FROM node:26.13.0-trixie-slim@sha256:e4db4c914bf8ad241bd24804fc25d272d89bad97e68cdc8a1414862790a02c39 AS build
 WORKDIR /src
 RUN corepack enable
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
@@ -15,7 +15,7 @@ COPY apps/dashboard apps/dashboard
 ENV NEXT_TELEMETRY_DISABLED=1 NEXT_OUTPUT=standalone
 RUN pnpm --filter dashboard build
 
-FROM node:24.22.1-alpine3.24@sha256:06d7adf3e0ef61a13f1d28682726366f97a15aa1888c934d3ecec86c33918b53
+FROM node:26.13.0-alpine3.24@sha256:c6ad9e9c1d80f6eb607c26b4b0a132ff7a2344fad1c78ea3baa2a7d4c8de6d94
 # The server needs only the node binary: package managers (npm, corepack,
 # yarn) and their bundled dependencies are removed from the runtime.
 RUN rm -rf /usr/local/lib/node_modules /opt/yarn-* \

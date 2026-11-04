@@ -16,7 +16,7 @@
     "dist"
   ],
   "engines": {
-    "node": "^24"
+    "node": "^26"
   },
   "scripts": {
     "generate": "node scripts/generate.mts",
@@ -29,7 +29,7 @@
   },
   "devDependencies": {
     "@redocly/openapi-core": "1.34.22",
-    "@types/node": "^24",
+    "@types/node": "^26",
     "eslint": "^10",
     "openapi-typescript": "7.13.0",
     "prettier": "3.9.10",

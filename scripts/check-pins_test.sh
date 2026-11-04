@@ -98,7 +98,7 @@ says go-modules "deploy/caddy/go.mod pins go 1.0.1 but go.mod pins toolchain go$
   "tools/sqlc/go.mod pins toolchain go1.0.1 but go.mod pins toolchain go$go_ver" "2 mismatch(es)"
 
 # 7. Dashboard build stage and runtime stage, each on another Node version.
-for stage in bookworm alpine; do
+for stage in trixie alpine; do
   fresh "node-$stage"
   edit "node-$stage" apps/dashboard/Dockerfile "s/^FROM node:$node_ver-$stage/FROM node:1.0.1-$stage/"
   expect FAIL "node-$stage"
