@@ -7,78 +7,18 @@
 # finding fails the scan and must be removed.
 check-for-app-update: false
 ignore:
-  - vulnerability: GO-2026-6603
-    package: { location: "/bin/alertmanager" }
-    reason: "alertmanager v0.34.1 is the latest release and was built before this fix. Server side: plain HTTP/1 on 127.0.0.1:9093, reachable only from the containers sharing the stack network namespace (no HTTP/2 or TLS server). Client side: requests go only to operator-configured receivers. Remove with the next release; revisit by 2026-11-24."
-  - vulnerability: GO-2026-6603
-    package: { location: "/bin/amtool" }
-    reason: "alertmanager v0.34.1 is the latest release and was built before this fix. Server side: plain HTTP/1 on 127.0.0.1:9093, reachable only from the containers sharing the stack network namespace (no HTTP/2 or TLS server). Client side: requests go only to operator-configured receivers. Remove with the next release; revisit by 2026-11-24."
-  - vulnerability: GO-2026-6604
-    package: { location: "/bin/alertmanager" }
-    reason: "alertmanager v0.34.1 is the latest release and was built before this fix. Server side: plain HTTP/1 on 127.0.0.1:9093, reachable only from the containers sharing the stack network namespace (no HTTP/2 or TLS server). Client side: requests go only to operator-configured receivers. Remove with the next release; revisit by 2026-11-24."
-  - vulnerability: GO-2026-6604
-    package: { location: "/bin/amtool" }
-    reason: "alertmanager v0.34.1 is the latest release and was built before this fix. Server side: plain HTTP/1 on 127.0.0.1:9093, reachable only from the containers sharing the stack network namespace (no HTTP/2 or TLS server). Client side: requests go only to operator-configured receivers. Remove with the next release; revisit by 2026-11-24."
-  - vulnerability: GO-2026-6605
-    package: { location: "/bin/alertmanager" }
-    reason: "alertmanager v0.34.1 is the latest release and was built before this fix. Server side: plain HTTP/1 on 127.0.0.1:9093, reachable only from the containers sharing the stack network namespace (no HTTP/2 or TLS server). Client side: requests go only to operator-configured receivers. Remove with the next release; revisit by 2026-11-24."
-  - vulnerability: GO-2026-6605
-    package: { location: "/bin/amtool" }
-    reason: "alertmanager v0.34.1 is the latest release and was built before this fix. Server side: plain HTTP/1 on 127.0.0.1:9093, reachable only from the containers sharing the stack network namespace (no HTTP/2 or TLS server). Client side: requests go only to operator-configured receivers. Remove with the next release; revisit by 2026-11-24."
-  - vulnerability: GO-2026-6607
-    package: { location: "/bin/alertmanager" }
-    reason: "alertmanager v0.34.1 is the latest release and was built before this fix. Server side: plain HTTP/1 on 127.0.0.1:9093, reachable only from the containers sharing the stack network namespace (no HTTP/2 or TLS server). Client side: requests go only to operator-configured receivers. Remove with the next release; revisit by 2026-11-24."
-  - vulnerability: GO-2026-6607
-    package: { location: "/bin/amtool" }
-    reason: "alertmanager v0.34.1 is the latest release and was built before this fix. Server side: plain HTTP/1 on 127.0.0.1:9093, reachable only from the containers sharing the stack network namespace (no HTTP/2 or TLS server). Client side: requests go only to operator-configured receivers. Remove with the next release; revisit by 2026-11-24."
-  - vulnerability: GO-2026-6608
-    package: { location: "/bin/alertmanager" }
-    reason: "alertmanager v0.34.1 is the latest release and was built before this fix. Server side: plain HTTP/1 on 127.0.0.1:9093, reachable only from the containers sharing the stack network namespace (no HTTP/2 or TLS server). Client side: requests go only to operator-configured receivers. Remove with the next release; revisit by 2026-11-24."
-  - vulnerability: GO-2026-6608
-    package: { location: "/bin/amtool" }
-    reason: "alertmanager v0.34.1 is the latest release and was built before this fix. Server side: plain HTTP/1 on 127.0.0.1:9093, reachable only from the containers sharing the stack network namespace (no HTTP/2 or TLS server). Client side: requests go only to operator-configured receivers. Remove with the next release; revisit by 2026-11-24."
-  - vulnerability: GO-2026-6609
-    package: { location: "/bin/alertmanager" }
-    reason: "alertmanager v0.34.1 is the latest release and was built before this fix. Server side: plain HTTP/1 on 127.0.0.1:9093, reachable only from the containers sharing the stack network namespace (no HTTP/2 or TLS server). Client side: requests go only to operator-configured receivers. Remove with the next release; revisit by 2026-11-24."
-  - vulnerability: GO-2026-6610
-    package: { location: "/bin/alertmanager" }
-    reason: "alertmanager v0.34.1 is the latest release and was built before this fix. Server side: plain HTTP/1 on 127.0.0.1:9093, reachable only from the containers sharing the stack network namespace (no HTTP/2 or TLS server). Client side: requests go only to operator-configured receivers. Remove with the next release; revisit by 2026-11-24."
-  - vulnerability: GO-2026-6610
-    package: { location: "/bin/amtool" }
-    reason: "alertmanager v0.34.1 is the latest release and was built before this fix. Server side: plain HTTP/1 on 127.0.0.1:9093, reachable only from the containers sharing the stack network namespace (no HTTP/2 or TLS server). Client side: requests go only to operator-configured receivers. Remove with the next release; revisit by 2026-11-24."
-  - vulnerability: GO-2026-6611
-    package: { location: "/bin/alertmanager" }
-    reason: "alertmanager v0.34.1 is the latest release and was built before this fix. Server side: plain HTTP/1 on 127.0.0.1:9093, reachable only from the containers sharing the stack network namespace (no HTTP/2 or TLS server). Client side: requests go only to operator-configured receivers. Remove with the next release; revisit by 2026-11-24."
-  - vulnerability: GO-2026-6611
-    package: { location: "/bin/amtool" }
-    reason: "alertmanager v0.34.1 is the latest release and was built before this fix. Server side: plain HTTP/1 on 127.0.0.1:9093, reachable only from the containers sharing the stack network namespace (no HTTP/2 or TLS server). Client side: requests go only to operator-configured receivers. Remove with the next release; revisit by 2026-11-24."
-  - vulnerability: GO-2026-6612
-    package: { location: "/bin/alertmanager" }
-    reason: "alertmanager v0.34.1 is the latest release and was built before this fix. Server side: plain HTTP/1 on 127.0.0.1:9093, reachable only from the containers sharing the stack network namespace (no HTTP/2 or TLS server). Client side: requests go only to operator-configured receivers. Remove with the next release; revisit by 2026-11-24."
-  - vulnerability: GO-2026-6612
-    package: { location: "/bin/amtool" }
-    reason: "alertmanager v0.34.1 is the latest release and was built before this fix. Server side: plain HTTP/1 on 127.0.0.1:9093, reachable only from the containers sharing the stack network namespace (no HTTP/2 or TLS server). Client side: requests go only to operator-configured receivers. Remove with the next release; revisit by 2026-11-24."
-  - vulnerability: GO-2026-6613
-    package: { location: "/bin/alertmanager" }
-    reason: "alertmanager v0.34.1 is the latest release and was built before this fix. Server side: plain HTTP/1 on 127.0.0.1:9093, reachable only from the containers sharing the stack network namespace (no HTTP/2 or TLS server). Client side: requests go only to operator-configured receivers. Remove with the next release; revisit by 2026-11-24."
-  - vulnerability: GO-2026-6613
-    package: { location: "/bin/amtool" }
-    reason: "alertmanager v0.34.1 is the latest release and was built before this fix. Server side: plain HTTP/1 on 127.0.0.1:9093, reachable only from the containers sharing the stack network namespace (no HTTP/2 or TLS server). Client side: requests go only to operator-configured receivers. Remove with the next release; revisit by 2026-11-24."
-  - vulnerability: GO-2026-6617
-    package: { location: "/bin/alertmanager" }
-    reason: "alertmanager v0.34.1 is the latest release and was built before this fix. Server side: plain HTTP/1 on 127.0.0.1:9093, reachable only from the containers sharing the stack network namespace (no HTTP/2 or TLS server). Client side: requests go only to operator-configured receivers. Remove with the next release; revisit by 2026-11-24."
-  - vulnerability: GO-2026-6617
-    package: { location: "/bin/amtool" }
-    reason: "alertmanager v0.34.1 is the latest release and was built before this fix. Server side: plain HTTP/1 on 127.0.0.1:9093, reachable only from the containers sharing the stack network namespace (no HTTP/2 or TLS server). Client side: requests go only to operator-configured receivers. Remove with the next release; revisit by 2026-11-24."
-  - vulnerability: GHSA-2v4p-qf9q-27wj
-    package: { location: "/bin/alertmanager" }
-    reason: "alertmanager v0.34.1 is the latest release and was built before this fix. Server side: plain HTTP/1 on 127.0.0.1:9093, reachable only from the containers sharing the stack network namespace (no HTTP/2 or TLS server). Client side: requests go only to operator-configured receivers. Remove with the next release; revisit by 2026-11-24."
-  - vulnerability: GHSA-2v4p-qf9q-27wj
-    package: { location: "/bin/amtool" }
-    reason: "alertmanager v0.34.1 is the latest release and was built before this fix. Server side: plain HTTP/1 on 127.0.0.1:9093, reachable only from the containers sharing the stack network namespace (no HTTP/2 or TLS server). Client side: requests go only to operator-configured receivers. Remove with the next release; revisit by 2026-11-24."
   - vulnerability: GHSA-2v4p-qf9q-27wj
     package: { location: "/bin/prometheus" }
     reason: "Prometheus v3.13.5 (latest LTS release) ships grpc v1.83.1; the advisory affects gRPC xDS servers only and Prometheus runs no xDS server. Remove with the next 3.13 patch release; revisit by 2026-11-24."
   - vulnerability: GHSA-2v4p-qf9q-27wj
     package: { location: "/bin/promtool" }
     reason: "Prometheus v3.13.5 (latest LTS release) ships grpc v1.83.1; the advisory affects gRPC xDS servers only and Prometheus runs no xDS server. Remove with the next 3.13 patch release; revisit by 2026-11-24."
+  - vulnerability: GO-2026-6865
+    package: { location: "/bin/alertmanager" }
+    reason: "alertmanager v0.34.2 (latest release) ships klauspost/compress v1.19.1, fixed in 1.20.2. The flaw is a panic on crafted compressed frames. Alertmanager listens only on 127.0.0.1:9093 with clustering off, so only containers in the stack network namespace can reach it. Remove with the next release; revisit by 2026-12-07."
+  - vulnerability: GO-2026-6865
+    package: { location: "/bin/prometheus" }
+    reason: "Prometheus v3.13.5 (latest LTS release) ships klauspost/compress v1.18.7, fixed in 1.20.2. The flaw is a panic on crafted compressed frames. Prometheus listens only on 127.0.0.1:9090, scrapes only this stack's own loopback targets and has no remote write or read. Remove with the next 3.13 patch release; revisit by 2026-12-07."
+  - vulnerability: GO-2026-6865
+    package: { location: "/bin/promtool" }
+    reason: "Prometheus v3.13.5 (latest LTS release) ships klauspost/compress v1.18.7, fixed in 1.20.2. The flaw is a panic on crafted compressed frames. promtool is not run in production, only against this repository's own rule files. Remove with the next 3.13 patch release; revisit by 2026-12-07."
