@@ -20,5 +20,7 @@ COPY --from=build /out/caddy /usr/bin/caddy
 # The server needs neither curl nor its libraries (the health check uses
 # busybox nc); removing them drops their vulnerabilities from the image.
 RUN apk del --no-cache curl && ! command -v curl
+# This image release predates the fixed zlib package.
+RUN apk upgrade --no-cache zlib
 RUN caddy version && command -v getcap >/dev/null && caps="$(getcap /usr/bin/caddy)" && \
     if [ -n "$caps" ]; then echo "caddy binary has file capabilities: $caps" >&2; exit 1; fi
