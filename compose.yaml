@@ -25,7 +25,7 @@ services:
       retries: 30
 
   mailpit:
-    image: axllent/mailpit:v1.32.0
+    image: axllent/mailpit:v1.33.0
     environment:
       MP_MAX_MESSAGES: 500
     ports:
